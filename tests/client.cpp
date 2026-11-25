@@ -225,5 +225,69 @@ int main() {
         xcb_flush(c);
         if (!tiled(fourth, 0, 800)) return EXIT_FAILURE;
     }
+    auto current_desktop = intern("_NET_CURRENT_DESKTOP", 20);
+    auto window_desktop = intern("_NET_WM_DESKTOP", 15);
+    auto wm_check = intern("_NET_SUPPORTING_WM_CHECK", 24);
+    auto get_check = [&](xcb_window_t window) {
+        std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)> reply{
+            xcb_get_property_reply(c, xcb_get_property(c, false, window, wm_check, XCB_ATOM_WINDOW, 0, 1), nullptr), &std::free};
+        return reply && reply->type == XCB_ATOM_WINDOW && reply->format == 32 &&
+                       xcb_get_property_value_length(reply.get()) == 4
+                   ? *static_cast<const uint32_t *>(xcb_get_property_value(reply.get())) : uint32_t{XCB_WINDOW_NONE};
+    };
+    auto support = get_check(screen->root);
+    if (!support || get_check(support) != support) return EXIT_FAILURE;
+    auto send_desktop = [&](xcb_atom_t type, xcb_window_t window, uint32_t desktop) {
+        xcb_client_message_event_t request{};
+        request.response_type = XCB_CLIENT_MESSAGE;
+        request.format = 32;
+        request.window = window;
+        request.type = type;
+        request.data.data32[0] = desktop;
+        xcb_send_event(c, false, screen->root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                       reinterpret_cast<const char *>(&request));
+        xcb_flush(c);
+    };
+    auto property_is = [&](xcb_window_t window, xcb_atom_t property, uint32_t value) {
+        for (int i = 0; i < 250; ++i) {
+            std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)> reply{
+                xcb_get_property_reply(c, xcb_get_property(c, false, window, property, XCB_ATOM_CARDINAL, 0, 1), nullptr), &std::free};
+            if (reply && reply->type == XCB_ATOM_CARDINAL && reply->format == 32 &&
+                xcb_get_property_value_length(reply.get()) == 4 &&
+                *static_cast<uint32_t *>(xcb_get_property_value(reply.get())) == value) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        return false;
+    };
+    auto focused_on = [&](xcb_window_t window) {
+        for (int i = 0; i < 250; ++i) {
+            std::unique_ptr<xcb_get_input_focus_reply_t, decltype(&std::free)> reply{
+                xcb_get_input_focus_reply(c, xcb_get_input_focus(c), nullptr), &std::free};
+            if (reply && reply->focus == window) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        return false;
+    };
+    send_desktop(current_desktop, screen->root, 1);
+    if (!property_is(screen->root, current_desktop, 1)) return EXIT_FAILURE;
+    auto other = create();
+    if (!property_is(other, window_desktop, 1) || !tiled(other, 0, 800) || !focused_on(other)) return EXIT_FAILURE;
+    send_desktop(current_desktop, screen->root, 0);
+    if (!property_is(screen->root, current_desktop, 0) || !tiled(fourth, 0, 800) || !focused_on(fourth)) return EXIT_FAILURE;
+    send_desktop(window_desktop, fourth, 1);
+    if (!property_is(fourth, window_desktop, 1)) return EXIT_FAILURE;
+    send_desktop(current_desktop, screen->root, 1);
+    if (!property_is(screen->root, current_desktop, 1) || !tiled(other, 0, 400) ||
+        !tiled(fourth, 400, 400) || !focused_on(fourth)) return EXIT_FAILURE;
+    send_desktop(current_desktop, screen->root, 2);
+    if (!property_is(screen->root, current_desktop, 2)) return EXIT_FAILURE;
+    send_desktop(window_desktop, fourth, 2);
+    if (!property_is(fourth, window_desktop, 2) || !focused_on(fourth)) return EXIT_FAILURE;
+    send_desktop(current_desktop, screen->root, 1);
+    if (!property_is(screen->root, current_desktop, 1) || !focused_on(other)) return EXIT_FAILURE;
+    send_desktop(current_desktop, screen->root, 99);
+    xcb_destroy_window(c, fourth);
+    xcb_flush(c);
+    if (!tiled(other, 0, 800) || !focused_on(other) || !property_is(screen->root, current_desktop, 1)) return EXIT_FAILURE;
     return EXIT_SUCCESS;
 }
