@@ -26,6 +26,20 @@ int main(int argc, char **argv) {
     auto *c = connection.get();
     auto *screen = xcb_setup_roots_iterator(xcb_get_setup(c)).data;
     if (!screen) return EXIT_FAILURE;
+    if (argc == 2 && std::strcmp(argv[1], "bar-reservation") == 0) {
+        auto window = xcb_generate_id(c);
+        xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, 100, 100, 0,
+                          XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+        xcb_map_window(c, window);
+        xcb_flush(c);
+        for (int i = 0; i < 100; ++i) {
+            std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
+            if (geometry && geometry->y == 24 && geometry->height == 576 && geometry->width == 800) return EXIT_SUCCESS;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        return EXIT_FAILURE;
+    }
     if (argc == 2) {
         auto mode = argv[1];
         auto setup = xcb_get_setup(c);
@@ -41,7 +55,47 @@ int main(int argc, char **argv) {
                         return static_cast<xcb_keycode_t>(setup->min_keycode + i);
             return 0;
         };
+        if (std::strcmp(mode, "reload-keys") == 0) {
+            auto alt = key(0xffe9);
+            auto shift = key(0xffe1);
+            if (!alt || !shift || !key('c') || !key('z') || !key('x')) return EXIT_FAILURE;
+            std::puts("ready");
+            std::fflush(stdout);
+            for (int input; (input = std::getchar()) != EOF;) {
+                if (input == '\n') continue;
+                auto code = key(static_cast<xcb_keysym_t>(input));
+                if (!code) return EXIT_FAILURE;
+                auto press = [&](xcb_keycode_t k, bool down) {
+                    xcb_test_fake_input(c, down ? XCB_KEY_PRESS : XCB_KEY_RELEASE, k, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+                };
+                press(alt, true);
+                if (input == 'c') press(shift, true);
+                press(code, true);
+                press(code, false);
+                if (input == 'c') press(shift, false);
+                press(alt, false);
+                xcb_flush(c);
+                std::puts("sent");
+                std::fflush(stdout);
+            }
+            return EXIT_SUCCESS;
+        }
+        if (std::strcmp(mode, "reload-conflict") == 0) {
+            auto code = key('z');
+            if (!code) return EXIT_FAILURE;
+            auto *error = xcb_request_check(c, xcb_grab_key_checked(c, false, screen->root, XCB_MOD_MASK_1,
+                                                                   code, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC));
+            if (error) { std::free(error); return EXIT_FAILURE; }
+            std::puts("ready");
+            std::fflush(stdout);
+            return std::getchar() == EOF ? EXIT_FAILURE : EXIT_SUCCESS;
+        }
         if (std::strcmp(mode, "startup-failure") == 0) {
+            auto one = key('1');
+            if (!one) return EXIT_FAILURE;
+            auto *error = xcb_request_check(c, xcb_grab_key_checked(c, false, screen->root, XCB_MOD_MASK_1,
+                                                                    one, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC));
+            if (error) { std::free(error); return EXIT_FAILURE; }
             auto window = xcb_generate_id(c);
             xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, 100, 100, 0,
                               XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
@@ -143,6 +197,208 @@ int main(int argc, char **argv) {
         if (!focused) {
             std::fprintf(stderr, "%s: test window did not receive focus\n", mode);
             return EXIT_FAILURE;
+        }
+        if (std::strcmp(mode, "scratchpad") == 0) {
+            auto minus = key('-');
+            if (!minus) return EXIT_FAILURE;
+            auto shortcut = [&](bool shifted) {
+                press(alt, true);
+                if (shifted) press(shift, true);
+                tap(minus);
+                if (shifted) press(shift, false);
+                press(alt, false);
+                xcb_flush(c);
+            };
+            auto wait = [&](auto predicate, const char *label) {
+                for (int i = 0; i < 250; ++i) {
+                    if (predicate()) return true;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+                std::fprintf(stderr, "scratchpad: %s failed\n", label);
+                return false;
+            };
+            auto mapped = [&](xcb_window_t target, uint8_t state) {
+                std::unique_ptr<xcb_get_window_attributes_reply_t, decltype(&std::free)> reply{
+                    xcb_get_window_attributes_reply(c, xcb_get_window_attributes(c, target), nullptr), &std::free};
+                return reply && reply->map_state == state;
+            };
+            auto focus = [&](xcb_window_t target) {
+                std::unique_ptr<xcb_get_input_focus_reply_t, decltype(&std::free)> reply{
+                    xcb_get_input_focus_reply(c, xcb_get_input_focus(c), nullptr), &std::free};
+                return reply && reply->focus == target;
+            };
+            auto geometry = [&](xcb_window_t target, int x, int y, int w, int h) {
+                std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> reply{
+                    xcb_get_geometry_reply(c, xcb_get_geometry(c, target), nullptr), &std::free};
+                return reply && reply->x == x && reply->y == y && reply->width == w && reply->height == h;
+            };
+            auto other = xcb_generate_id(c);
+            xcb_create_window(c, XCB_COPY_FROM_PARENT, other, screen->root, 0, 0, 100, 100, 0,
+                              XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+            xcb_map_window(c, other); xcb_flush(c);
+            if (!wait([&] { return focus(other); }, "second window focus")) return EXIT_FAILURE;
+            shortcut(true);
+            if (!wait([&] { return mapped(other, XCB_MAP_STATE_UNMAPPED) && focus(window) &&
+                                  geometry(window, 0, 0, 800, 600); }, "send tiled window")) return EXIT_FAILURE;
+            press(alt, true); tap(key('f')); press(alt, false); xcb_flush(c);
+            auto state = intern_key("_NET_WM_STATE");
+            auto full = intern_key("_NET_WM_STATE_FULLSCREEN");
+            auto fullscreen = [&] {
+                std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)> reply{
+                    xcb_get_property_reply(c, xcb_get_property(c, false, window, state, XCB_ATOM_ATOM, 0, 64), nullptr), &std::free};
+                if (!reply || reply->type != XCB_ATOM_ATOM || reply->format != 32) return false;
+                auto *atoms = static_cast<const xcb_atom_t *>(xcb_get_property_value(reply.get()));
+                return std::find(atoms, atoms + xcb_get_property_value_length(reply.get()) / 4, full) !=
+                    atoms + xcb_get_property_value_length(reply.get()) / 4;
+            };
+            if (!wait(fullscreen, "enter fullscreen")) return EXIT_FAILURE;
+            shortcut(false);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            if (!mapped(other, XCB_MAP_STATE_UNMAPPED) || !focus(window)) return EXIT_FAILURE;
+            press(alt, true); tap(key('f')); press(alt, false); xcb_flush(c);
+            if (!wait([&] { return !fullscreen(); }, "leave fullscreen")) return EXIT_FAILURE;
+            shortcut(false);
+            if (!wait([&] { return mapped(other, XCB_MAP_STATE_VIEWABLE) && focus(other) &&
+                                  geometry(other, 200, 150, 400, 300); }, "show floating window")) return EXIT_FAILURE;
+            const uint32_t rect[] = {70, 80, 240, 180};
+            xcb_configure_window(c, other, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+                                 XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, rect);
+            xcb_flush(c);
+            if (!wait([&] { return geometry(other, 70, 80, 240, 180); }, "resize floating window")) return EXIT_FAILURE;
+            shortcut(false);
+            if (!wait([&] { return mapped(other, XCB_MAP_STATE_UNMAPPED) && focus(window); }, "hide and restore focus")) return EXIT_FAILURE;
+            press(alt, true); tap(two); press(alt, false); xcb_flush(c);
+            if (!wait_property(screen->root, current, 1)) return EXIT_FAILURE;
+            shortcut(false);
+            if (!wait([&] { return mapped(other, XCB_MAP_STATE_VIEWABLE) && focus(other) &&
+                                  geometry(other, 70, 80, 240, 180); }, "show on another workspace")) return EXIT_FAILURE;
+            xcb_client_message_event_t message{};
+            message.response_type = XCB_CLIENT_MESSAGE;
+            message.format = 32;
+            message.window = other;
+            message.type = desktop;
+            message.data.data32[0] = 0;
+            xcb_send_event(c, false, screen->root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                           reinterpret_cast<const char *>(&message));
+            xcb_flush(c);
+            if (!wait_property(other, desktop, 0) || !wait([&] { return mapped(other, XCB_MAP_STATE_UNMAPPED); }, "move shown scratchpad")) return EXIT_FAILURE;
+            shortcut(false);
+            press(alt, true); tap(key('1')); press(alt, false); xcb_flush(c);
+            if (!wait_property(screen->root, current, 0) ||
+                !wait([&] { return mapped(other, XCB_MAP_STATE_VIEWABLE); }, "moved window remains on workspace")) return EXIT_FAILURE;
+            if (!wait([&] { return focus(other); }, "focus moved window")) return EXIT_FAILURE;
+            shortcut(true);
+            if (!wait([&] { return mapped(other, XCB_MAP_STATE_UNMAPPED); }, "send moved window again")) return EXIT_FAILURE;
+            shortcut(false);
+            if (!wait([&] { return mapped(other, XCB_MAP_STATE_VIEWABLE) && focus(other); }, "show moved window again")) return EXIT_FAILURE;
+            message.type = intern_key("WM_CHANGE_STATE");
+            message.data.data32[0] = 3;
+            xcb_send_event(c, false, screen->root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                           reinterpret_cast<const char *>(&message));
+            xcb_flush(c);
+            if (!wait([&] { return mapped(other, XCB_MAP_STATE_UNMAPPED); }, "iconify scratchpad")) return EXIT_FAILURE;
+            shortcut(false);
+            xcb_map_window(c, other); xcb_flush(c);
+            if (!wait([&] { return mapped(other, XCB_MAP_STATE_VIEWABLE); }, "restore iconified window")) return EXIT_FAILURE;
+            xcb_destroy_window(c, other); xcb_flush(c);
+            return EXIT_SUCCESS;
+        }
+        if (std::strcmp(mode, "fullscreen") == 0) {
+            auto state = intern_key("_NET_WM_STATE");
+            auto full = intern_key("_NET_WM_STATE_FULLSCREEN");
+            auto f = key('f');
+            if (!state || !full || !f) return EXIT_FAILURE;
+            auto wait = [&](auto predicate, const char *label) {
+                for (int i = 0; i < 250; ++i) {
+                    if (predicate()) return true;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+                std::fprintf(stderr, "fullscreen: %s failed\n", label);
+                return false;
+            };
+            auto geometry = [&](xcb_window_t target, int x, int y, int w, int h) {
+                std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> reply{
+                    xcb_get_geometry_reply(c, xcb_get_geometry(c, target), nullptr), &std::free};
+                return reply && reply->x == x && reply->y == y && reply->width == w && reply->height == h;
+            };
+            auto has_full = [&](xcb_window_t target) {
+                std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)> reply{
+                    xcb_get_property_reply(c, xcb_get_property(c, false, target, state, XCB_ATOM_ATOM, 0, 64), nullptr), &std::free};
+                if (!reply || reply->type != XCB_ATOM_ATOM || reply->format != 32) return false;
+                auto *atoms = static_cast<const xcb_atom_t *>(xcb_get_property_value(reply.get()));
+                for (int i = 0; i < xcb_get_property_value_length(reply.get()) / 4; ++i) if (atoms[i] == full) return true;
+                return false;
+            };
+            auto send = [&](xcb_window_t target, uint32_t operation) {
+                xcb_client_message_event_t event{};
+                event.response_type = XCB_CLIENT_MESSAGE; event.format = 32; event.window = target;
+                event.type = state; event.data.data32[0] = operation; event.data.data32[1] = full;
+                xcb_send_event(c, false, screen->root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                               reinterpret_cast<const char *>(&event));
+                xcb_flush(c);
+            };
+            send(window, 1);
+            if (!wait([&] { return has_full(window) && geometry(window, 0, 0, 800, 600); }, "EWMH add")) return EXIT_FAILURE;
+            auto other = xcb_generate_id(c);
+            xcb_create_window(c, XCB_COPY_FROM_PARENT, other, screen->root, 20, 30, 120, 100, 0,
+                              XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+            xcb_map_window(c, other); xcb_flush(c);
+            if (!wait_property(other, desktop, 0)) return EXIT_FAILURE;
+            if (!wait([&] {
+                std::unique_ptr<xcb_get_input_focus_reply_t, decltype(&std::free)> focus{
+                    xcb_get_input_focus_reply(c, xcb_get_input_focus(c), nullptr), &std::free};
+                std::unique_ptr<xcb_query_tree_reply_t, decltype(&std::free)> tree{
+                    xcb_query_tree_reply(c, xcb_query_tree(c, screen->root), nullptr), &std::free};
+                if (!focus || focus->focus != window || !tree) return false;
+                auto *children = xcb_query_tree_children(tree.get());
+                int a = -1, b = -1;
+                for (int i = 0; i < xcb_query_tree_children_length(tree.get()); ++i) {
+                    if (children[i] == window) a = i;
+                    if (children[i] == other) b = i;
+                }
+                return a > b && b >= 0;
+            }, "focus and stacking")) return EXIT_FAILURE;
+            auto dialog = xcb_generate_id(c);
+            xcb_create_window(c, XCB_COPY_FROM_PARENT, dialog, screen->root, 40, 50, 200, 150, 0,
+                              XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, dialog, XCB_ATOM_WM_TRANSIENT_FOR, XCB_ATOM_WINDOW, 32, 1, &window);
+            xcb_map_window(c, dialog); xcb_flush(c);
+            if (!wait([&] {
+                std::unique_ptr<xcb_get_input_focus_reply_t, decltype(&std::free)> focus{
+                    xcb_get_input_focus_reply(c, xcb_get_input_focus(c), nullptr), &std::free};
+                std::unique_ptr<xcb_query_tree_reply_t, decltype(&std::free)> tree{
+                    xcb_query_tree_reply(c, xcb_query_tree(c, screen->root), nullptr), &std::free};
+                if (!focus || focus->focus != dialog || !tree) return false;
+                auto *children = xcb_query_tree_children(tree.get());
+                int a = -1, b = -1;
+                for (int i = 0; i < xcb_query_tree_children_length(tree.get()); ++i) {
+                    if (children[i] == dialog) a = i;
+                    if (children[i] == window) b = i;
+                }
+                return a > b && b >= 0;
+            }, "transient focus and stacking")) return EXIT_FAILURE;
+            xcb_destroy_window(c, dialog); xcb_flush(c);
+            if (!wait([&] {
+                std::unique_ptr<xcb_get_input_focus_reply_t, decltype(&std::free)> focus{
+                    xcb_get_input_focus_reply(c, xcb_get_input_focus(c), nullptr), &std::free};
+                return focus && focus->focus == window;
+            }, "fullscreen focus after dialog")) return EXIT_FAILURE;
+            press(alt, true); tap(two); press(alt, false); xcb_flush(c);
+            if (!wait_property(screen->root, current, 1)) return EXIT_FAILURE;
+            press(alt, true); tap(one); press(alt, false); xcb_flush(c);
+            if (!wait_property(screen->root, current, 0) ||
+                !wait([&] { return has_full(window) && geometry(window, 0, 0, 800, 600); }, "workspace restore")) return EXIT_FAILURE;
+            press(alt, true); tap(f); press(alt, false); xcb_flush(c);
+            if (!wait([&] { return !has_full(window) && geometry(window, 0, 0, 400, 600); }, "Alt+f remove")) return EXIT_FAILURE;
+            send(window, 2);
+            if (!wait([&] { return has_full(window) && geometry(window, 0, 0, 800, 600); }, "EWMH toggle")) return EXIT_FAILURE;
+            send(window, 0);
+            if (!wait([&] { return !has_full(window) && geometry(window, 0, 0, 400, 600); }, "EWMH remove")) return EXIT_FAILURE;
+            send(window, 1);
+            if (!wait([&] { return has_full(window); }, "fullscreen before withdrawal")) return EXIT_FAILURE;
+            xcb_unmap_window(c, window); xcb_flush(c);
+            if (!wait([&] { return !has_full(window); }, "withdrawal clears fullscreen")) return EXIT_FAILURE;
+            return EXIT_SUCCESS;
         }
         if (std::strcmp(mode, "transient") == 0 || std::strcmp(mode, "dialog") == 0 || std::strcmp(mode, "floating-toggle") == 0) {
             auto dialog = xcb_generate_id(c);
@@ -271,12 +527,14 @@ int main(int argc, char **argv) {
         }
         if (std::strcmp(mode, "milestone") == 0 || std::strcmp(mode, "scheme-actions") == 0) {
             bool scheme = std::strcmp(mode, "scheme-actions") == 0;
-            auto shortcut = [&](xcb_keysym_t symbol, bool shifted = false) {
+            auto shortcut = [&](xcb_keysym_t symbol, bool shifted = false, bool controlled = false) {
                 auto code = key(symbol);
                 if (!code) { std::fprintf(stderr, "missing keysym %u\n", symbol); return false; }
                 press(alt, true);
                 if (shifted) press(shift, true);
+                if (controlled) press(key(0xffe3), true);
                 tap(code);
+                if (controlled) press(key(0xffe3), false);
                 if (shifted) press(shift, false);
                 press(alt, false);
                 xcb_flush(c);
@@ -299,7 +557,10 @@ int main(int argc, char **argv) {
                     if (reply && reply->x == x && reply->y == y && reply->width == width && reply->height == height) return true;
                     std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 }
-                std::fprintf(stderr, "window %#x has wrong geometry\n", target);
+                std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> actual{
+                    xcb_get_geometry_reply(c, xcb_get_geometry(c, target), nullptr), &std::free};
+                if (actual) std::fprintf(stderr, "window %#x geometry %d,%d %ux%u expected %d,%d %dx%d\n",
+                    target, actual->x, actual->y, actual->width, actual->height, x, y, width, height);
                 return false;
             };
             auto create = [&] {
@@ -318,6 +579,13 @@ int main(int argc, char **argv) {
             auto third = create();
             if (!tiled(second, 0, 300, 400, 300) || !tiled(third, 400, 300, 400, 300) || !focused_on(third)) return EXIT_FAILURE;
             if (!shortcut(scheme ? 'g' : 0xff51) || !focused_on(second) || !shortcut(scheme ? 'i' : 0xff53) || !focused_on(third)) return EXIT_FAILURE;
+            if (!shortcut(scheme ? 'p' : 0xff51, !scheme) ||
+                !tiled(third, 0, 300, 400, 300) || !tiled(second, 400, 300, 400, 300)) return EXIT_FAILURE;
+            if (!shortcut(scheme ? 'g' : 0xff51) || !focused_on(third)) return EXIT_FAILURE;
+            if (!shortcut(scheme ? 'u' : 0xff53, false, !scheme) ||
+                !tiled(third, 0, 300, 409, 300) || !tiled(second, 409, 300, 391, 300)) return EXIT_FAILURE;
+            if (!shortcut(scheme ? 'y' : 0xff53, !scheme) ||
+                !tiled(second, 0, 300, 390, 300) || !tiled(third, 390, 300, 410, 300)) return EXIT_FAILURE;
             auto protocols = intern_key("WM_PROTOCOLS");
             auto delete_window = intern_key("WM_DELETE_WINDOW");
             if (!protocols || !delete_window) return EXIT_FAILURE;
@@ -335,7 +603,7 @@ int main(int argc, char **argv) {
                 }
                 if (!received) std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
-            if (!received || !tiled(third, 400, 300, 400, 300)) return EXIT_FAILURE;
+            if (!received || !tiled(third, 390, 300, 410, 300)) return EXIT_FAILURE;
             auto launch_seen = [&](const char *expected) {
                 const char *path = std::getenv("MORTAR_TEST_LAUNCH");
                 if (!path) return false;

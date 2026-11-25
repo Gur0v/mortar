@@ -30,6 +30,7 @@ void workspace(void *data, unsigned digit) {
         check(!host.config->load(host.path));
         check(host.config->run_workspace(1) == mortar::Config::Result::failure);
         check(host.config->run_workspace(9) == mortar::Config::Result::failure);
+        check(!host.config->evaluate("1").success);
     }
     host.workspace = digit;
 }
@@ -56,6 +57,8 @@ int main() {
     host.config = &config;
     host.path = path;
     using Result = mortar::Config::Result;
+    check(config.bar_status().empty());
+    check(!config.evaluate("1").success);
     check(config.run_workspace(1) == Result::absent);
     check(config.run_workspace(10) == Result::failure);
     write("(bind-workspace 1 (lambda () (workspace 4)))\n"
@@ -65,6 +68,21 @@ int main() {
           "(bind-key 65 8 (lambda () (workspace 5)))\n"
           "(bind-key 66 9 (lambda () (error \"failure\")))\n");
     check(config.load(path));
+    auto evaluation = config.evaluate("(begin (define evaluation-value 42) (+ evaluation-value 1))");
+    check(evaluation.success && evaluation.text == "43");
+    check(config.evaluate("evaluation-value").text == "42");
+    check(config.evaluate("(workspace 6)").success && host.workspace == 6);
+    check(!config.evaluate("(bind-key 70 0 (lambda () #t))").success);
+    check(!config.evaluate("(error \"evaluation failure\")").success);
+    check(!config.evaluate("(").success);
+    check(!config.evaluate("(make-string 10000 #\\x)").success);
+    check(config.evaluate("42").success);
+    check(config.evaluate("(begin (use-modules (srfi srfi-9) (srfi srfi-9 gnu)) (define saved-port #f) "
+                          "(define-record-type <capture> (make-capture) capture?) "
+                          "(set-record-type-printer! <capture> "
+                          "(lambda (value port) (set! saved-port port) (display \"ok\" port))) "
+                          "(make-capture))").success);
+    check(!config.evaluate("(begin (display \"bad\" saved-port) (force-output saved-port))").success);
     scm_gc();
     check(config.bindings().size() == 2);
     check(config.bindings()[0].keysym == 65 && config.bindings()[0].modifiers == 8);
@@ -86,6 +104,21 @@ int main() {
     scm_gc();
     check(config.bindings().size() == 2 && config.bindings()[0].keysym == 65);
     check(config.run_binding(0) == Result::success && host.workspace == 5);
+    check(config.run_workspace(1) == Result::success && host.workspace == 4);
+    write("(bind-key 67 0 (lambda () (workspace 8)))");
+    check(config.stage(path));
+    scm_gc();
+    check(config.staged_bindings().size() == 1 && config.staged_bindings()[0].keysym == 67);
+    check(config.run_binding(0) == Result::success && host.workspace == 5);
+    config.discard();
+    check(config.run_binding(0) == Result::success && host.workspace == 5);
+    check(config.stage(path));
+    scm_gc();
+    config.commit();
+    check(config.run_binding(0) == Result::success && host.workspace == 8);
+    write("(bind-workspace 1 (lambda () (workspace 4))) "
+          "(bind-key 65 8 (lambda () (workspace 5)))");
+    check(config.load(path));
     check(config.run_workspace(1) == Result::success && host.workspace == 4);
     write("(bind-key 0 0 (lambda () #t))");
     check(!config.load(path));
@@ -132,5 +165,21 @@ int main() {
     check(config.run_workspace(1) == Result::absent);
     check(config.bindings().empty() && config.run_binding(0) == Result::absent);
     check(!config.load("/nonexistent/mortar-config"));
+    write("(bar-status \"program\" \"a b\" \"\")");
+    check(config.load(path));
+    check(config.bar_status() == std::vector<std::string>({"program", "a b", ""}));
+    write("(bar-status \"other\") (error \"bad\")");
+    check(!config.load(path) && config.bar_status()[0] == "program");
+    write("(bar-status \"other\")");
+    check(config.stage(path) && config.bar_status()[0] == "program");
+    config.discard();
+    check(config.bar_status()[0] == "program");
+    write("(bar-status \"\")");
+    check(!config.load(path));
+    write("(bar-status 42)");
+    check(!config.load(path));
+    check(!config.evaluate("(bar-status \"bad\")").success);
+    write("#t");
+    check(config.load(path) && config.bar_status().empty());
     std::remove(path);
 }

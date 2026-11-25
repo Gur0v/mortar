@@ -2,7 +2,9 @@
 
 Mortar loads Guile Scheme configuration at startup from `$XDG_CONFIG_HOME/mortar/config.scm` when `XDG_CONFIG_HOME` is nonempty and absolute. Otherwise, it uses `$HOME/.config/mortar/config.scm` when `HOME` is nonempty and absolute. If neither location is available, Mortar reports an error and uses defaults. A missing configuration file also leaves the defaults in place.
 
-Configuration is trusted executable Scheme, running with your user privileges. It is not sandboxed; even a failed load can have side effects. There is no configuration reload yet; restart Mortar to apply changes.
+Configuration is trusted executable Scheme, running with your user privileges. It is not sandboxed; even a failed load can have side effects.
+
+Press Alt+Shift+C to reload the same configuration path. Mortar replaces settings and bindings only after the file loads and all new key grabs succeed. If either fails, it reports the error and keeps the current configuration and bindings. Scheme side effects, including external effects, are not rolled back. An arbitrary binding can override the reload shortcut.
 
 ## Workspace bindings
 
@@ -31,3 +33,9 @@ If loading fails, Mortar reports the error and starts with built-in defaults. If
 `(bind-key keysym modifiers procedure)` registers a zero-argument callback for an X keysym and X modifier bitmask, both integers. For example, `(bind-key 65475 8 (lambda () (split 'vertical)))` binds Alt+F6. Repeated registrations replace the previous callback; a matching arbitrary binding takes precedence over a built-in shortcut, including workspace shortcuts.
 
 Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(focus 'left)`, `(focus 'right)`, `(focus 'up)`, `(focus 'down)`, and `(close)` for the focused window. `(spawn executable argument ...)` launches an executable with separate string arguments, without a shell. Invoke a shell explicitly if needed. These actions, like workspace actions, are only available in callbacks, not while loading configuration.
+
+## Bar status
+
+`(bar-status "program" "argument" ...)` selects a status producer. Mortarbar starts it directly, without a shell, and reads its stdout as an i3bar status stream. Click events go to its stdin. No producer runs by default. Arguments are separate strings; the program must be nonempty. The last registration wins.
+
+Reload stages this setting with the rest of the configuration, but an already running bar keeps its existing producer. The new setting takes effect on the next Mortar startup.

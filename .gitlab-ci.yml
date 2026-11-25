@@ -16,21 +16,21 @@ build:
       - CXX: [g++, clang++]
         BUILD_TYPE: [debug, release]
   before_script:
-    - apt-get update && apt-get install -y g++ clang meson ninja-build pkg-config guile-3.0-dev libxcb1-dev libxcb-randr0-dev libxcb-xkb-dev libxkbcommon-x11-dev libxcb-xtest0-dev ruby xvfb x11-xkb-utils xkb-data
+    - apt-get update && apt-get install -y g++ clang meson ninja-build pkg-config guile-3.0-dev libxcb1-dev libxcb-randr0-dev libxcb-xkb-dev libxkbcommon-x11-dev libxcb-xtest0-dev libjq-dev ruby xvfb x11-xkb-utils xkb-data
   script:
     - meson setup build --buildtype=$BUILD_TYPE -Db_ndebug=if-release -Dwerror=true
     - meson compile -C build
-    - meson test -C build config size-hints layout workspaces keyboard actions --print-errorlogs
+    - meson test -C build config size-hints layout workspaces keyboard actions status mortarbar --print-errorlogs
 
 sanitizers:
   stage: test
   image: debian:trixie
   before_script:
-    - apt-get update && apt-get install -y g++ meson ninja-build pkg-config guile-3.0-dev libxcb1-dev libxcb-randr0-dev libxcb-xkb-dev libxkbcommon-x11-dev libxcb-xtest0-dev ruby xvfb x11-xkb-utils xkb-data
+    - apt-get update && apt-get install -y g++ meson ninja-build pkg-config guile-3.0-dev libxcb1-dev libxcb-randr0-dev libxcb-xkb-dev libxkbcommon-x11-dev libxcb-xtest0-dev libjq-dev ruby xvfb x11-xkb-utils xkb-data
   script:
     - meson setup build -Dwerror=true -Db_sanitize=address,undefined
     - meson compile -C build
-    - ASAN_OPTIONS=fast_unwind_on_malloc=0 LSAN_OPTIONS=suppressions=$CI_PROJECT_DIR/tests/lsan.supp UBSAN_OPTIONS=halt_on_error=1 meson test -C build config size-hints layout workspaces keyboard actions --print-errorlogs
+    - ASAN_OPTIONS=fast_unwind_on_malloc=0 LSAN_OPTIONS=suppressions=$CI_PROJECT_DIR/tests/lsan.supp UBSAN_OPTIONS=halt_on_error=1 meson test -C build config size-hints layout workspaces keyboard actions status mortarbar --print-errorlogs
 
 sast:
   stage: test

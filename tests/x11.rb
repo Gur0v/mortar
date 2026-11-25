@@ -1,5 +1,6 @@
 require 'tmpdir'
 require 'timeout'
+require 'fcntl'
 
 Dir.mktmpdir('mortar-test-') do |dir|
   xvfb = nil
@@ -32,9 +33,11 @@ Dir.mktmpdir('mortar-test-') do |dir|
     abort 'Client failed to prepare startup failure check' unless
       Timeout.timeout(10) { client_reader.gets } == "startup failure ready\n"
     error_path = File.join(dir, 'no-randr.log')
-    success = system(env, ARGV.fetch(0), out: File::NULL, err: error_path)
-    abort 'Window manager unexpectedly started without RandR' if success
-    abort 'Window manager failed for an unexpected reason' unless File.read(error_path).include?('RandR extension unavailable')
+    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: error_path)
+    _, status = Timeout.timeout(10) { Process.wait2(wm) }
+    wm = nil
+    abort 'Window manager unexpectedly accepted keyboard grab conflict without RandR' if status.success?
+    abort 'Window manager failed for an unexpected reason' unless File.read(error_path).include?('keyboard setup failed')
     client_writer.puts
     client_writer.close
     client_reader.close
@@ -55,6 +58,36 @@ Dir.mktmpdir('mortar-test-') do |dir|
     %w[x-terminal-emulator dmenu_run mortar-test-spawn].each { |name| File.symlink(File.expand_path(ARGV.fetch(1)), File.join(dir, name)) }
     env = { 'DISPLAY' => ":#{Integer(display)}", 'XDG_CONFIG_HOME' => dir, 'HOME' => dir,
             'PATH' => "#{dir}:#{ENV.fetch('PATH')}", 'MORTAR_TEST_LAUNCH' => launch_log }
+    File.symlink(File.expand_path(ARGV.fetch(2)), File.join(dir, 'mortarbar'))
+    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: File::NULL, in: File::NULL)
+    abort 'Automatic mortarbar did not reserve space' unless system(env, ARGV.fetch(1), 'bar-reservation')
+    Process.kill('TERM', wm)
+    _, status = Timeout.timeout(10) { Process.wait2(wm) }
+    wm = nil
+    abort 'Window manager failed during bar shutdown' unless status.success?
+    File.unlink(File.join(dir, 'mortarbar'))
+    marker_bar = File.join(dir, 'bar-pid')
+    File.write(File.join(dir, 'mortarbar'), "#!/bin/sh\ntrap '' TERM\nprintf '%s' $$ > \"#{marker_bar}\"\nwhile :; do sleep 1; done\n")
+    File.chmod(0755, File.join(dir, 'mortarbar'))
+    input_reader, input_writer = IO.pipe
+    output_reader, output_writer = IO.pipe
+    output_writer.fcntl(Fcntl::F_SETFL, output_writer.fcntl(Fcntl::F_GETFL) & ~File::NONBLOCK)
+    before = output_writer.fcntl(Fcntl::F_GETFL)
+    wm = Process.spawn(env, ARGV.fetch(0), in: input_reader, out: output_writer, err: File::NULL)
+    Timeout.timeout(10) { sleep 0.02 until File.exist?(marker_bar) }
+    abort "mortarbar modified WM stdout flags: #{before} #{output_writer.fcntl(Fcntl::F_GETFL)}" unless output_writer.fcntl(Fcntl::F_GETFL) == before
+    bar_pid = Integer(File.read(marker_bar))
+    Process.kill('TERM', wm)
+    _, status = Timeout.timeout(5) { Process.wait2(wm) }
+    wm = nil
+    abort 'Window manager failed to stop unresponsive mortarbar' unless status.success?
+    begin
+      Process.kill(0, bar_pid)
+      abort 'mortarbar survived shutdown'
+    rescue Errno::ESRCH
+    end
+    [input_reader, input_writer, output_reader, output_writer].each(&:close)
+    File.unlink(File.join(dir, 'mortarbar'))
     client_input, client_writer = IO.pipe
     client_reader, client_output = IO.pipe
     client = Process.spawn(env, ARGV.fetch(1), 'grab-conflict', in: client_input, out: client_output)
@@ -118,7 +151,7 @@ Dir.mktmpdir('mortar-test-') do |dir|
       system(env, ARGV.fetch(1), mode, out: File::NULL)
     end
     abort "Keyboard checks failed: #{failures.join(', ')}" unless failures.empty?
-    %w[transient dialog floating-toggle].each do |mode|
+    %w[transient dialog floating-toggle fullscreen scratchpad].each do |mode|
       abort "Floating window check failed: #{mode}\nMortar stderr:\n#{File.read(wm_error_path)}" unless
         system(env, ARGV.fetch(1), mode, out: File::NULL)
     end
@@ -172,6 +205,9 @@ Dir.mktmpdir('mortar-test-') do |dir|
       (bind-key 102 8 (lambda () (split 'horizontal)))
       (bind-key 103 8 (lambda () (focus 'left)))
       (bind-key 105 8 (lambda () (focus 'right)))
+      (bind-key 112 8 (lambda () (move 'left)))
+      (bind-key 117 8 (lambda () (resize 'right 10)))
+      (bind-key 121 8 (lambda () (move 'right)))
       (bind-key 110 8 (lambda () (close)))
       (bind-key 111 8 (lambda () (spawn "mortar-test-spawn" "a b" "; touch forbidden")))
     SCHEME

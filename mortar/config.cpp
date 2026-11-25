@@ -17,9 +17,14 @@ struct ConfigRuntime {
     std::array<SCM, 10> move;
     std::vector<Config::Binding> bindings;
     std::vector<SCM> callbacks;
+    std::vector<std::string> bar_status;
     const char *path;
     SCM callback;
     SCM previous_module;
+    SCM module;
+    SCM output_port_value;
+    const std::string *expression;
+    std::string *output;
     bool changed_module;
     bool failed;
 
@@ -140,20 +145,44 @@ struct ConfigRuntime {
         return SCM_UNSPECIFIED;
     }
 
-    static SCM focus_action(SCM value) {
-        require_action("focus");
-        Direction direction;
-        if (scm_is_eq(value, scm_from_utf8_symbol("left"))) direction = Direction::left;
-        else if (scm_is_eq(value, scm_from_utf8_symbol("right"))) direction = Direction::right;
-        else if (scm_is_eq(value, scm_from_utf8_symbol("up"))) direction = Direction::up;
-        else if (scm_is_eq(value, scm_from_utf8_symbol("down"))) direction = Direction::down;
-        else scm_wrong_type_arg_msg("focus", 1, value, "direction symbol");
+    static Direction direction(SCM value, const char *name) {
+        if (scm_is_eq(value, scm_from_utf8_symbol("left"))) return Direction::left;
+        if (scm_is_eq(value, scm_from_utf8_symbol("right"))) return Direction::right;
+        if (scm_is_eq(value, scm_from_utf8_symbol("up"))) return Direction::up;
+        if (scm_is_eq(value, scm_from_utf8_symbol("down"))) return Direction::down;
+        scm_wrong_type_arg_msg(name, 1, value, "direction symbol");
+        return Direction::left;
+    }
+
+    static SCM directional_action(SCM value, bool move) {
+        const char *name = move ? "move" : "focus";
+        require_action(name);
+        auto dir = direction(value, name);
         bool failed = false;
         try {
-            if (active->config->focus_) active->config->focus_(active->config->host_, direction);
+            auto function = move ? active->config->move_ : active->config->focus_;
+            if (function) function(active->config->host_, dir);
             else failed = true;
         } catch (...) { failed = true; }
-        if (failed) scm_misc_error("focus", "native action failed", SCM_EOL);
+        if (failed) scm_misc_error(name, "native action failed", SCM_EOL);
+        return SCM_UNSPECIFIED;
+    }
+
+    static SCM focus_action(SCM value) { return directional_action(value, false); }
+    static SCM move_direction_action(SCM value) { return directional_action(value, true); }
+
+    static SCM resize_action(SCM value, SCM amount) {
+        require_action("resize");
+        auto dir = direction(value, "resize");
+        if (!scm_is_signed_integer(amount, -65535, 65535) || scm_is_true(scm_zero_p(amount)))
+            scm_out_of_range("resize", amount);
+        int pixels = scm_to_int(amount);
+        bool failed = false;
+        try {
+            if (active->config->resize_) active->config->resize_(active->config->host_, dir, pixels);
+            else failed = true;
+        } catch (...) { failed = true; }
+        if (failed) scm_misc_error("resize", "native action failed", SCM_EOL);
         return SCM_UNSPECIFIED;
     }
 
@@ -216,9 +245,25 @@ struct ConfigRuntime {
         return SCM_UNSPECIFIED;
     }
 
+    static SCM bar_status_action(SCM values) {
+        if (!active || !active->path) scm_misc_error("bar-status", "only allowed while loading", SCM_EOL);
+        if (scm_is_null(values)) scm_misc_error("bar-status", "expected executable", SCM_EOL);
+        bool failed = false;
+        {
+            SpawnArguments state{values, {}, false};
+            scm_c_catch(SCM_BOOL_T, collect_spawn, &state, spawn_error, &state, nullptr, nullptr);
+            if (!state.failed && !state.arguments.front().empty()) active->bar_status.swap(state.arguments);
+            else failed = true;
+        }
+        if (failed) scm_misc_error("bar-status", "invalid arguments", SCM_EOL);
+        return SCM_UNSPECIFIED;
+    }
+
     static SCM load_body(void *data) {
         auto *runtime = static_cast<ConfigRuntime *>(data);
         SCM module = scm_c_eval_string("(make-fresh-user-module)");
+        runtime->module = module;
+        scm_gc_protect_object(module);
         runtime->previous_module = scm_set_current_module(module);
         runtime->changed_module = true;
         scm_c_define_gsubr("bind-key", 3, 0, 0, reinterpret_cast<scm_t_subr>(bind_key));
@@ -227,14 +272,45 @@ struct ConfigRuntime {
         scm_c_define_gsubr("workspace", 1, 0, 0, reinterpret_cast<scm_t_subr>(workspace_action));
         scm_c_define_gsubr("move-to-workspace", 1, 0, 0, reinterpret_cast<scm_t_subr>(move_action));
         scm_c_define_gsubr("split", 1, 0, 0, reinterpret_cast<scm_t_subr>(split_action));
+        scm_c_define_gsubr("move", 1, 0, 0, reinterpret_cast<scm_t_subr>(move_direction_action));
+        scm_c_define_gsubr("resize", 2, 0, 0, reinterpret_cast<scm_t_subr>(resize_action));
         scm_c_define_gsubr("focus", 1, 0, 0, reinterpret_cast<scm_t_subr>(focus_action));
         scm_c_define_gsubr("close", 0, 0, 0, reinterpret_cast<scm_t_subr>(close_action));
+        scm_c_define_gsubr("bar-status", 0, 0, 1, reinterpret_cast<scm_t_subr>(bar_status_action));
         scm_c_define_gsubr("spawn", 0, 0, 1, reinterpret_cast<scm_t_subr>(spawn_action));
         return scm_c_primitive_load(runtime->path);
     }
 
-    static SCM run_body(void *data) {
-        return scm_call_0(static_cast<ConfigRuntime *>(data)->callback);
+    static size_t write_output(SCM port, SCM bytes, size_t start, size_t count) {
+        if (!active || !active->output || !scm_is_eq(port, active->output_port_value))
+            scm_misc_error("evaluate", "output port is no longer active", SCM_EOL);
+        auto *output = active->output;
+        if (count > Config::evaluation_limit - output->size()) {
+            scm_misc_error("evaluate", "rendered output exceeds limit", SCM_EOL);
+        }
+        bool failed = false;
+        try {
+            output->append(reinterpret_cast<const char *>(SCM_BYTEVECTOR_CONTENTS(bytes)) + start, count);
+        } catch (...) { failed = true; }
+        if (failed) scm_misc_error("evaluate", "cannot render output", SCM_EOL);
+        return count;
+    }
+
+    static SCM output_port() {
+        static char name[] = "mortar-evaluation";
+        static scm_t_port_type *type = scm_make_port_type(name, nullptr, write_output);
+        return scm_c_make_port(type, SCM_WRTNG, 0);
+    }
+
+    static SCM evaluate_body(void *data) {
+        auto *runtime = static_cast<ConfigRuntime *>(data);
+        SCM source = scm_from_utf8_stringn(runtime->expression->data(), runtime->expression->size());
+        SCM result = scm_eval_string_in_module(source, runtime->config->module_);
+        SCM port = output_port();
+        runtime->output_port_value = port;
+        scm_write(result, port);
+        scm_force_output(port);
+        return SCM_UNSPECIFIED;
     }
 
     struct Error {
@@ -242,12 +318,34 @@ struct ConfigRuntime {
         SCM arguments;
     };
 
+    static SCM evaluate_error_body(void *data) {
+        auto *error = static_cast<Error *>(data);
+        SCM port = output_port();
+        active->output_port_value = port;
+        scm_print_exception(port, SCM_BOOL_F, error->key, error->arguments);
+        scm_force_output(port);
+        return SCM_UNSPECIFIED;
+    }
+
+    static SCM run_body(void *data) {
+        return scm_call_0(static_cast<ConfigRuntime *>(data)->callback);
+    }
+
     static SCM report(void *data) {
         auto *error = static_cast<Error *>(data);
         return scm_handle_by_message_noexit(nullptr, error->key, error->arguments);
     }
 
     static SCM ignore_report_error(void *, SCM, SCM) {
+        return SCM_UNSPECIFIED;
+    }
+
+    static SCM evaluate_error(void *data, SCM key, SCM arguments) {
+        auto *runtime = static_cast<ConfigRuntime *>(data);
+        runtime->failed = true;
+        runtime->output->clear();
+        Error error{key, arguments};
+        scm_c_catch(SCM_BOOL_T, evaluate_error_body, &error, ignore_report_error, nullptr, nullptr, nullptr);
         return SCM_UNSPECIFIED;
     }
 
@@ -262,15 +360,17 @@ struct ConfigRuntime {
 thread_local ConfigRuntime *ConfigRuntime::active = nullptr;
 
 Config::Config(void *host, Action workspace, Action move_workspace, SplitAction split,
-               FocusAction focus, CloseAction close, SpawnAction spawn)
+               FocusAction focus, CloseAction close, SpawnAction spawn, FocusAction move, ResizeAction resize)
     : host_(host), workspace_(workspace), move_workspace_(move_workspace), split_(split),
-      focus_(focus), close_(close), spawn_(spawn) {
+      focus_(focus), move_(move), resize_(resize), close_(close), spawn_(spawn) {
     scm_init_guile();
     workspace_bindings_.fill(SCM_BOOL_F);
     move_bindings_.fill(SCM_BOOL_F);
 }
 
 Config::~Config() {
+    discard();
+    if (!scm_is_false(module_)) scm_gc_unprotect_object(module_);
     for (SCM callback : callbacks_) scm_gc_unprotect_object(callback);
     for (SCM callback : workspace_bindings_) {
         if (!scm_is_false(callback)) scm_gc_unprotect_object(callback);
@@ -281,9 +381,18 @@ Config::~Config() {
 }
 
 bool Config::load(const char *path) {
+    if (!stage(path)) return false;
+    commit();
+    return true;
+}
+
+bool Config::stage(const char *path) {
     if (!path || ConfigRuntime::active) return false;
-    ConfigRuntime runtime{};
+    discard();
+    staged_ = std::make_unique<ConfigRuntime>();
+    auto &runtime = *staged_;
     runtime.config = this;
+    runtime.module = SCM_BOOL_F;
     runtime.path = path;
     runtime.workspace.fill(SCM_BOOL_F);
     runtime.move.fill(SCM_BOOL_F);
@@ -291,12 +400,32 @@ bool Config::load(const char *path) {
     scm_c_catch(SCM_BOOL_T, ConfigRuntime::load_body, &runtime, ConfigRuntime::handle, &runtime, nullptr, nullptr);
     if (runtime.changed_module) scm_set_current_module(runtime.previous_module);
     ConfigRuntime::active = nullptr;
-    if (!runtime.failed) {
-        workspace_bindings_.swap(runtime.workspace);
-        move_bindings_.swap(runtime.move);
-        bindings_.swap(runtime.bindings);
-        callbacks_.swap(runtime.callbacks);
+    if (runtime.failed) {
+        discard();
+        return false;
     }
+    return true;
+}
+
+const std::vector<Config::Binding> &Config::staged_bindings() const noexcept {
+    return staged_ ? staged_->bindings : bindings_;
+}
+
+void Config::commit() noexcept {
+    if (!staged_) return;
+    std::swap(module_, staged_->module);
+    workspace_bindings_.swap(staged_->workspace);
+    move_bindings_.swap(staged_->move);
+    bindings_.swap(staged_->bindings);
+    callbacks_.swap(staged_->callbacks);
+    bar_status_.swap(staged_->bar_status);
+    discard();
+}
+
+void Config::discard() noexcept {
+    if (!staged_) return;
+    auto &runtime = *staged_;
+    if (!scm_is_false(runtime.module)) scm_gc_unprotect_object(runtime.module);
     for (SCM callback : runtime.callbacks) scm_gc_unprotect_object(callback);
     for (SCM callback : runtime.workspace) {
         if (!scm_is_false(callback)) scm_gc_unprotect_object(callback);
@@ -304,7 +433,23 @@ bool Config::load(const char *path) {
     for (SCM callback : runtime.move) {
         if (!scm_is_false(callback)) scm_gc_unprotect_object(callback);
     }
-    return !runtime.failed;
+    staged_.reset();
+}
+
+Config::Evaluation Config::evaluate(const std::string &expression) {
+    if (ConfigRuntime::active) return {false, "configuration is busy"};
+    if (scm_is_false(module_)) return {false, "no configuration loaded"};
+    Evaluation result{true, {}};
+    ConfigRuntime runtime{};
+    runtime.config = this;
+    runtime.expression = &expression;
+    runtime.output = &result.text;
+    ConfigRuntime::active = &runtime;
+    scm_c_catch(SCM_BOOL_T, ConfigRuntime::evaluate_body, &runtime, ConfigRuntime::evaluate_error, &runtime, nullptr, nullptr);
+    ConfigRuntime::active = nullptr;
+    result.success = !runtime.failed;
+    if (!result.success && result.text.empty()) result.text = "evaluation failed";
+    return result;
 }
 
 Config::Result Config::run(SCM callback) {

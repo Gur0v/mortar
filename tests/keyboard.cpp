@@ -118,6 +118,10 @@ int main()
             }
             require(failed, "conflicting grab succeeded");
             require(!process() && keyboard.callback() == 42, "failed replacement lost binding");
+            error = xcb_request_check(other, xcb_grab_key_checked(other, 1, screen->root,
+                XCB_MOD_MASK_CONTROL, letter, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC));
+            require(error && error->error_code == XCB_ACCESS, "failed replacement lost old grab");
+            std::free(error);
             xcb_disconnect(other);
             keyboard.replace_bindings({});
             require(!process() && !keyboard.callback(), "binding removal failed");
