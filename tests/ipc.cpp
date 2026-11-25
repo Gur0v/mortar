@@ -1,6 +1,7 @@
 #include "../mortar/ipc.hpp"
 
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <poll.h>
 #include <stdexcept>
@@ -19,7 +20,7 @@ int main() {
     check(mkdtemp(directory));
     std::string path;
     {
-        mortar::Ipc ipc(directory);
+        mortar::Ipc ipc(std::string(directory) + "/socket");
         path = ipc.path();
         int client = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
         check(client >= 0);
@@ -56,7 +57,7 @@ int main() {
         close(client);
     }
     {
-        mortar::Ipc ipc(directory);
+        mortar::Ipc ipc(std::string(directory) + "/socket");
         int clients[2];
         sockaddr_un address {};
         address.sun_family = AF_UNIX;
@@ -88,9 +89,33 @@ int main() {
     }
     struct stat st {};
     check(lstat(path.c_str(), &st) < 0);
+    {
+        std::string existing = std::string(directory) + "/existing";
+        FILE* file = std::fopen(existing.c_str(), "w");
+        check(file != nullptr);
+        check(std::fclose(file) == 0);
+        bool rejected = false;
+        try { mortar::Ipc ipc(existing); } catch (const std::runtime_error&) { rejected = true; }
+        check(rejected);
+        check(lstat(existing.c_str(), &st) == 0 && S_ISREG(st.st_mode));
+        check(unlink(existing.c_str()) == 0);
+    }
+    {
+        mortar::Ipc ipc(path);
+        bool rejected = false;
+        try { mortar::Ipc duplicate(path); } catch (const std::runtime_error&) { rejected = true; }
+        check(rejected);
+        check(lstat(path.c_str(), &st) == 0 && S_ISSOCK(st.st_mode));
+        check(unlink(path.c_str()) == 0);
+        FILE* replacement = std::fopen(path.c_str(), "w");
+        check(replacement != nullptr);
+        check(std::fclose(replacement) == 0);
+    }
+    check(lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode));
+    check(unlink(path.c_str()) == 0);
     check(chmod(directory, 0755) == 0);
     bool rejected = false;
-    try { mortar::Ipc ipc(directory); } catch (const std::runtime_error&) { rejected = true; }
+    try { mortar::Ipc ipc(std::string(directory) + "/socket"); } catch (const std::runtime_error&) { rejected = true; }
     check(rejected);
     check(rmdir(directory) == 0);
 }

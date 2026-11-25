@@ -109,6 +109,27 @@ int main() {
     xcb_ungrab_server(connection.get());
     xcb_flush(connection.get());
 
+    std::unique_ptr<mortar::Ipc> ipc;
+    try {
+        const char *override_path = std::getenv("MORTARSOCK");
+        std::string socket_path;
+        if (override_path && *override_path) socket_path = override_path;
+        else {
+            const char *runtime = std::getenv("XDG_RUNTIME_DIR");
+            if (!runtime || !std::filesystem::path(runtime).is_absolute())
+                throw std::runtime_error("XDG_RUNTIME_DIR must be an absolute private directory");
+            socket_path = std::string(runtime) + "/mortar-ipc." + std::to_string(geteuid()) + "." +
+                          std::to_string(getpid()) + ".sock";
+        }
+        ipc = std::make_unique<mortar::Ipc>(socket_path);
+        if (setenv("MORTARSOCK", ipc->path().c_str(), 1) < 0)
+            throw std::system_error(errno, std::generic_category(), "setenv MORTARSOCK");
+        std::fprintf(stderr, "mortar: IPC socket %s\n", ipc->path().c_str());
+    } catch (const std::exception &error) {
+        ipc.reset();
+        unsetenv("MORTARSOCK");
+        std::fprintf(stderr, "mortar: IPC unavailable: %s\n", error.what());
+    }
     struct Actions {
         std::function<void(unsigned)> workspace;
         std::function<void(unsigned)> move;
@@ -742,8 +763,22 @@ int main() {
     };
     actions.resize = [&](mortar::Direction direction, int pixels) {
         auto &ws = workspaces[current];
-        if (is_fullscreen(ws.focused) == fullscreen.end() &&
-            ws.layout.resize(ws.focused, direction, pixels, bounds())) tile();
+        if (is_fullscreen(ws.focused) != fullscreen.end()) return;
+        if (ws.layout.contains(ws.focused)) {
+            if (ws.layout.resize(ws.focused, direction, pixels, bounds())) tile();
+        } else if (std::find(ws.floating.begin(), ws.floating.end(), ws.focused) != ws.floating.end()) {
+            std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                xcb_get_geometry_reply(c, xcb_get_geometry(c, ws.focused), nullptr), &std::free};
+            if (!geometry) return;
+            bool horizontal = direction == mortar::Direction::left || direction == mortar::Direction::right;
+            bool previous = direction == mortar::Direction::left || direction == mortar::Direction::up;
+            int size = (horizontal ? geometry->width : geometry->height) + pixels;
+            int position = (horizontal ? geometry->x : geometry->y) - (previous ? pixels : 0);
+            if (size < 1 || size > UINT16_MAX || position < INT16_MIN || position > INT16_MAX) return;
+            uint32_t values[] = {static_cast<uint32_t>(position), static_cast<uint32_t>(size)};
+            xcb_configure_window(c, ws.focused, horizontal ? XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_WIDTH
+                                                            : XCB_CONFIG_WINDOW_Y | XCB_CONFIG_WINDOW_HEIGHT, values);
+        }
     };
     actions.close = [&] {
         auto window = workspaces[current].focused;
@@ -980,16 +1015,6 @@ int main() {
     sigaction(SIGTERM, &action, nullptr);
     sigaction(SIGINT, &action, nullptr);
 
-    std::unique_ptr<mortar::Ipc> ipc;
-    try {
-        const char *runtime = std::getenv("XDG_RUNTIME_DIR");
-        if (!runtime || !std::filesystem::path(runtime).is_absolute())
-            throw std::runtime_error("XDG_RUNTIME_DIR must be an absolute private directory");
-        ipc = std::make_unique<mortar::Ipc>(runtime);
-        std::fprintf(stderr, "mortar: IPC socket %s\n", ipc->path().c_str());
-    } catch (const std::exception &error) {
-        std::fprintf(stderr, "mortar: IPC unavailable: %s\n", error.what());
-    }
     std::vector<int> subscribers, window_subscribers;
     if (ipc) ipc->on_close = [&](int client) {
         std::erase(subscribers, client);
@@ -1199,6 +1224,7 @@ int main() {
             } catch (const std::exception &error) {
                 std::fprintf(stderr, "mortar: IPC failed: %s\n", error.what());
                 ipc.reset();
+                unsetenv("MORTARSOCK");
             }
         }
         if (!event) { if (ipc_dispatched) publish(); continue; }

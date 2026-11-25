@@ -19,36 +19,38 @@ namespace {
 }
 }
 
-Ipc::Ipc(const std::string& runtime_dir) {
+Ipc::Ipc(const std::string& path) : path_(path) {
+    const auto separator = path_.rfind('/');
+    if (path_.empty() || path_[0] != '/' || separator == std::string::npos ||
+        separator + 1 == path_.size() || path_.find('\0') != std::string::npos)
+        throw std::runtime_error("IPC path must be absolute and name a socket");
+    directory_ = separator == 0 ? "/" : path_.substr(0, separator);
+    name_ = path_.substr(separator + 1);
+    if (name_ == "." || name_ == "..") throw std::runtime_error("invalid IPC socket name");
+    sockaddr_un address {};
+    address.sun_family = AF_UNIX;
+    if (path_.size() >= sizeof(address.sun_path)) throw std::runtime_error("IPC path too long");
+    std::memcpy(address.sun_path, path_.c_str(), path_.size() + 1);
     struct stat st {};
-    if (lstat(runtime_dir.c_str(), &st) < 0) fail("runtime directory");
-    if (!S_ISDIR(st.st_mode) || st.st_uid != geteuid() || (st.st_mode & 077) != 0)
-        throw std::runtime_error("runtime directory must be private and owned by the current user");
-    std::string pattern = runtime_dir + "/mortar-XXXXXX";
-    if (!mkdtemp(pattern.data())) fail("mkdtemp");
-    directory_ = pattern;
     try {
         dir_ = open(directory_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
         if (dir_ < 0) fail("open IPC directory");
-        path_ = directory_ + "/socket";
-        sockaddr_un address {};
-        address.sun_family = AF_UNIX;
-        if (path_.size() >= sizeof(address.sun_path)) throw std::runtime_error("IPC path too long");
-        std::memcpy(address.sun_path, path_.c_str(), path_.size() + 1);
+        if (fstat(dir_, &st) < 0) fail("stat IPC directory");
+        if (!S_ISDIR(st.st_mode) || st.st_uid != geteuid() || (st.st_mode & 077) != 0)
+            throw std::runtime_error("IPC directory must be private and owned by the current user");
         listener_ = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
         if (listener_ < 0) fail("socket");
         if (bind(listener_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0) fail("bind");
-        socket_inode_ = 1;
-        if (fstatat(dir_, "socket", &st, AT_SYMLINK_NOFOLLOW) < 0) fail("stat socket");
+        if (fstatat(dir_, name_.c_str(), &st, AT_SYMLINK_NOFOLLOW) < 0) fail("stat socket");
         socket_inode_ = st.st_ino;
         if (listen(listener_, 32) < 0) fail("listen");
     } catch (...) {
         if (listener_ >= 0) close(listener_);
         if (dir_ >= 0) {
-            if (socket_inode_) unlinkat(dir_, "socket", 0);
+            if (socket_inode_ && fstatat(dir_, name_.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0 &&
+                S_ISSOCK(st.st_mode) && st.st_ino == socket_inode_) unlinkat(dir_, name_.c_str(), 0);
             close(dir_);
         }
-        rmdir(directory_.c_str());
         throw;
     }
 }
@@ -58,12 +60,11 @@ Ipc::~Ipc() {
     if (listener_ >= 0) close(listener_);
     struct stat st {};
     if (dir_ >= 0) {
-        if (fstatat(dir_, "socket", &st, AT_SYMLINK_NOFOLLOW) == 0 &&
+        if (fstatat(dir_, name_.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0 &&
             S_ISSOCK(st.st_mode) && st.st_ino == socket_inode_)
-            unlinkat(dir_, "socket", 0);
+            unlinkat(dir_, name_.c_str(), 0);
         close(dir_);
     }
-    rmdir(directory_.c_str());
 }
 
 std::vector<pollfd> Ipc::poll_fds() const {

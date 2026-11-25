@@ -16,7 +16,7 @@ public:
     static constexpr std::size_t max_queue = 262144;
     static constexpr std::size_t max_clients = 32;
 
-    explicit Ipc(const std::string& runtime_dir);
+    explicit Ipc(const std::string& path);
     ~Ipc();
     Ipc(const Ipc&) = delete;
     Ipc& operator=(const Ipc&) = delete;
@@ -39,6 +39,7 @@ private:
     int dir_ = -1;
     std::string directory_;
     std::string path_;
+    std::string name_;
     std::uint64_t socket_inode_ = 0;
     std::vector<Client> clients_;
     std::size_t next_client_ = 0;

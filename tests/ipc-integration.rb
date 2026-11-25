@@ -14,7 +14,7 @@ Dir.mktmpdir('mortar-ipc') do |dir|
     display = Timeout.timeout(10) { reader.gets }
     raise 'Xvfb failed' unless display
     log_reader, log_writer = IO.pipe
-    wm = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}", 'XDG_RUNTIME_DIR' => dir, 'XDG_CONFIG_HOME' => dir }, ARGV.fetch(0), err: log_writer)
+    wm = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}", 'XDG_RUNTIME_DIR' => dir, 'XDG_CONFIG_HOME' => dir, 'MORTARSOCK' => nil }, ARGV.fetch(0), err: log_writer)
     log_writer.close
     path = Timeout.timeout(10) do
       loop do
@@ -22,11 +22,15 @@ Dir.mktmpdir('mortar-ipc') do |dir|
         break line.split('IPC socket ', 2).last.strip if line.include?('IPC socket ')
       end
     end
+    expected = File.join(dir, "mortar-ipc.#{Process.uid}.#{wm}.sock")
+    raise "unexpected socket path: #{path}" unless path == expected
     socket = UNIXSocket.new(path)
     send_frame = ->(text) { socket.write([text.bytesize].pack('N') + text) }
     read_frame = -> { Timeout.timeout(5) { size = socket.read(4).unpack1('N'); socket.read(size) } }
     send_frame.call('subscribe workspace')
     raise 'subscription failed' unless read_frame.call == 'ok subscribed'
+    send_frame.call('eval (getenv "MORTARSOCK")')
+    raise 'socket environment missing' unless read_frame.call == %(ok "#{path}")
     send_frame.call('eval (+ 1 2)')
     raise 'evaluation failed' unless read_frame.call == 'ok 3'
     send_frame.call('eval (error "failure")')
@@ -54,7 +58,29 @@ Dir.mktmpdir('mortar-ipc') do |dir|
     Timeout.timeout(5) { events << read_frame.call until events.include?("event window close #{window}") }
     Process.wait(client)
     client = nil
+    child_env = File.join(dir, 'child-env')
+    send_frame.call(%(eval (spawn "/bin/sh" "-c" "printf %s $MORTARSOCK > $1" "sh" "#{child_env}")))
+    raise 'spawn failed' unless read_frame.call.start_with?('ok ')
+    Timeout.timeout(5) { Thread.pass until File.exist?(child_env) && File.size?(child_env) }
+    raise 'child socket environment missing' unless File.read(child_env) == path
     socket.close
+    Process.kill('TERM', wm)
+    Process.wait(wm)
+    wm = nil
+    raise 'socket not removed' if File.exist?(path)
+    custom = File.join(dir, 'custom.sock')
+    log_reader.close
+    log_reader, log_writer = IO.pipe
+    wm = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}", 'XDG_RUNTIME_DIR' => dir, 'XDG_CONFIG_HOME' => dir, 'MORTARSOCK' => custom }, ARGV.fetch(0), err: log_writer)
+    log_writer.close
+    selected = Timeout.timeout(10) do
+      loop do
+        line = log_reader.gets or raise 'Mortar exited before IPC setup'
+        break line.split('IPC socket ', 2).last.strip if line.include?('IPC socket ')
+      end
+    end
+    raise 'override ignored' unless selected == custom
+    UNIXSocket.new(custom).close
   ensure
     Process.kill('TERM', client) rescue nil if client
     Process.wait(client) rescue nil if client

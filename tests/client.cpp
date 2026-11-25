@@ -412,13 +412,18 @@ int main(int argc, char **argv) {
                                  XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, rect);
             xcb_flush(c);
             if (!wait([&] { return geometry(other, 70, 80, 240, 180); }, "resize floating window")) return EXIT_FAILURE;
+            auto control = key(0xffe3);
+            auto left = key(0xff51);
+            if (!control || !left) return EXIT_FAILURE;
+            press(alt, true); press(control, true); tap(left); press(control, false); press(alt, false); xcb_flush(c);
+            if (!wait([&] { return geometry(other, 60, 80, 250, 180); }, "keyboard resize floating window")) return EXIT_FAILURE;
             shortcut(false);
             if (!wait([&] { return mapped(other, XCB_MAP_STATE_UNMAPPED) && focus(window); }, "hide and restore focus")) return EXIT_FAILURE;
             press(alt, true); tap(two); press(alt, false); xcb_flush(c);
             if (!wait_property(screen->root, current, 1)) return EXIT_FAILURE;
             shortcut(false);
             if (!wait([&] { return mapped(other, XCB_MAP_STATE_VIEWABLE) && focus(other) &&
-                                  geometry(other, 70, 80, 240, 180); }, "show on another workspace")) return EXIT_FAILURE;
+                                  geometry(other, 60, 80, 250, 180); }, "show on another workspace")) return EXIT_FAILURE;
             xcb_client_message_event_t message{};
             message.response_type = XCB_CLIENT_MESSAGE;
             message.format = 32;
