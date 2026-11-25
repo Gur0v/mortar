@@ -91,6 +91,30 @@ begin
   colors = (0...100).map { |x| X11.XGetPixel(image, x, 0) & 0xffffff }
   abort 'stale occupied workspace background' if colors.include?(0x333333)
   X11.XDestroyImage(image)
+  if multi
+    metadata = X11.XInternAtom(connection, '_MORTAR_OUTPUT_WORKSPACES', 0)
+    values = [1, 2, 0, 0, 400, 600, 0, 1, 0, 0xffffffff,
+              400, 0, 400, 600, 1, 0, 1, 0xffffffff]
+    X11.XChangeProperty(connection, root, metadata, 6, 32, 0, values.pack('L!*'), values.size)
+    X11.XSync(connection, 0)
+    sleep 0.2
+    colors_by_bar = windows.map do |bar_window|
+      image = X11.XGetImage(connection, bar_window, 0, 0, 100, 24, -1, 2)
+      colors = (0...100).map { |x| X11.XGetPixel(image, x, 0) & 0xffffff }
+      X11.XDestroyImage(image)
+      colors
+    end
+    abort 'focused output metadata ignored' unless colors_by_bar[0].include?(0x285577)
+    abort 'visible output metadata ignored' unless colors_by_bar[1].include?(0x333333) && !colors_by_bar[1].include?(0x285577)
+    values[0] = 2
+    X11.XChangeProperty(connection, root, metadata, 6, 32, 0, values.pack('L!*'), values.size)
+    X11.XSync(connection, 0)
+    sleep 0.2
+    image = X11.XGetImage(connection, windows[1], 0, 0, 100, 24, -1, 2)
+    colors = (0...100).map { |x| X11.XGetPixel(image, x, 0) & 0xffffff }
+    X11.XDestroyImage(image)
+    abort 'invalid metadata did not fall back' unless colors.include?(0x285577)
+  end
   long_name = ('W' * 400 + "\0").b
   X11.XChangeProperty(connection, root, names, utf8, 8, 0, long_name, long_name.bytesize)
   X11.XSync(connection, 0)

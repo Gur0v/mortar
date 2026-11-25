@@ -70,13 +70,14 @@ int main(int argc, char **argv) {
     auto* screen = iter.data;
     auto names = atom(c, "_NET_DESKTOP_NAMES");
     auto current = atom(c, "_NET_CURRENT_DESKTOP");
+    auto output_workspaces = atom(c, "_MORTAR_OUTPUT_WORKSPACES");
     auto utf8 = atom(c, "UTF8_STRING");
     auto clients = atom(c, "_NET_CLIENT_LIST");
     auto desktop = atom(c, "_NET_WM_DESKTOP");
     auto type = atom(c, "_NET_WM_WINDOW_TYPE");
     auto dock = atom(c, "_NET_WM_WINDOW_TYPE_DOCK");
     auto strut = atom(c, "_NET_WM_STRUT_PARTIAL");
-    if (!names || !current || !utf8 || !clients || !desktop || !type || !dock || !strut) {
+    if (!output_workspaces || !names || !current || !utf8 || !clients || !desktop || !type || !dock || !strut) {
         std::cerr << "mortarbar: cannot intern X11 atoms\n";
         xcb_disconnect(c);
         return 1;
@@ -97,6 +98,9 @@ int main(int argc, char **argv) {
     struct Bar {
         xcb_window_t window;
         int width;
+        mortar::Rect bounds;
+        std::uint32_t selected = 0;
+        std::vector<std::uint32_t> workspace_ids;
         cairo_surface_t* surface;
         cairo_t* cr;
         PangoLayout* layout;
@@ -153,7 +157,7 @@ int main(int argc, char **argv) {
             auto* font = pango_font_description_from_string("monospace 10");
             pango_layout_set_font_description(layout, font);
             pango_font_description_free(font);
-            bars.push_back({window, bounds.width, surface, cr, layout, {}, {}});
+            bars.push_back({window, bounds.width, bounds, 0, {}, surface, cr, layout, {}, {}});
             xcb_map_window(c, window);
         }
         xcb_flush(c);
@@ -199,7 +203,6 @@ int main(int argc, char **argv) {
     int flags = fcntl(output_fd, F_GETFL);
     if (flags >= 0 && fcntl(output_fd, F_SETFL, flags | O_NONBLOCK) == 0) output_open = true;
     bool input_open = input_fd >= 0;
-    std::uint32_t selected = 0;
     std::vector<xcb_window_t> watched_clients;
     auto watch_clients = [&] {
         auto raw = property(c, screen->root, clients, XCB_ATOM_WINDOW, 32);
@@ -276,9 +279,45 @@ int main(int argc, char **argv) {
                 occupied.push_back(workspace);
             }
         }
+        auto& selected = bar.selected;
         selected = 0;
         workspace_bounds.clear();
-        if (active.size() == sizeof(selected)) std::copy(active.begin(), active.end(), reinterpret_cast<std::uint8_t*>(&selected));
+        bar.workspace_ids.clear();
+        if (active.size() == sizeof(selected)) std::memcpy(&selected, active.data(), sizeof(selected));
+        auto bytes = property(c, screen->root, output_workspaces, XCB_ATOM_CARDINAL, 32);
+        std::vector<std::uint32_t> metadata(bytes.size() / 4);
+        if (!metadata.empty()) std::memcpy(metadata.data(), bytes.data(), bytes.size());
+        std::vector<std::uint32_t> allowed;
+        bool valid = metadata.size() >= 2 && metadata[0] == 1 && metadata[1] > 0 && metadata[1] <= 10;
+        bool matched = false;
+        bool bar_focused = true;
+        unsigned focus_count = 0;
+        std::size_t pos = 2;
+        for (std::uint32_t n = 0; valid && n < metadata[1]; ++n) {
+            if (metadata.size() - pos < 7) { valid = false; break; }
+            auto x = metadata[pos++], y = metadata[pos++], width = metadata[pos++], h = metadata[pos++];
+            auto visible = metadata[pos++], focused = metadata[pos++];
+            if (!width || !h || visible >= 10 || focused > 1) { valid = false; break; }
+            focus_count += focused;
+            bool match = x == static_cast<std::uint32_t>(bar.bounds.x) && y == static_cast<std::uint32_t>(bar.bounds.y) &&
+                width == static_cast<std::uint32_t>(bar.bounds.width) && h == static_cast<std::uint32_t>(bar.bounds.height);
+            if (match && matched) { valid = false; break; }
+            std::vector<std::uint32_t> ids;
+            while (pos < metadata.size() && metadata[pos] != UINT32_MAX) {
+                auto id = metadata[pos++];
+                if (id >= 10 || std::find(ids.begin(), ids.end(), id) != ids.end()) { valid = false; break; }
+                ids.push_back(id);
+            }
+            if (!valid || pos == metadata.size() || std::find(ids.begin(), ids.end(), visible) == ids.end()) { valid = false; break; }
+            ++pos;
+            if (match) { matched = true; allowed = std::move(ids); selected = visible; bar_focused = focused; }
+        }
+        valid = valid && pos == metadata.size() && focus_count == 1 && matched && metadata[1] > 1;
+        if (!valid) {
+            allowed.clear();
+            selected = 0;
+            if (active.size() == sizeof(selected)) std::memcpy(&selected, active.data(), sizeof(selected));
+        }
         std::size_t start = 0;
         unsigned index = 0;
         int workspace_width = 0;
@@ -286,6 +325,11 @@ int main(int argc, char **argv) {
         unsigned label_index = 0;
         for (std::size_t i = 0; i < raw.size(); ++i) {
             if (raw[i] != 0) continue;
+            if (valid && std::find(allowed.begin(), allowed.end(), label_index) == allowed.end()) {
+                label_start = i + 1;
+                ++label_index;
+                continue;
+            }
             std::string label = label_index == selected ? "[" : " ";
             label.append(reinterpret_cast<const char*>(raw.data() + label_start), i - label_start);
             label += label_index == selected ? "] " : "  ";
@@ -316,12 +360,17 @@ int main(int argc, char **argv) {
         cairo_clip(cr);
         for (std::size_t i = 0; i < raw.size() && workspace_right < status_left; ++i) {
             if (raw[i] != 0) continue;
+            if (valid && std::find(allowed.begin(), allowed.end(), index) == allowed.end()) {
+                start = i + 1;
+                ++index;
+                continue;
+            }
             std::string label = index == selected ? "[" : " ";
             label.append(reinterpret_cast<const char*>(raw.data() + start), i - start);
             label += index == selected ? "] " : "  ";
             auto [width, text_height] = measure(label);
             if (index == selected || std::find(occupied.begin(), occupied.end(), index) != occupied.end()) {
-                set_color({}, index == selected ? "#285577" : "#333333");
+                set_color({}, index == selected && (!valid || bar_focused) ? "#285577" : "#333333");
                 cairo_rectangle(cr, workspace_right, 0, width, height);
                 cairo_fill(cr);
             }
@@ -329,6 +378,7 @@ int main(int argc, char **argv) {
             cairo_move_to(cr, workspace_right, (height - text_height) / 2);
             pango_cairo_show_layout(cr, layout);
             workspace_bounds.emplace_back(workspace_right, std::min(workspace_right + width, status_left));
+            bar.workspace_ids.push_back(index);
             workspace_right = std::min(workspace_right + width, status_left);
             start = i + 1;
             ++index;
@@ -339,6 +389,7 @@ int main(int argc, char **argv) {
             cairo_move_to(cr, workspace_right, (height - text_height) / 2);
             pango_cairo_show_layout(cr, layout);
             workspace_bounds.emplace_back(workspace_right, std::min(workspace_right + width, status_left));
+            bar.workspace_ids.push_back(0);
             workspace_right = std::min(workspace_right + width, status_left);
         }
         cairo_restore(cr);
@@ -405,7 +456,7 @@ int main(int argc, char **argv) {
                 if (changed->window == screen->root && changed->atom == clients) {
                     watch_clients();
                     draw_all();
-                } else if ((changed->window == screen->root && (changed->atom == names || changed->atom == current)) ||
+                } else if ((changed->window == screen->root && (changed->atom == names || changed->atom == current || changed->atom == output_workspaces)) ||
                            (changed->atom == desktop && std::find(watched_clients.begin(), watched_clients.end(), changed->window) != watched_clients.end())) draw_all();
             }
             if (event_type == XCB_BUTTON_PRESS) {
@@ -447,15 +498,21 @@ int main(int argc, char **argv) {
                 else if (button->detail == 1) {
                     for (std::size_t i = 0; i < workspace_bounds.size(); ++i)
                         if (button->event_x >= workspace_bounds[i].first && button->event_x < workspace_bounds[i].second) target = i;
-                } else if (button->detail == 4 && selected > 0) target = selected - 1;
-                else if (button->detail == 5 && selected + 1 < workspace_bounds.size()) target = selected + 1;
-                if (target < workspace_bounds.size() && target != selected) {
+                } else if (button->detail == 4 || button->detail == 5) {
+                    auto it = std::find(found->workspace_ids.begin(), found->workspace_ids.end(), found->selected);
+                    if (it != found->workspace_ids.end()) {
+                        auto index = static_cast<std::size_t>(it - found->workspace_ids.begin());
+                        if (button->detail == 4 && index > 0) target = index - 1;
+                        if (button->detail == 5 && index + 1 < workspace_bounds.size()) target = index + 1;
+                    }
+                }
+                if (target < workspace_bounds.size() && found->workspace_ids[target] != found->selected) {
                     xcb_client_message_event_t message {};
                     message.response_type = XCB_CLIENT_MESSAGE;
                     message.format = 32;
                     message.window = screen->root;
                     message.type = current;
-                    message.data.data32[0] = static_cast<std::uint32_t>(target);
+                    message.data.data32[0] = found->workspace_ids[target];
                     message.data.data32[1] = button->time;
                     xcb_send_event(c, 0, screen->root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
                                    reinterpret_cast<const char*>(&message));

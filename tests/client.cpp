@@ -417,13 +417,21 @@ int main(int argc, char **argv) {
             if (!control || !left) return EXIT_FAILURE;
             press(alt, true); press(control, true); tap(left); press(control, false); press(alt, false); xcb_flush(c);
             if (!wait([&] { return geometry(other, 60, 80, 250, 180); }, "keyboard resize floating window")) return EXIT_FAILURE;
+            uint32_t hints[18]{};
+            hints[0] = 16 | 64 | 256;
+            hints[5] = 100; hints[6] = 100; hints[9] = 20; hints[10] = 10;
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, other, XCB_ATOM_WM_NORMAL_HINTS,
+                                XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
+            xcb_flush(c);
+            press(alt, true); press(control, true); tap(left); press(control, false); press(alt, false); xcb_flush(c);
+            if (!wait([&] { return geometry(other, 50, 80, 260, 180); }, "hinted floating resize")) return EXIT_FAILURE;
             shortcut(false);
             if (!wait([&] { return mapped(other, XCB_MAP_STATE_UNMAPPED) && focus(window); }, "hide and restore focus")) return EXIT_FAILURE;
             press(alt, true); tap(two); press(alt, false); xcb_flush(c);
             if (!wait_property(screen->root, current, 1)) return EXIT_FAILURE;
             shortcut(false);
             if (!wait([&] { return mapped(other, XCB_MAP_STATE_VIEWABLE) && focus(other) &&
-                                  geometry(other, 60, 80, 250, 180); }, "show on another workspace")) return EXIT_FAILURE;
+                                  geometry(other, 50, 80, 260, 180); }, "show on another workspace")) return EXIT_FAILURE;
             xcb_client_message_event_t message{};
             message.response_type = XCB_CLIENT_MESSAGE;
             message.format = 32;

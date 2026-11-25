@@ -3,6 +3,7 @@
 #include "ipc.hpp"
 #include "randr.hpp"
 #include "scratchpad.hpp"
+#include "size-hints.hpp"
 #include "workspaces.hpp"
 #include "keyboard.hpp"
 
@@ -261,6 +262,7 @@ int main() {
     const auto net_names = atom("_NET_DESKTOP_NAMES", 18);
     const auto net_number = atom("_NET_NUMBER_OF_DESKTOPS", 23);
     const auto net_current = atom("_NET_CURRENT_DESKTOP", 20);
+    const auto output_workspaces = atom("_MORTAR_OUTPUT_WORKSPACES", 25);
     const auto net_desktop = atom("_NET_WM_DESKTOP", 15);
     const auto net_check = atom("_NET_SUPPORTING_WM_CHECK", 24);
     const auto net_name = atom("_NET_WM_NAME", 12);
@@ -272,7 +274,7 @@ int main() {
     const auto strut_partial = atom("_NET_WM_STRUT_PARTIAL", 21);
     const auto net_state = atom("_NET_WM_STATE", 13);
     const auto fullscreen_atom = atom("_NET_WM_STATE_FULLSCREEN", 24);
-    if (!net_clients || !net_stacking || !net_active || !net_names || !net_supported || !net_number || !net_current || !net_desktop || !net_check || !net_name || !utf8 || !window_type || !dialog_type || !dock_type || !strut || !strut_partial || !net_state || !fullscreen_atom) return EXIT_FAILURE;
+    if (!output_workspaces || !net_clients || !net_stacking || !net_active || !net_names || !net_supported || !net_number || !net_current || !net_desktop || !net_check || !net_name || !utf8 || !window_type || !dialog_type || !dock_type || !strut || !strut_partial || !net_state || !fullscreen_atom) return EXIT_FAILURE;
     using Property = std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)>;
     auto cardinal = [&](xcb_window_t window, xcb_atom_t property, uint32_t fallback) {
         Property reply{xcb_get_property_reply(c, xcb_get_property(c, false, window, property,
@@ -773,11 +775,24 @@ int main() {
             bool horizontal = direction == mortar::Direction::left || direction == mortar::Direction::right;
             bool previous = direction == mortar::Direction::left || direction == mortar::Direction::up;
             int size = (horizontal ? geometry->width : geometry->height) + pixels;
-            int position = (horizontal ? geometry->x : geometry->y) - (previous ? pixels : 0);
-            if (size < 1 || size > UINT16_MAX || position < INT16_MIN || position > INT16_MAX) return;
-            uint32_t values[] = {static_cast<uint32_t>(position), static_cast<uint32_t>(size)};
-            xcb_configure_window(c, ws.focused, horizontal ? XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_WIDTH
-                                                            : XCB_CONFIG_WINDOW_Y | XCB_CONFIG_WINDOW_HEIGHT, values);
+            if (size < 1 || size > UINT16_MAX) return;
+            std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)> hints{
+                xcb_get_property_reply(c, xcb_get_property(c, false, ws.focused, XCB_ATOM_WM_NORMAL_HINTS,
+                    XCB_ATOM_WM_SIZE_HINTS, 0, 18), nullptr), &std::free};
+            uint32_t width = horizontal ? static_cast<uint32_t>(size) : geometry->width;
+            uint32_t height = horizontal ? geometry->height : static_cast<uint32_t>(size);
+            if (hints && hints->type == XCB_ATOM_WM_SIZE_HINTS && hints->format == 32) {
+                std::tie(width, height) = floating_hinted_size(width, height,
+                    static_cast<const uint32_t *>(xcb_get_property_value(hints.get())),
+                    xcb_get_property_value_length(hints.get()) / 4);
+            }
+            int x = geometry->x, y = geometry->y;
+            if (previous && horizontal) x += geometry->width - static_cast<int>(width);
+            if (previous && !horizontal) y += geometry->height - static_cast<int>(height);
+            if (x < INT16_MIN || x > INT16_MAX || y < INT16_MIN || y > INT16_MAX) return;
+            uint32_t values[] = {static_cast<uint32_t>(x), static_cast<uint32_t>(y), width, height};
+            xcb_configure_window(c, ws.focused, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+                                 XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, values);
         }
     };
     actions.close = [&] {
@@ -925,7 +940,23 @@ int main() {
     std::vector<xcb_window_t> published_clients, published_stack;
     xcb_window_t published_active = XCB_NONE;
     bool published = false;
+    std::vector<uint32_t> published_outputs;
     auto publish = [&] {
+        std::vector<uint32_t> metadata{1, static_cast<uint32_t>(outputs.outputs().size())};
+        for (const auto &output : outputs.outputs()) {
+            metadata.insert(metadata.end(), {static_cast<uint32_t>(output.bounds.x), static_cast<uint32_t>(output.bounds.y),
+                static_cast<uint32_t>(output.bounds.width), static_cast<uint32_t>(output.bounds.height), output.workspace,
+                output.workspace == current ? 1u : 0u});
+            for (size_t i = 0; i < workspaces.size(); ++i)
+                if (outputs.owners()[i] && *outputs.owners()[i] == output.name &&
+                    (!workspaces[i].windows.empty() || i == output.workspace))
+                    metadata.push_back(static_cast<uint32_t>(i));
+            metadata.push_back(UINT32_MAX);
+        }
+        if (metadata != published_outputs) {
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, output_workspaces, XCB_ATOM_CARDINAL, 32, metadata.size(), metadata.data());
+            published_outputs = std::move(metadata);
+        }
         std::unique_ptr<xcb_query_tree_reply_t, decltype(&std::free)> reply{
             xcb_query_tree_reply(c, xcb_query_tree(c, root), nullptr), &std::free};
         if (!reply) return;
@@ -992,6 +1023,7 @@ int main() {
         xcb_delete_property(c, root, net_stacking);
         xcb_delete_property(c, root, net_active);
         xcb_delete_property(c, root, net_names);
+        xcb_delete_property(c, root, output_workspaces);
         xcb_delete_property(c, root, net_supported);
         xcb_delete_property(c, root, net_number);
         xcb_delete_property(c, root, focus_time);
@@ -1527,6 +1559,7 @@ int main() {
         xcb_delete_property(c, root, net_stacking);
         xcb_delete_property(c, root, net_active);
         xcb_delete_property(c, root, net_names);
+        xcb_delete_property(c, root, output_workspaces);
         xcb_delete_property(c, root, net_supported);
             xcb_delete_property(c, root, net_number);
             xcb_delete_property(c, root, focus_time);
