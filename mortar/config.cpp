@@ -331,6 +331,27 @@ struct ConfigRuntime {
         return SCM_UNSPECIFIED;
     }
 
+    static SCM bar_height(SCM value) {
+        if (!active || !active->path) scm_misc_error("bar-height", "only allowed while loading", SCM_EOL);
+        if (!scm_is_unsigned_integer(value, 1, 65535)) scm_out_of_range("bar-height", value);
+        active->bar.height = scm_to_uint16(value);
+        return SCM_UNSPECIFIED;
+    }
+
+    static SCM bar_status_padding(SCM value) {
+        if (!active || !active->path) scm_misc_error("bar-status-padding", "only allowed while loading", SCM_EOL);
+        if (!scm_is_unsigned_integer(value, 0, 32767)) scm_out_of_range("bar-status-padding", value);
+        active->bar.status_padding = scm_to_uint16(value);
+        return SCM_UNSPECIFIED;
+    }
+
+    static SCM bar_status_edge_padding(SCM value) {
+        if (!active || !active->path) scm_misc_error("bar-status-edge-padding", "only allowed while loading", SCM_EOL);
+        if (!scm_is_unsigned_integer(value, 0, 65535)) scm_out_of_range("bar-status-edge-padding", value);
+        active->bar.status_edge_padding = scm_to_uint16(value);
+        return SCM_UNSPECIFIED;
+    }
+
     static SCM bar_mode(SCM value) {
         if (!active || !active->path) scm_misc_error("bar-mode", "only allowed while loading", SCM_EOL);
         if (scm_is_eq(value, scm_from_utf8_symbol("dock"))) active->bar.hidden = false;
@@ -430,6 +451,9 @@ struct ConfigRuntime {
         scm_c_define_gsubr("scratchpad-show", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_show));
         scm_c_define_gsubr("fullscreen-toggle", 0, 0, 0, reinterpret_cast<scm_t_subr>(fullscreen_toggle));
         scm_c_define_gsubr("bar-status", 0, 0, 1, reinterpret_cast<scm_t_subr>(bar_status_action));
+        scm_c_define_gsubr("bar-height", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_height));
+        scm_c_define_gsubr("bar-status-padding", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_status_padding));
+        scm_c_define_gsubr("bar-status-edge-padding", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_status_edge_padding));
         scm_c_define_gsubr("bar-mode", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_mode));
         scm_c_define_gsubr("bar-workspace-buttons", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_workspace_buttons));
         scm_c_define_gsubr("bar-wrap-scroll", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_wrap_scroll));

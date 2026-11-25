@@ -77,23 +77,26 @@ int main() {
           config.bar().background == 0x222222 && config.bar().foreground == 0xffffff &&
           config.bar().focused == 0x285577 && config.bar().unfocused == 0x333333);
     check(config.bar().workspace_buttons && !config.bar().wrap_scroll);
-    write("(bar-workspace-buttons #f) (bar-wrap-scroll #t) (bar-mode 'hide) (bar-position 'bottom) (bar-font \"sans 12\") (bar-colors 1 2 3 4) (bar-output \"left\") (bar-output \"right\")");
+    check(config.bar().height == 24 && config.bar().status_padding == 0 && config.bar().status_edge_padding == 8);
+    write("(bar-height 40) (bar-status-padding 4) (bar-status-edge-padding 12) (bar-workspace-buttons #f) (bar-wrap-scroll #t) (bar-mode 'hide) (bar-position 'bottom) (bar-font \"sans 12\") (bar-colors 1 2 3 4) (bar-output \"left\") (bar-output \"right\")");
     check(config.stage(path) && config.staged_bar().hidden && !config.bar().hidden && config.staged_bar().bottom && config.staged_bar().font == "sans 12" &&
           config.staged_bar().background == 1 && config.staged_bar().foreground == 2 &&
           config.staged_bar().focused == 3 && config.staged_bar().unfocused == 4 && !config.bar().bottom);
     check(config.staged_bar().outputs == std::vector<std::string>({"left", "right"}) && config.bar().outputs.empty());
+    check(config.staged_bar().height == 40 && config.staged_bar().status_padding == 4 && config.staged_bar().status_edge_padding == 12 && config.bar().height == 24);
     check(!config.staged_bar().workspace_buttons && config.staged_bar().wrap_scroll && config.bar().workspace_buttons);
     config.discard();
     check(!config.bar().bottom && !config.staged_bar().bottom && config.bar().outputs.empty());
     check(config.load(path) && config.bar().bottom && config.bar().font == "sans 12");
     check(config.bar().outputs == std::vector<std::string>({"left", "right"}));
     check(!config.bar().workspace_buttons && config.bar().wrap_scroll);
-    for (const char *invalid : {"(bar-workspace-buttons 1)", "(bar-wrap-scroll 'yes)", "(bar-mode 'show)", "(bar-output \"\")", "(bar-output 1)", "(bar-output (string #\\nul))", "(bar-position 'left)", "(bar-font \"\")", "(bar-font 1)",
+    for (const char *invalid : {"(bar-height 0)", "(bar-height 65536)", "(bar-status-padding -1)", "(bar-status-padding 32768)", "(bar-status-edge-padding 65536)", "(bar-workspace-buttons 1)", "(bar-wrap-scroll 'yes)", "(bar-mode 'show)", "(bar-output \"\")", "(bar-output 1)", "(bar-output (string #\\nul))", "(bar-position 'left)", "(bar-font \"\")", "(bar-font 1)",
                                 "(bar-font (string #\\nul))", "(bar-colors 0 0 0 #x1000000)",
                                 "(bar-colors 0 -1 0 0)", "(bar-position 'top) (error \"bad\")"}) {
         write(invalid);
         check(!config.load(path) && config.bar().bottom && config.bar().font == "sans 12");
     }
+    check(!config.evaluate("(bar-height 30)").success);
     check(!config.evaluate("(bar-position 'top)").success);
     check(!config.evaluate("(bar-wrap-scroll #f)").success);
     write("#t");

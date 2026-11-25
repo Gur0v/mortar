@@ -1,3 +1,4 @@
+#include <tuple>
 #include "status.hpp"
 #include "../mortar/randr.hpp"
 
@@ -67,6 +68,9 @@ std::vector<std::uint8_t> property(xcb_connection_t* c, xcb_window_t window, xcb
 }
 
 int main(int argc, char **argv) {
+    std::uint16_t height = 24;
+    int status_padding = 0;
+    int status_edge_padding = 8;
     bool bottom = false;
     bool hidden = false;
     bool workspace_buttons = true;
@@ -92,6 +96,19 @@ int main(int argc, char **argv) {
             }
         }
         int index = 8;
+        for (auto [name, target, minimum, maximum] : {std::tuple{"--height", static_cast<int*>(nullptr), 1, 65535},
+                std::tuple{"--status-padding", &status_padding, 0, 32767}, std::tuple{"--status-edge-padding", &status_edge_padding, 0, 65535}}) {
+            if (index < argc && std::string_view(argv[index]) == name) {
+                if (++index >= argc) { std::cerr << "mortarbar: invalid settings\n"; return 1; }
+                std::string_view value(argv[index++]);
+                int number = 0;
+                auto result = std::from_chars(value.data(), value.data() + value.size(), number);
+                if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || number < minimum || number > maximum) {
+                    std::cerr << "mortarbar: invalid settings\n"; return 1;
+                }
+                if (target) *target = number; else height = static_cast<std::uint16_t>(number);
+            }
+        }
         if (index < argc && std::string_view(argv[index]) == "--hidden") { hidden = true; ++index; }
         if (index < argc && std::string_view(argv[index]) == "--no-workspace-buttons") { workspace_buttons = false; ++index; }
         if (index < argc && std::string_view(argv[index]) == "--wrap-scroll") { wrap_scroll = true; ++index; }
@@ -168,7 +185,6 @@ int main(int argc, char **argv) {
         revealed = (state->mods & XCB_MOD_MASK_4) != 0;
         free(state);
     }
-    constexpr std::uint16_t height = 24;
     std::uint32_t root_mask = XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_STRUCTURE_NOTIFY;
     xcb_change_window_attributes(c, screen->root, XCB_CW_EVENT_MASK, &root_mask);
     const auto* randr = xcb_get_extension_data(c, &xcb_randr_id);
@@ -456,8 +472,8 @@ int main(int argc, char **argv) {
             }
             return total;
         };
-        bool use_short = total_width(false) > std::max(0, static_cast<int>(bar.width) - 16 - workspace_width);
-        int status_left = std::max(8, static_cast<int>(bar.width) - 8 - total_width(use_short));
+        bool use_short = total_width(false) > std::max(0, static_cast<int>(bar.width) - 8 - status_edge_padding - workspace_width);
+        int status_left = std::max(8, static_cast<int>(bar.width) - status_edge_padding - total_width(use_short));
         int workspace_right = 8;
         cairo_save(cr);
         cairo_rectangle(cr, 0, 0, status_left, height);
@@ -499,7 +515,7 @@ int main(int argc, char **argv) {
         }
         cairo_restore(cr);
         status_bounds.assign(blocks.size(), {0, 0});
-        int right = bar.width - 8;
+        int right = static_cast<int>(bar.width) - status_edge_padding;
         for (std::size_t i = blocks.size(); i > 0; --i) {
             const auto& block = blocks[i - 1];
             const auto& text = use_short && block.short_text && !block.short_text->empty() ? *block.short_text : block.full_text;
@@ -512,24 +528,26 @@ int main(int argc, char **argv) {
             status_bounds[i - 1] = {left, right};
             if (gap && block.separator) {
                 set_color({}, "#666666");
-                cairo_rectangle(cr, right + gap / 2, 3, 1, height - 6);
+                cairo_rectangle(cr, right + gap / 2, std::min<int>(3, height / 2), 1, std::max<int>(0, height - 6));
                 cairo_fill(cr);
             }
+            int padding = std::min(status_padding, static_cast<int>(height) / 2);
+            int content_height = height - 2 * padding;
             if (block.background || block.urgent) {
                 set_color(block.urgent ? std::optional<std::string>{"#900000"} : block.background, color_names[0].c_str());
-                cairo_rectangle(cr, left, 0, width, height);
+                cairo_rectangle(cr, left, padding, width, content_height);
                 cairo_fill(cr);
             }
             if (block.border || block.urgent) {
                 set_color(block.urgent ? std::optional<std::string>{"#2f343a"} : block.border, "#ffffff");
-                int top = std::clamp(block.border_top.value_or(1), 0, static_cast<int>(height));
-                int bottom = std::clamp(block.border_bottom.value_or(1), 0, static_cast<int>(height));
+                int top = std::clamp(block.border_top.value_or(1), 0, content_height);
+                int bottom = std::clamp(block.border_bottom.value_or(1), 0, content_height);
                 int l = std::clamp(block.border_left.value_or(1), 0, width);
                 int r = std::clamp(block.border_right.value_or(1), 0, width);
-                cairo_rectangle(cr, left, 0, width, top);
-                cairo_rectangle(cr, left, height - bottom, width, bottom);
-                cairo_rectangle(cr, left, 0, l, height);
-                cairo_rectangle(cr, right - r, 0, r, height);
+                cairo_rectangle(cr, left, padding, width, top);
+                cairo_rectangle(cr, left, height - padding - bottom, width, bottom);
+                cairo_rectangle(cr, left, padding, l, content_height);
+                cairo_rectangle(cr, right - r, padding, r, content_height);
                 cairo_fill(cr);
             }
             set_color(block.urgent ? std::optional<std::string>{"#ffffff"} : block.color, color_names[1].c_str());

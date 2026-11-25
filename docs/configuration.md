@@ -57,6 +57,8 @@ Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(focus 'left)`
 
 `(bar-workspace-buttons #f)` hides workspace buttons and disables workspace scrolling. The default is `#t`. `(bar-wrap-scroll #t)` wraps scrolling between the first and last displayed workspaces; the default is `#f`. Both accept only booleans. Status block scrolling remains unaffected.
 
+`(bar-height 40)` sets bar height in pixels, from 1 to 65535; the default is 24. `(bar-status-padding 4)` sets vertical padding around status block backgrounds and borders, from 0 to 32767; the default is 0. Padding is clamped to half the bar height. `(bar-status-edge-padding 12)` sets the space between status blocks and the right edge, from 0 to 65535; the default is 8. Text remains vertically centered.
+
 These settings are accepted only while loading. A successful reload restarts mortarbar if any changed, with the same failure behavior as a status-command change.
 
 ## Bar status

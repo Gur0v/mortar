@@ -156,6 +156,34 @@ begin
   Process.kill('TERM', pid)
   Process.wait(pid)
 
+  unless multi
+    pid = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, bar, '--mortar-settings', 'bottom', 'monospace 10',
+                        '2236962', '16777215', '2643319', '3355443', '--height', '40', '--status-padding', '4',
+                        '--status-edge-padding', '20', '--', RbConfig.ruby, '-e', code, 'a b', err: File::NULL)
+    sleep 0.3
+    connection = X11.XOpenDisplay(":#{Integer(display)}")
+    root = X11.XDefaultRootWindow(connection)
+    X11.XQueryTree(connection, root, root_return, parent, children, count)
+    abort 'configured bar missing' unless count[0, Fiddle::SIZEOF_INT].unpack1('I') == 1
+    list = Fiddle::Pointer.new(children[0, Fiddle::SIZEOF_VOIDP].unpack1('J'))
+    configured = list[0, Fiddle::SIZEOF_LONG].unpack1('L!')
+    X11.XFree(list)
+    geometry = Array.new(6) { Fiddle::Pointer.malloc(Fiddle::SIZEOF_INT) }
+    X11.XGetGeometry(connection, configured, root_return, *geometry)
+    abort 'configured bar geometry incorrect' unless geometry.first(4).map { |v| v[0, Fiddle::SIZEOF_INT].unpack1('i') } == [0, 560, 800, 40]
+    X11.XGetWindowProperty(connection, configured, strut, 0, 12, 0, 6, actual_type, actual_format, items, remaining, data)
+    values = Fiddle::Pointer.new(data[0, Fiddle::SIZEOF_VOIDP].unpack1('J'))
+    abort 'configured strut incorrect' unless values[0, 12 * Fiddle::SIZEOF_LONG].unpack('L!*')[3] == 40
+    X11.XFree(values)
+    image = X11.XGetImage(connection, configured, 0, 0, 800, 40, -1, 2)
+    abort 'configured padding incorrect' unless (X11.XGetPixel(image, 779, 0) & 0xffffff) == 0x222222 &&
+      (X11.XGetPixel(image, 779, 4) & 0xffffff) == 0x0000ff && (X11.XGetPixel(image, 780, 4) & 0xffffff) == 0x222222
+    X11.XDestroyImage(image)
+    X11.XCloseDisplay(connection)
+    Process.kill('TERM', pid)
+    Process.wait(pid)
+  end
+
   if multi
     [['right', 1], ['missing', 0], ['*', 3]].each do |name, expected|
       pid = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, bar, '--mortar-settings', 'top', 'monospace 10',
