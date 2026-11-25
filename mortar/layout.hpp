@@ -30,6 +30,7 @@ public:
     bool insert_after(std::uint32_t focused, Layout child);
     bool set_split(std::uint32_t focused, Split direction);
     std::uint32_t neighbor(std::uint32_t focused, Direction direction) const;
+    bool focus(std::uint32_t window);
     bool remove(std::uint32_t window);
     bool contains(std::uint32_t window) const;
     std::vector<Placement> geometry(Rect bounds) const;
@@ -43,6 +44,7 @@ private:
     std::uint32_t window_;
     Split direction_;
     std::vector<Layout> children_;
+    std::vector<std::size_t> focus_order_;
 };
 
 }

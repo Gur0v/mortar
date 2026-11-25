@@ -62,8 +62,21 @@ int main() {
     auto edge = Layout::split(Split::horizontal, {
         Layout::split(Split::horizontal, {Layout::leaf(21), Layout::leaf(22)}),
         Layout::leaf(23)});
+    check(edge.neighbor(23, Direction::left) == 21);
+    check(edge.focus(22));
     check(edge.neighbor(23, Direction::left) == 22);
-    check(edge.neighbor(23, Direction::right) == 21);
+    check(edge.neighbor(23, Direction::right) == 22);
+    check(!edge.focus(99));
+    check(edge.remove(22));
+    check(edge.neighbor(23, Direction::left) == 21);
+    check(edge.insert_after(21, Layout::leaf(24)));
+    check(edge.focus(24));
+    check(edge.set_split(24, Split::vertical));
+    check(edge.insert_after(24, Layout::leaf(25)));
+    check(edge.focus(25));
+    check(edge.neighbor(23, Direction::left) == 25);
+    check(edge.remove(25));
+    check(edge.neighbor(23, Direction::left) == 24);
     check(live.neighbor(12, Direction::down) == 11);
     check(live.neighbor(10, Direction::up) == 11);
     check(live.neighbor(10, Direction::left) == 12);

@@ -277,7 +277,10 @@ int main() {
                 xcb_send_event(c, false, window, XCB_EVENT_MASK_NO_EVENT, reinterpret_cast<const char *>(&message));
             }
         }
-        if (accepts_focus) workspaces[current].focused = window;
+        if (accepts_focus) {
+            workspaces[current].focused = window;
+            workspaces[current].layout.focus(window);
+        }
         xcb_flush(c);
     };
     auto tile = [&] {

@@ -45,6 +45,7 @@ bool Layout::insert(Layout child) {
     for (auto window : incoming) {
         if (std::find(existing.begin(), existing.end(), window) != existing.end()) return false;
     }
+    focus_order_.push_back(children_.size());
     children_.push_back(std::move(child));
     return true;
 }
@@ -58,6 +59,9 @@ bool Layout::insert_after(std::uint32_t focused, Layout child) {
     auto insert_at_focus = [&](auto &&self, Layout &node) -> bool {
         for (auto it = node.children_.begin(); it != node.children_.end(); ++it) {
             if (it->leaf_ && it->window_ == focused) {
+                auto index = static_cast<std::size_t>(it - node.children_.begin()) + 1;
+                for (auto &entry : node.focus_order_) if (entry >= index) ++entry;
+                node.focus_order_.push_back(index);
                 node.children_.insert(it + 1, std::move(child));
                 return true;
             }
@@ -67,6 +71,7 @@ bool Layout::insert_after(std::uint32_t focused, Layout child) {
     };
     if (!focused) {
         if (!incoming.empty() && !children_.empty()) return false;
+        focus_order_.push_back(children_.size());
         children_.push_back(std::move(child));
         return true;
     }
@@ -86,6 +91,17 @@ bool Layout::set_split(std::uint32_t focused, Split direction) {
             return true;
         }
         if (!child.leaf_ && child.set_split(focused, direction)) return true;
+    }
+    return false;
+}
+
+bool Layout::focus(std::uint32_t window) {
+    if (leaf_) return window_ == window;
+    for (std::size_t i = 0; i < children_.size(); ++i) {
+        if (!children_[i].focus(window)) continue;
+        auto it = std::find(focus_order_.begin(), focus_order_.end(), i);
+        std::rotate(focus_order_.begin(), it, it + 1);
+        return true;
     }
     return false;
 }
@@ -116,22 +132,22 @@ std::uint32_t Layout::neighbor(std::uint32_t focused, Direction direction) const
     const Layout *target = next ? next : wrap;
     while (target && !target->leaf_) {
         if (target->children_.empty()) return 0;
-        target = previous && target->direction_ == axis ? &target->children_.back()
-                                                        : &target->children_.front();
+        target = &target->children_[target->focus_order_.front()];
     }
     return target ? target->window_ : 0;
 }
 
 bool Layout::remove(std::uint32_t window) {
-    for (auto it = children_.begin(); it != children_.end(); ++it) {
-        if (it->leaf_ && it->window_ == window) {
-            children_.erase(it);
-            return true;
+    for (std::size_t i = 0; i < children_.size(); ++i) {
+        auto &child = children_[i];
+        bool found = child.leaf_ ? child.window_ == window : child.remove(window);
+        if (!found) continue;
+        if (child.leaf_ || child.children_.empty()) {
+            children_.erase(children_.begin() + i);
+            std::erase(focus_order_, i);
+            for (auto &entry : focus_order_) if (entry > i) --entry;
         }
-        if (it->remove(window)) {
-            if (!it->leaf_ && it->children_.empty()) children_.erase(it);
-            return true;
-        }
+        return true;
     }
     return false;
 }
