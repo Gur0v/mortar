@@ -30,6 +30,7 @@ int main()
             auto device = xkb_x11_get_core_keyboard_device_id(connection);
             auto* map = xkb_x11_keymap_new_from_device(context, connection, device, XKB_KEYMAP_COMPILE_NO_FLAGS);
             require(map != nullptr, "XKB keymap unavailable");
+            auto letter = static_cast<xcb_keycode_t>(xkb_keymap_key_by_name(map, "AC01"));
             xcb_keycode_t digits[10]{};
             for (auto key = xkb_keymap_min_keycode(map); key <= xkb_keymap_max_keycode(map) && key <= 255; ++key) {
                 const xkb_keysym_t* symbols = nullptr;
@@ -66,6 +67,61 @@ int main()
                 press.state = 0;
                 require(!process(), "binding without Alt");
             }
+            keyboard.replace_bindings({{XKB_KEY_1, alt, 41}});
+            press.detail = digits[1];
+            press.state = alt;
+            require(!process() && keyboard.callback() == 41, "custom workspace override failed");
+            keyboard.replace_bindings({{XKB_KEY_a, 0, 40, true}, {XKB_KEY_a, XCB_MOD_MASK_CONTROL, 42}});
+            press.detail = letter;
+            press.state = alt;
+            require(!process() && keyboard.callback() == 40, "dynamic Alt binding failed");
+            keyboard.reload();
+            require(!process() && keyboard.callback() == 40, "dynamic Alt binding lost on reload");
+            auto* mapping = xcb_get_modifier_mapping_reply(connection, xcb_get_modifier_mapping(connection), nullptr);
+            require(mapping != nullptr && mapping->keycodes_per_modifier != 0, "modifier mapping unavailable");
+            auto count = mapping->keycodes_per_modifier;
+            auto* keycodes = xcb_get_modifier_mapping_keycodes(mapping);
+            std::vector<xcb_keycode_t> remapped(keycodes, keycodes + 8 * count);
+            require(alt == XCB_MOD_MASK_1, "unexpected initial Alt modifier");
+            for (unsigned i = 0; i < count; ++i) std::swap(remapped[3 * count + i], remapped[4 * count + i]);
+            auto* reply = xcb_set_modifier_mapping_reply(connection,
+                xcb_set_modifier_mapping(connection, count, remapped.data()), nullptr);
+            require(reply && reply->status == XCB_MAPPING_STATUS_SUCCESS, "modifier remapping failed");
+            std::free(reply);
+            keyboard.reload();
+            require(keyboard.alt_modifier() == XCB_MOD_MASK_2, "Alt modifier did not change");
+            press.state = XCB_MOD_MASK_2;
+            require(!process() && keyboard.callback() == 40, "dynamic Alt binding did not follow mapping");
+            press.state = alt;
+            require(!process() && !keyboard.callback(), "dynamic Alt binding retained old mapping");
+            reply = xcb_set_modifier_mapping_reply(connection,
+                xcb_set_modifier_mapping(connection, count, keycodes), nullptr);
+            require(reply && reply->status == XCB_MAPPING_STATUS_SUCCESS, "modifier mapping restore failed");
+            std::free(reply);
+            std::free(mapping);
+            keyboard.reload();
+            press.detail = letter;
+            press.state = XCB_MOD_MASK_CONTROL;
+            require(!process() && keyboard.callback() == 42, "custom binding failed");
+            keyboard.reload();
+            require(!process() && keyboard.callback() == 42, "custom binding lost on reload");
+            auto* other = xcb_connect(nullptr, nullptr);
+            require(other && !xcb_connection_has_error(other), "second X connection failed");
+            auto* error = xcb_request_check(other, xcb_grab_key_checked(other, 1, screen->root,
+                XCB_MOD_MASK_CONTROL | XCB_MOD_MASK_SHIFT, letter, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC));
+            require(!error, "conflict setup failed");
+            bool failed = false;
+            try {
+                keyboard.replace_bindings({{XKB_KEY_a, XCB_MOD_MASK_CONTROL | XCB_MOD_MASK_SHIFT, 43}});
+            } catch (const std::exception&) {
+                failed = true;
+            }
+            require(failed, "conflicting grab succeeded");
+            require(!process() && keyboard.callback() == 42, "failed replacement lost binding");
+            xcb_disconnect(other);
+            keyboard.replace_bindings({});
+            require(!process() && !keyboard.callback(), "binding removal failed");
+            press.detail = digits[9];
             press.response_type = XCB_KEY_RELEASE;
             press.state = alt;
             require(!process(), "key release triggered binding");

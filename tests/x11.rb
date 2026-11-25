@@ -51,7 +51,10 @@ Dir.mktmpdir('mortar-test-') do |dir|
     display = Timeout.timeout(10) { reader.gets }
     reader.close
     abort 'Xvfb failed to start' unless display
-    env = { 'DISPLAY' => ":#{Integer(display)}", 'XDG_CONFIG_HOME' => dir, 'HOME' => dir }
+    launch_log = File.join(dir, 'launch.log')
+    %w[x-terminal-emulator dmenu_run mortar-test-spawn].each { |name| File.symlink(File.expand_path(ARGV.fetch(1)), File.join(dir, name)) }
+    env = { 'DISPLAY' => ":#{Integer(display)}", 'XDG_CONFIG_HOME' => dir, 'HOME' => dir,
+            'PATH' => "#{dir}:#{ENV.fetch('PATH')}", 'MORTAR_TEST_LAUNCH' => launch_log }
     client_input, client_writer = IO.pipe
     client_reader, client_output = IO.pipe
     client = Process.spawn(env, ARGV.fetch(1), 'grab-conflict', in: client_input, out: client_output)
@@ -115,6 +118,15 @@ Dir.mktmpdir('mortar-test-') do |dir|
       system(env, ARGV.fetch(1), mode, out: File::NULL)
     end
     abort "Keyboard checks failed: #{failures.join(', ')}" unless failures.empty?
+    abort 'Milestone keyboard checks failed' unless system(env, ARGV.fetch(1), 'milestone', out: File::NULL)
+    Timeout.timeout(10) do
+      loop do
+        break if File.exist?(launch_log) && File.readlines(launch_log).size >= 2
+        sleep 0.02
+      end
+    end
+    abort 'Default launch did not execute exact commands' unless
+      File.readlines(launch_log).sort == ["dmenu_run 1\n", "x-terminal-emulator 1\n"]
     Process.kill('TERM', wm)
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
     wm = nil
@@ -143,9 +155,30 @@ Dir.mktmpdir('mortar-test-') do |dir|
     wm = nil
     abort "Window manager shutdown failed:\n#{File.read(error_path)}" unless status.success?
     File.write(config, "(bind-workspace 1 (lambda () (error \"callback failure\")))\n" \
-                       "(bind-workspace 2 (lambda () (workspace 3)))\n")
+                       "(bind-workspace 2 (lambda () (workspace 3)))\n" \
+                       "(bind-key 65475 8 (lambda () (workspace 3)))\n")
     wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: error_path)
     abort 'Configuration callback checks failed' unless system(env, ARGV.fetch(1), 'config', out: File::NULL)
+    abort 'Arbitrary key binding failed' unless system(env, ARGV.fetch(1), 'arbitrary', out: File::NULL)
+    Process.kill('TERM', wm)
+    _, status = Timeout.timeout(10) { Process.wait2(wm) }
+    wm = nil
+    abort 'Window manager shutdown failed' unless status.success?
+    File.write(config, <<~SCHEME)
+      (bind-key 98 8 (lambda () (split 'vertical)))
+      (bind-key 99 8 (lambda () (focus 'up)))
+      (bind-key 101 8 (lambda () (focus 'down)))
+      (bind-key 102 8 (lambda () (split 'horizontal)))
+      (bind-key 103 8 (lambda () (focus 'left)))
+      (bind-key 105 8 (lambda () (focus 'right)))
+      (bind-key 110 8 (lambda () (close)))
+      (bind-key 111 8 (lambda () (spawn "mortar-test-spawn" "a b" "; touch forbidden")))
+    SCHEME
+    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: error_path)
+    abort "Scheme action checks failed: #{File.read(error_path)}" unless system(env, ARGV.fetch(1), 'scheme-actions', out: File::NULL)
+    Timeout.timeout(10) do
+      sleep 0.02 until File.readlines(launch_log).include?("[a b][; touch forbidden]\n")
+    end
     Process.kill('TERM', wm)
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
     wm = nil

@@ -49,6 +49,79 @@ bool Layout::insert(Layout child) {
     return true;
 }
 
+bool Layout::insert_after(std::uint32_t focused, Layout child) {
+    if (leaf_) return false;
+    std::vector<std::uint32_t> incoming;
+    child.identities(incoming);
+    for (auto window : incoming)
+        if (contains(window)) return false;
+    auto insert_at_focus = [&](auto &&self, Layout &node) -> bool {
+        for (auto it = node.children_.begin(); it != node.children_.end(); ++it) {
+            if (it->leaf_ && it->window_ == focused) {
+                node.children_.insert(it + 1, std::move(child));
+                return true;
+            }
+            if (!it->leaf_ && self(self, *it)) return true;
+        }
+        return false;
+    };
+    if (!focused) {
+        if (!incoming.empty() && !children_.empty()) return false;
+        children_.push_back(std::move(child));
+        return true;
+    }
+    return insert_at_focus(insert_at_focus, *this);
+}
+
+bool Layout::set_split(std::uint32_t focused, Split direction) {
+    if (direction != Split::horizontal && direction != Split::vertical) return false;
+    if (!focused && !leaf_ && children_.empty()) {
+        direction_ = direction;
+        return true;
+    }
+    for (auto &child : children_) {
+        if (child.leaf_ && child.window_ == focused) {
+            if (children_.size() == 1) direction_ = direction;
+            else child = Layout::split(direction, {std::move(child)});
+            return true;
+        }
+        if (!child.leaf_ && child.set_split(focused, direction)) return true;
+    }
+    return false;
+}
+
+std::uint32_t Layout::neighbor(std::uint32_t focused, Direction direction) const {
+    if (direction != Direction::left && direction != Direction::right &&
+        direction != Direction::up && direction != Direction::down) return 0;
+    const bool previous = direction == Direction::left || direction == Direction::up;
+    const Split axis = direction == Direction::left || direction == Direction::right
+                           ? Split::horizontal : Split::vertical;
+    const Layout *wrap = nullptr;
+    const Layout *next = nullptr;
+    auto find = [&](auto &&self, const Layout &node) -> bool {
+        if (node.leaf_) return node.window_ == focused;
+        for (std::size_t i = 0; i < node.children_.size(); ++i) {
+            if (!self(self, node.children_[i])) continue;
+            if (!next && node.direction_ == axis && node.children_.size() > 1) {
+                if ((previous && i > 0) || (!previous && i + 1 < node.children_.size()))
+                    next = &node.children_[previous ? i - 1 : i + 1];
+                else if (!wrap)
+                    wrap = &node.children_[previous ? node.children_.size() - 1 : 0];
+            }
+            return true;
+        }
+        return false;
+    };
+    if (!find(find, *this)) return 0;
+    const Layout *target = next ? next : wrap;
+    while (target && !target->leaf_) {
+        if (target->children_.empty()) return 0;
+        target = previous && target->direction_ == axis ? &target->children_.back()
+                                                        : &target->children_.front();
+    }
+    return target ? target->window_ : 0;
+}
+
 bool Layout::remove(std::uint32_t window) {
     for (auto it = children_.begin(); it != children_.end(); ++it) {
         if (it->leaf_ && it->window_ == window) {

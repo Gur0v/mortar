@@ -22,7 +22,7 @@ bool Workspaces::move(std::uint32_t window, std::uint32_t destination) {
     if (from < 0 || static_cast<std::uint32_t>(from) == destination) return false;
     auto &source = workspaces[from];
     auto &target = workspaces[destination];
-    if (!target.layout.insert(Layout::leaf(window))) return false;
+    if (!target.layout.insert_after(target.focused, Layout::leaf(window))) return false;
     source.layout.remove(window);
     std::erase(source.windows, window);
     if (source.focused == window) source.focused = source.windows.empty() ? 0 : source.windows.back();

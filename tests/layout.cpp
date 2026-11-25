@@ -42,6 +42,39 @@ int main() {
         try { tree.geometry(invalid); } catch (const std::invalid_argument &) { rejected = true; }
         check(rejected);
     }
+    auto live = Layout::split(Split::horizontal);
+    check(live.set_split(0, Split::vertical));
+    check(live.insert_after(0, Layout::leaf(10)));
+    check(live.insert_after(10, Layout::leaf(11)));
+    check(live.set_split(10, Split::horizontal));
+    check(live.insert_after(10, Layout::leaf(12)));
+    check(!live.insert_after(10, Layout::leaf(12)));
+    check(!live.insert_after(99, Layout::leaf(14)));
+    check(!live.insert_after(0, Layout::leaf(14)));
+    check(!live.set_split(99, Split::vertical));
+    check(!live.set_split(10, static_cast<Split>(-1)));
+    check(live.geometry({0, 0, 100, 100}) ==
+          (std::vector<Placement>{{10, {0, 0, 50, 50}}, {12, {50, 0, 50, 50}},
+                                  {11, {0, 50, 100, 50}}}));
+    using mortar::Direction;
+    check(live.neighbor(10, Direction::right) == 12);
+    check(live.neighbor(12, Direction::left) == 10);
+    auto edge = Layout::split(Split::horizontal, {
+        Layout::split(Split::horizontal, {Layout::leaf(21), Layout::leaf(22)}),
+        Layout::leaf(23)});
+    check(edge.neighbor(23, Direction::left) == 22);
+    check(edge.neighbor(23, Direction::right) == 21);
+    check(live.neighbor(12, Direction::down) == 11);
+    check(live.neighbor(10, Direction::up) == 11);
+    check(live.neighbor(10, Direction::left) == 12);
+    check(live.neighbor(99, Direction::right) == 0);
+    check(live.neighbor(10, static_cast<Direction>(-1)) == 0);
+    check(live.remove(12));
+    check(live.set_split(10, Split::vertical));
+    check(live.insert_after(10, Layout::leaf(13)));
+    check(live.geometry({0, 0, 100, 100}) ==
+          (std::vector<Placement>{{10, {0, 0, 100, 25}}, {13, {0, 25, 100, 25}},
+                                  {11, {0, 50, 100, 50}}}));
     bool rejected = false;
     try { Layout::split(static_cast<Split>(-1)); } catch (const std::invalid_argument &) { rejected = true; }
     check(rejected);

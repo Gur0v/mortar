@@ -8,7 +8,7 @@ Configuration is trusted executable Scheme, running with your user privileges. I
 
 The built-in shortcuts use Alt plus the modifiers required to produce a digit to switch workspaces. Add Shift to move the focused window, or add Control instead when the digit requires Shift. Digit levels requiring both Shift and Control are not bound. If a shortcut matches multiple digit levels, switch actions take priority over move actions. Digits are integers from 0 through 9: 1 selects workspace 1, through 9 for workspace 9, and 0 selects workspace 10.
 
-Configuration can replace the callbacks for these built-in shortcuts, but cannot change their keys or modifiers or add arbitrary shortcuts. A callback takes no arguments. For example:
+Configuration can replace the callbacks for these built-in shortcuts. A callback takes no arguments. For example:
 
 ```scheme
 (bind-workspace 1 (lambda () (workspace 2)))
@@ -25,3 +25,9 @@ Here Alt+1 switches to workspace 2, and Alt+Shift+0 moves the focused window to 
 Bindings can only be registered while loading configuration. Workspace actions can only be called from a callback, not during configuration loading. Repeated registrations for the same shortcut replace the previous callback.
 
 If loading fails, Mortar reports the error and starts with built-in defaults. If a callback fails, Mortar reports the error and does not run that shortcut's default action for that invocation. Effects already performed by Scheme are not rolled back.
+
+## Arbitrary bindings and actions
+
+`(bind-key keysym modifiers procedure)` registers a zero-argument callback for an X keysym and X modifier bitmask, both integers. For example, `(bind-key 65475 8 (lambda () (split 'vertical)))` binds Alt+F6. Repeated registrations replace the previous callback; a matching arbitrary binding takes precedence over a built-in shortcut, including workspace shortcuts.
+
+Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(focus 'left)`, `(focus 'right)`, `(focus 'up)`, `(focus 'down)`, and `(close)` for the focused window. `(spawn executable argument ...)` launches an executable with separate string arguments, without a shell. Invoke a shell explicitly if needed. These actions, like workspace actions, are only available in callbacks, not while loading configuration.

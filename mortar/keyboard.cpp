@@ -87,6 +87,21 @@ void Keyboard::ungrab() noexcept
     grabs_.clear();
 }
 
+void Keyboard::replace_bindings(std::vector<KeyboardBinding> bindings)
+{
+    for (const auto& binding : bindings) {
+        if (binding.keysym == XKB_KEY_NoSymbol || (binding.modifiers & ~0xffU) != 0)
+            throw std::invalid_argument("invalid keyboard binding");
+    }
+    bindings_.swap(bindings);
+    try {
+        reload();
+    } catch (...) {
+        bindings_.swap(bindings);
+        throw;
+    }
+}
+
 void Keyboard::reload()
 {
     auto device = xkb_x11_get_core_keyboard_device_id(connection_);
@@ -95,7 +110,7 @@ void Keyboard::reload()
     if (!map) {
         throw std::runtime_error("XKB keymap load failed");
     }
-    auto alt = modifier(map, XKB_MOD_NAME_ALT);
+    std::uint16_t alt = 0;
     auto locks = modifier(map, XKB_MOD_NAME_CAPS);
     auto* state = xkb_state_new(map);
     if (!state) {
@@ -106,6 +121,11 @@ void Keyboard::reload()
         const xkb_keysym_t* symbols = nullptr;
         auto count = xkb_keymap_key_get_syms_by_level(map, key, 0, 0, &symbols);
         for (int i = 0; i < count; ++i) {
+            if (symbols[i] == XKB_KEY_Alt_L || symbols[i] == XKB_KEY_Alt_R) {
+                xkb_state_update_key(state, key, XKB_KEY_DOWN);
+                alt |= static_cast<std::uint16_t>(xkb_state_serialize_mods(state, XKB_STATE_MODS_DEPRESSED) & 0xff);
+                xkb_state_update_key(state, key, XKB_KEY_UP);
+            }
             if (symbols[i] == XKB_KEY_Num_Lock || symbols[i] == XKB_KEY_Scroll_Lock) {
                 xkb_state_update_key(state, key, XKB_KEY_DOWN);
                 locks |= static_cast<std::uint16_t>(xkb_state_serialize_mods(state, XKB_STATE_MODS_LOCKED) & 0xff);
@@ -119,12 +139,24 @@ void Keyboard::reload()
         throw std::runtime_error("XKB Alt modifier unavailable");
     }
     std::vector<Key> keys;
+    std::vector<BindingKey> binding_keys;
     for (auto key = xkb_keymap_min_keycode(map); key <= xkb_keymap_max_keycode(map) && key <= 255; ++key) {
         for (xkb_layout_index_t group = 0; group < xkb_keymap_num_layouts_for_key(map, key); ++group) {
             for (xkb_level_index_t level = 0; level < xkb_keymap_num_levels_for_key(map, key, group); ++level) {
                 const xkb_keysym_t* symbols = nullptr;
                 auto count = xkb_keymap_key_get_syms_by_level(map, key, group, level, &symbols);
                 for (int i = 0; i < count; ++i) {
+                    for (const auto& binding : bindings_) {
+                        if (binding.keysym != symbols[i]) continue;
+                        xkb_mod_mask_t masks[256];
+                        auto mask_count = xkb_keymap_key_get_mods_for_level(map, key, group, level, masks, 256);
+                        for (std::size_t j = 0; j < mask_count; ++j) {
+                            if ((masks[j] & ~0xffU) != 0) continue;
+                            auto mods = static_cast<std::uint16_t>((masks[j] | binding.modifiers |
+                                (binding.dynamic_alt ? alt : 0)) & ~locks);
+                            binding_keys.push_back({static_cast<xcb_keycode_t>(key), group, mods, binding.callback});
+                        }
+                    }
                     if (symbols[i] >= XKB_KEY_0 && symbols[i] <= XKB_KEY_9) {
                         auto workspace = symbols[i] == XKB_KEY_0 ? 9U : symbols[i] - XKB_KEY_1;
                         xkb_mod_mask_t masks[256];
@@ -145,6 +177,25 @@ void Keyboard::reload()
     std::vector<std::pair<xcb_keycode_t, std::uint16_t>> next;
     std::vector<std::pair<xcb_keycode_t, std::uint16_t>> added;
     try {
+        for (auto [key, group, modifiers, callback] : binding_keys) {
+            (void)group;
+            (void)callback;
+            for (unsigned mask = 0; mask < 256; ++mask) {
+                if ((mask & ~locks) != 0) continue;
+                auto grab = std::pair{key, static_cast<std::uint16_t>(modifiers | mask)};
+                if (std::find(next.begin(), next.end(), grab) != next.end()) continue;
+                next.push_back(grab);
+                if (std::find(grabs_.begin(), grabs_.end(), grab) != grabs_.end()) continue;
+                added.push_back(grab);
+                try {
+                    check(connection_, xcb_grab_key_checked(connection_, 1, root_, grab.second, key,
+                        XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC));
+                } catch (...) {
+                    added.pop_back();
+                    throw;
+                }
+            }
+        }
         for (auto [key, group, workspace, modifiers] : keys) {
             (void)group;
             (void)workspace;
@@ -181,12 +232,14 @@ void Keyboard::reload()
     xkb_keymap_unref(keymap_);
     keymap_ = map;
     keys_ = std::move(keys);
+    binding_keys_ = std::move(binding_keys);
     alt_ = alt;
     locks_ = locks;
 }
 
 std::optional<WorkspaceAction> Keyboard::process(const xcb_generic_event_t& event)
 {
+    callback_.reset();
     auto type = event.response_type & 0x7f;
     if (type == event_base_) {
         const auto& xkb = reinterpret_cast<const xcb_xkb_map_notify_event_t&>(event);
@@ -196,12 +249,17 @@ std::optional<WorkspaceAction> Keyboard::process(const xcb_generic_event_t& even
     } else if (type == XCB_KEY_PRESS) {
         const auto& press = reinterpret_cast<const xcb_key_press_event_t&>(event);
         auto mods = static_cast<std::uint16_t>(press.state & 0xff & ~locks_);
-        if ((mods & alt_) != alt_) return std::nullopt;
         auto* state = xkb_state_new(keymap_);
         if (!state) throw std::runtime_error("XKB state creation failed");
         xkb_state_update_mask(state, 0, 0, 0, 0, 0, (press.state >> 13) & 3);
         auto group = xkb_state_key_get_layout(state, press.detail);
         xkb_state_unref(state);
+        for (auto [key, layout, modifiers, callback] : binding_keys_) {
+            if (key == press.detail && layout == group && mods == modifiers) {
+                callback_ = callback;
+                return std::nullopt;
+            }
+        }
         for (auto [key, layout, workspace, modifiers] : keys_) {
             if (key != press.detail || layout != group) continue;
             if (mods == (alt_ | modifiers)) return WorkspaceAction{workspace, false};

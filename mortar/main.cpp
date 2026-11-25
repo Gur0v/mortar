@@ -1,15 +1,18 @@
+#include "actions.hpp"
 #include "config.hpp"
 #include "workspaces.hpp"
 #include "keyboard.hpp"
 
 #include <xcb/xcb.h>
 #include <xcb/randr.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
 
 #include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <csignal>
+#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <system_error>
@@ -98,10 +101,19 @@ int main() {
     struct Actions {
         std::function<void(unsigned)> workspace;
         std::function<void(unsigned)> move;
+        std::function<void(mortar::Split)> split;
+        std::function<void(mortar::Direction)> focus;
+        std::function<void()> close;
+        std::function<void(const std::vector<std::string> &)> spawn;
+        xcb_timestamp_t time = XCB_CURRENT_TIME;
     } actions;
     mortar::Config config(&actions,
         [](void *host, unsigned digit) { static_cast<Actions *>(host)->workspace(digit); },
-        [](void *host, unsigned digit) { static_cast<Actions *>(host)->move(digit); });
+        [](void *host, unsigned digit) { static_cast<Actions *>(host)->move(digit); },
+        [](void *host, mortar::Split value) { static_cast<Actions *>(host)->split(value); },
+        [](void *host, mortar::Direction value) { static_cast<Actions *>(host)->focus(value); },
+        [](void *host) { static_cast<Actions *>(host)->close(); },
+        [](void *host, const std::vector<std::string> &args) { static_cast<Actions *>(host)->spawn(args); });
     const char *xdg = std::getenv("XDG_CONFIG_HOME");
     const char *home = std::getenv("HOME");
     std::filesystem::path config_dir;
@@ -129,6 +141,37 @@ int main() {
         std::fprintf(stderr, "mortar: keyboard setup failed: %s\n", error.what());
         return EXIT_FAILURE;
     }
+    enum : uint32_t { split_horizontal = UINT32_MAX - 8, split_vertical, focus_left, focus_down,
+        focus_up, focus_right, close_focused, terminal, launcher };
+    std::vector<mortar::KeyboardBinding> defaults{
+        {XKB_KEY_h, 0, split_horizontal, true}, {XKB_KEY_v, 0, split_vertical, true},
+        {XKB_KEY_j, 0, focus_left, true}, {XKB_KEY_k, 0, focus_down, true},
+        {XKB_KEY_l, 0, focus_up, true}, {XKB_KEY_semicolon, 0, focus_right, true},
+        {XKB_KEY_Left, 0, focus_left, true}, {XKB_KEY_Down, 0, focus_down, true},
+        {XKB_KEY_Up, 0, focus_up, true}, {XKB_KEY_Right, 0, focus_right, true},
+        {XKB_KEY_q, XCB_MOD_MASK_SHIFT, close_focused, true},
+        {XKB_KEY_Return, 0, terminal, true}, {XKB_KEY_d, 0, launcher, true}
+    };
+    auto bindings = defaults;
+    for (const auto &binding : config.bindings()) {
+        std::erase_if(bindings, [&](const auto &existing) {
+            return existing.keysym == binding.keysym &&
+                   (existing.modifiers | (existing.dynamic_alt ? keyboard->alt_modifier() : 0)) == binding.modifiers;
+        });
+        bindings.push_back({binding.keysym, binding.modifiers, binding.callback});
+    }
+    try {
+        keyboard->replace_bindings(bindings);
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "mortar: custom key grabs failed: %s; using default keybindings\n", error.what());
+        try {
+            keyboard->replace_bindings(defaults);
+        } catch (const std::exception &fallback_error) {
+            std::fprintf(stderr, "mortar: default key grabs failed: %s\n", fallback_error.what());
+            return EXIT_FAILURE;
+        }
+    }
+    std::vector<pid_t> children;
     mortar::Workspaces workspace_state;
     auto &workspaces = workspace_state.workspaces;
     auto &current = workspace_state.current;
@@ -197,8 +240,9 @@ int main() {
     xcb_randr_select_input(c, root, XCB_RANDR_NOTIFY_MASK_SCREEN_CHANGE);
     const auto protocols = atom("WM_PROTOCOLS", 12);
     const auto take_focus = atom("WM_TAKE_FOCUS", 13);
+    const auto delete_window = atom("WM_DELETE_WINDOW", 16);
     const auto focus_time = atom("_MORTAR_FOCUS_TIME", 18);
-    if (!protocols || !take_focus || !focus_time) {
+    if (!protocols || !take_focus || !delete_window || !focus_time) {
         std::fputs("mortar: cannot initialize focus atoms\n", stderr);
         return EXIT_FAILURE;
     }
@@ -301,6 +345,30 @@ int main() {
     };
     actions.workspace = [&](unsigned digit) { switch_workspace((digit + 9) % 10); };
     actions.move = [&](unsigned digit) { move_window(workspaces[current].focused, (digit + 9) % 10); };
+    actions.split = [&](mortar::Split direction) {
+        auto &ws = workspaces[current];
+        ws.layout.set_split(ws.focused, direction);
+        tile();
+    };
+    actions.focus = [&](mortar::Direction direction) {
+        auto &ws = workspaces[current];
+        auto target = ws.layout.neighbor(ws.focused, direction);
+        if (target) {
+            std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
+            focus(target, actions.time);
+        }
+    };
+    actions.close = [&] {
+        auto window = workspaces[current].focused;
+        if (window && mortar::close_window(c, window, protocols, delete_window, actions.time) != mortar::CloseResult::sent)
+            std::fputs("mortar: cannot close focused window\n", stderr);
+    };
+    actions.spawn = [&](const std::vector<std::string> &args) {
+        pid_t child;
+        int error = mortar::spawn(args, child);
+        if (error) std::fprintf(stderr, "mortar: spawn failed: %s\n", std::strerror(error));
+        else children.push_back(child);
+    };
     auto manage = [&](xcb_window_t window, bool existing) {
         if (window == support) return;
         if (owner(window) >= 0) {
@@ -351,9 +419,9 @@ int main() {
         const uint32_t event_mask = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_PROPERTY_CHANGE;
         xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &event_mask);
         std::erase(iconic, window);
-        if (!workspaces[desktop].layout.insert(mortar::Layout::leaf(window))) return;
+        if (!workspaces[desktop].layout.insert_after(workspaces[desktop].focused, mortar::Layout::leaf(window))) return;
         workspaces[desktop].windows.push_back(window);
-        if (desktop != current) workspaces[desktop].focused = window;
+        if (desktop != current || !workspaces[desktop].focused) workspaces[desktop].focused = window;
         set_desktop(window, desktop);
         set_state(window, 1);
         tile();
@@ -426,6 +494,12 @@ int main() {
     sigaction(SIGINT, &action, nullptr);
 
     while (!stopping) {
+        std::erase_if(children, [&](pid_t child) {
+            bool reaped = false;
+            int error = mortar::reap_child(child, reaped);
+            if (error) std::fprintf(stderr, "mortar: cannot reap child: %s\n", std::strerror(error));
+            return reaped || error;
+        });
         auto *event = xcb_poll_for_event(c);
         if (!event) {
             if (xcb_connection_has_error(c)) break;
@@ -434,6 +508,8 @@ int main() {
             continue;
         }
         try {
+            if ((event->response_type & 0x7f) == XCB_KEY_PRESS)
+                actions.time = reinterpret_cast<xcb_key_press_event_t *>(event)->time;
             if (auto action = keyboard->process(*event)) {
                 unsigned digit = (action->workspace + 1) % 10;
                 auto result = action->move ? config.run_move_workspace(digit) : config.run_workspace(digit);
@@ -442,6 +518,21 @@ int main() {
                     else switch_workspace(action->workspace);
                 } else if (result == mortar::Config::Result::failure) {
                     std::fprintf(stderr, "mortar: %sworkspace binding %u failed\n", action->move ? "move-" : "", digit);
+                }
+            }
+            if (auto id = keyboard->callback()) {
+                if (*id == split_horizontal || *id == split_vertical) {
+                    actions.split(*id == split_horizontal ? mortar::Split::horizontal : mortar::Split::vertical);
+                } else if (*id >= focus_left && *id <= focus_right) {
+                    const mortar::Direction directions[] = {mortar::Direction::left, mortar::Direction::down,
+                        mortar::Direction::up, mortar::Direction::right};
+                    actions.focus(directions[*id - focus_left]);
+                } else if (*id == close_focused) {
+                    actions.close();
+                } else if (*id == terminal || *id == launcher) {
+                    actions.spawn({*id == terminal ? "x-terminal-emulator" : "dmenu_run"});
+                } else if (config.run_binding(*id) != mortar::Config::Result::success) {
+                    std::fprintf(stderr, "mortar: key binding %u failed\n", *id);
                 }
             }
         } catch (const std::exception &error) {

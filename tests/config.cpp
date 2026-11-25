@@ -17,6 +17,10 @@ struct Host {
     mortar::Config *config = nullptr;
     const char *path = nullptr;
     bool reenter = false;
+    mortar::Split split = mortar::Split::horizontal;
+    mortar::Direction direction = mortar::Direction::left;
+    bool closed = false;
+    std::vector<std::string> arguments;
 };
 
 void workspace(void *data, unsigned digit) {
@@ -32,6 +36,15 @@ void workspace(void *data, unsigned digit) {
 
 void move(void *data, unsigned digit) { static_cast<Host *>(data)->move = digit; }
 
+void split(void *data, mortar::Split value) { static_cast<Host *>(data)->split = value; }
+void focus(void *data, mortar::Direction value) { static_cast<Host *>(data)->direction = value; }
+void close_action(void *data) { static_cast<Host *>(data)->closed = true; }
+void spawn(void *data, const std::vector<std::string> &args) {
+    auto &host = *static_cast<Host *>(data);
+    if (host.fail) throw std::runtime_error("failure");
+    host.arguments = args;
+}
+
 int main() {
     char path[] = "/tmp/mortar-config-XXXXXX";
     int fd = mkstemp(path);
@@ -39,7 +52,7 @@ int main() {
     close(fd);
     auto write = [&](const char *text) { std::ofstream file(path); file << text; check(file.good()); };
     Host host;
-    mortar::Config config(&host, workspace, move);
+    mortar::Config config(&host, workspace, move, split, focus, close_action, spawn);
     host.config = &config;
     host.path = path;
     using Result = mortar::Config::Result;
@@ -47,9 +60,17 @@ int main() {
     check(config.run_workspace(10) == Result::failure);
     write("(bind-workspace 1 (lambda () (workspace 4)))\n"
           "(bind-move-workspace 2 (lambda () (move-to-workspace 7)))\n"
-          "(bind-workspace 3 (lambda () (error \"failure\")))\n");
+          "(bind-workspace 3 (lambda () (error \"failure\")))\n"
+          "(bind-key 65 8 (lambda () (workspace 2)))\n"
+          "(bind-key 65 8 (lambda () (workspace 5)))\n"
+          "(bind-key 66 9 (lambda () (error \"failure\")))\n");
     check(config.load(path));
     scm_gc();
+    check(config.bindings().size() == 2);
+    check(config.bindings()[0].keysym == 65 && config.bindings()[0].modifiers == 8);
+    check(config.run_binding(config.bindings()[0].callback) == Result::success && host.workspace == 5);
+    check(config.run_binding(config.bindings()[1].callback) == Result::failure);
+    check(config.run_binding(2) == Result::absent);
     check(config.run_workspace(1) == Result::success && host.workspace == 4);
     host.reenter = true;
     check(config.run_workspace(1) == Result::success);
@@ -59,9 +80,19 @@ int main() {
     host.fail = true;
     check(config.run_workspace(1) == Result::failure);
     host.fail = false;
-    write("(bind-workspace 1 (lambda () (workspace 8))) (error \"bad\")");
+    write("(bind-workspace 1 (lambda () (workspace 8))) "
+          "(bind-key 67 0 (lambda () (workspace 8))) (error \"bad\")");
     check(!config.load(path));
+    scm_gc();
+    check(config.bindings().size() == 2 && config.bindings()[0].keysym == 65);
+    check(config.run_binding(0) == Result::success && host.workspace == 5);
     check(config.run_workspace(1) == Result::success && host.workspace == 4);
+    write("(bind-key 0 0 (lambda () #t))");
+    check(!config.load(path));
+    write("(bind-key 65 65536 (lambda () #t))");
+    check(!config.load(path));
+    write("(bind-key 65 0 42)");
+    check(!config.load(path));
     write("(workspace 8)");
     check(!config.load(path) && host.workspace == 4);
     write("(move-to-workspace 8)");
@@ -74,9 +105,32 @@ int main() {
     write("(throw 'misc-error)");
     check(!config.load(path));
     check(config.run_workspace(1) == Result::success && host.workspace == 4);
+    write("(bind-key 1 0 (lambda () (split 'vertical) (focus 'down) (close) (spawn \"printf\" \"a b\" \"\"))) "
+          "(bind-key 2 0 (lambda () (spawn 5))) "
+          "(bind-key 3 0 (lambda () (spawn \"\"))) "
+          "(bind-key 4 0 (lambda () (split 'bad))) "
+          "(bind-key 5 0 (lambda () (focus 'bad))) "
+          "(bind-key 6 0 (lambda () (spawn \"ok\" (string #\\nul))))");
+    check(config.load(path));
+    check(config.run_binding(0) == Result::success);
+    check(host.split == mortar::Split::vertical && host.direction == mortar::Direction::down && host.closed);
+    check(host.arguments == std::vector<std::string>({"printf", "a b", ""}));
+    for (unsigned i = 1; i < 6; ++i) check(config.run_binding(i) == Result::failure);
+    host.fail = true;
+    check(config.run_binding(0) == Result::failure);
+    host.fail = false;
+    write("(split 'horizontal)");
+    check(!config.load(path));
+    write("(focus 'left)");
+    check(!config.load(path));
+    write("(close)");
+    check(!config.load(path));
+    write("(spawn \"true\")");
+    check(!config.load(path));
     write("#t");
     check(config.load(path));
     check(config.run_workspace(1) == Result::absent);
+    check(config.bindings().empty() && config.run_binding(0) == Result::absent);
     check(!config.load("/nonexistent/mortar-config"));
     std::remove(path);
 }

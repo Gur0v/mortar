@@ -5,12 +5,12 @@ xcb_randr = dependency('xcb-randr')
 xcb_xkb = dependency('xcb-xkb')
 xkbcommon = dependency('xkbcommon-x11')
 guile = dependency('guile-3.0').as_system('system')
-mortar = executable('mortar', 'mortar/main.cpp', 'mortar/layout.cpp', 'mortar/workspaces.cpp', 'mortar/keyboard.cpp', 'mortar/config.cpp', dependencies: [xcb, xcb_randr, xcb_xkb, xkbcommon, guile], install: true)
+mortar = executable('mortar', 'mortar/main.cpp', 'mortar/actions.cpp', 'mortar/layout.cpp', 'mortar/workspaces.cpp', 'mortar/keyboard.cpp', 'mortar/config.cpp', dependencies: [xcb, xcb_randr, xcb_xkb, xkbcommon, guile], install: true)
 
 if get_option('tests')
   config_test = executable('test-config', 'tests/config.cpp', 'mortar/config.cpp', dependencies: guile)
   test('config', config_test)
-  size_hints_test = executable('test-size-hints', 'tests/size-hints.cpp', 'mortar/layout.cpp', 'mortar/workspaces.cpp', 'mortar/keyboard.cpp', 'mortar/config.cpp', dependencies: [xcb, xcb_randr, xcb_xkb, xkbcommon, guile])
+  size_hints_test = executable('test-size-hints', 'tests/size-hints.cpp', 'mortar/actions.cpp', 'mortar/layout.cpp', 'mortar/workspaces.cpp', 'mortar/keyboard.cpp', 'mortar/config.cpp', dependencies: [xcb, xcb_randr, xcb_xkb, xkbcommon, guile])
   test('size-hints', size_hints_test)
   layout_test = executable('test-layout', 'tests/layout.cpp', 'mortar/layout.cpp')
   test('layout', layout_test)
@@ -32,6 +32,22 @@ ensure
   Process.wait(server)
 end
 ''', keyboard_test])
+  actions_test = executable('test-actions', 'tests/actions.cpp', 'mortar/actions.cpp', dependencies: xcb)
+  test('actions', find_program('ruby'), args: ['-e', '''
+require 'timeout'
+reader, writer = IO.pipe
+server = Process.spawn('Xvfb', '-displayfd', '3', '-screen', '0', '800x600x24', 3 => writer, out: File::NULL, err: File::NULL)
+writer.close
+begin
+  display = Timeout.timeout(10) { reader.gets }
+  abort 'Xvfb failed to start' unless display
+  exit(system({ 'DISPLAY' => ":#{Integer(display)}" }, ARGV.fetch(0)) ? 0 : 1)
+ensure
+  reader.close
+  Process.kill('TERM', server) rescue nil
+  Process.wait(server)
+end
+''', actions_test])
   xcb_xtest = dependency('xcb-xtest')
   client = executable('test-client', 'tests/client.cpp', dependencies: [xcb, xcb_xtest])
   test('x11', find_program('ruby'), args: [files('tests/x11.rb'), mortar, client], timeout: 180)

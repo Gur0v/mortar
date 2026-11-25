@@ -15,6 +15,13 @@ struct WorkspaceAction {
     bool move;
 };
 
+struct KeyboardBinding {
+    xkb_keysym_t keysym;
+    std::uint16_t modifiers;
+    std::uint32_t callback;
+    bool dynamic_alt = false;
+};
+
 class Keyboard {
 public:
     Keyboard(xcb_connection_t* connection, xcb_window_t root);
@@ -24,6 +31,9 @@ public:
 
     std::optional<WorkspaceAction> process(const xcb_generic_event_t& event);
     void reload();
+    void replace_bindings(std::vector<KeyboardBinding> bindings);
+    std::optional<std::uint32_t> callback() const noexcept { return callback_; }
+    std::uint16_t alt_modifier() const noexcept { return alt_; }
 
 private:
     void ungrab() noexcept;
@@ -43,6 +53,15 @@ private:
         std::uint16_t modifiers;
     };
     std::vector<Key> keys_;
+    struct BindingKey {
+        xcb_keycode_t key;
+        xkb_layout_index_t group;
+        std::uint16_t modifiers;
+        std::uint32_t callback;
+    };
+    std::vector<KeyboardBinding> bindings_;
+    std::vector<BindingKey> binding_keys_;
+    std::optional<std::uint32_t> callback_;
 };
 
 }

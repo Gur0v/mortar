@@ -14,6 +14,7 @@ struct Rect {
 };
 
 enum class Split { horizontal, vertical };
+enum class Direction { left, right, up, down };
 
 struct Placement {
     std::uint32_t window;
@@ -26,6 +27,9 @@ public:
     static Layout leaf(std::uint32_t window);
     static Layout split(Split direction, std::vector<Layout> children = {});
     bool insert(Layout child);
+    bool insert_after(std::uint32_t focused, Layout child);
+    bool set_split(std::uint32_t focused, Split direction);
+    std::uint32_t neighbor(std::uint32_t focused, Direction direction) const;
     bool remove(std::uint32_t window);
     bool contains(std::uint32_t window) const;
     std::vector<Placement> geometry(Rect bounds) const;
