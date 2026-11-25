@@ -20,6 +20,7 @@ struct ConfigRuntime {
     std::vector<std::string> bar_status;
     Config::Border border;
     Config::Bar bar;
+    std::optional<std::uint16_t> mouse_modifier;
     std::vector<Config::WindowRule> window_rules;
     const char *path;
     SCM callback;
@@ -55,6 +56,15 @@ struct ConfigRuntime {
             scm_gc_unprotect_object(slot);
         }
         slot = procedure;
+        return SCM_UNSPECIFIED;
+    }
+
+    static SCM floating_modifier(SCM modifiers) {
+        if (!active || !active->path)
+            scm_misc_error("floating-modifier", "setting is only allowed while loading", SCM_EOL);
+        if (!scm_is_unsigned_integer(modifiers, 0, 0xff))
+            scm_out_of_range("floating-modifier", modifiers);
+        active->mouse_modifier = static_cast<std::uint16_t>(scm_to_uint(modifiers));
         return SCM_UNSPECIFIED;
     }
 
@@ -460,6 +470,7 @@ struct ConfigRuntime {
         runtime->previous_module = scm_set_current_module(module);
         runtime->changed_module = true;
         scm_c_define_gsubr("bind-key", 3, 0, 0, reinterpret_cast<scm_t_subr>(bind_key));
+        scm_c_define_gsubr("floating-modifier", 1, 0, 0, reinterpret_cast<scm_t_subr>(floating_modifier));
         scm_c_define_gsubr("bind-workspace", 2, 0, 0, reinterpret_cast<scm_t_subr>(bind_workspace));
         scm_c_define_gsubr("bind-move-workspace", 2, 0, 0, reinterpret_cast<scm_t_subr>(bind_move));
         scm_c_define_gsubr("workspace", 1, 0, 0, reinterpret_cast<scm_t_subr>(workspace_action));
@@ -638,6 +649,10 @@ const Config::Bar &Config::staged_bar() const noexcept {
     return staged_ ? staged_->bar : bar_;
 }
 
+std::optional<std::uint16_t> Config::staged_mouse_modifier() const noexcept {
+    return staged_ ? staged_->mouse_modifier : mouse_modifier_;
+}
+
 void Config::commit() noexcept {
     if (!staged_) return;
     std::swap(module_, staged_->module);
@@ -648,6 +663,7 @@ void Config::commit() noexcept {
     bar_status_.swap(staged_->bar_status);
     std::swap(border_, staged_->border);
     std::swap(bar_, staged_->bar);
+    std::swap(mouse_modifier_, staged_->mouse_modifier);
     window_rules_.swap(staged_->window_rules);
     discard();
 }

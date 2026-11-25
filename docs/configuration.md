@@ -33,7 +33,7 @@ If loading fails, Mortar reports the error and starts with built-in defaults. If
 
 ## Mouse controls
 
-Hold Alt and drag with the left mouse button to move a floating window. Hold Alt and drag with the right mouse button to resize a floating or tiled window from the clicked corner. Tiled windows resize live when neighboring split boundaries are available.
+Hold Alt and drag with the left mouse button to move a floating window. Hold Alt and drag with the right mouse button to resize a floating or tiled window from the clicked corner. Tiled windows resize live when neighboring split boundaries are available. `(floating-modifier modifiers)` sets the X modifier bitmask for both mouse actions; for example, `(floating-modifier 64)` uses Mod4. Zero disables these mouse actions. The default follows the keyboard's Alt mapping. This setting does not change keyboard shortcuts. Reload preserves the old configuration if replacement grabs fail.
 
 ## Arbitrary bindings and actions
 

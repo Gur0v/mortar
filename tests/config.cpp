@@ -73,6 +73,20 @@ int main() {
     using Result = mortar::Config::Result;
     check(config.bar_status().empty());
     check(!config.evaluate("1").success);
+    check(!config.mouse_modifier());
+    write("(floating-modifier 64)");
+    check(config.stage(path) && config.staged_mouse_modifier() == 64 && !config.mouse_modifier());
+    config.commit();
+    check(config.mouse_modifier() == 64);
+    for (const char *invalid : {"(floating-modifier -1)", "(floating-modifier 256)", "(floating-modifier 'alt)", "(floating-modifier 8) (error \"bad\")"}) {
+        write(invalid);
+        check(!config.load(path) && config.mouse_modifier() == 64);
+    }
+    check(!config.evaluate("(floating-modifier 8)").success);
+    write("(floating-modifier 0)");
+    check(config.load(path) && config.mouse_modifier() == 0);
+    write("#t");
+    check(config.load(path) && !config.mouse_modifier());
     check(!config.bar().bottom && config.bar().font == "monospace 10" &&
           config.bar().background == 0x222222 && config.bar().foreground == 0xffffff &&
           config.bar().focused == 0x285577 && config.bar().unfocused == 0x333333);

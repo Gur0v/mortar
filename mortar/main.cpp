@@ -254,12 +254,13 @@ int main() {
     };
     std::optional<PointerDrag> drag;
     std::vector<std::pair<uint8_t, uint16_t>> mouse_grabs;
-    auto grab_mouse = [&] {
+    auto grab_mouse = [&](std::optional<uint16_t> configured) {
         std::vector<std::pair<uint8_t, uint16_t>> next, added;
-        for (uint16_t locks = 0; locks < 256; ++locks) {
+        auto modifier = configured.value_or(keyboard->alt_modifier());
+        for (uint16_t locks = 0; modifier && locks < 256; ++locks) {
             if (locks & ~keyboard->lock_modifiers()) continue;
             for (uint8_t button : {uint8_t{1}, uint8_t{3}}) {
-                auto grab = std::pair{button, static_cast<uint16_t>(keyboard->alt_modifier() | locks)};
+                auto grab = std::pair{button, static_cast<uint16_t>(modifier | locks)};
                 if (std::find(next.begin(), next.end(), grab) != next.end()) continue;
                 next.push_back(grab);
                 if (std::find(mouse_grabs.begin(), mouse_grabs.end(), grab) != mouse_grabs.end()) continue;
@@ -278,7 +279,7 @@ int main() {
             if (std::find(next.begin(), next.end(), grab) == next.end()) xcb_ungrab_button(c, grab.first, root, grab.second);
         mouse_grabs = std::move(next);
     };
-    grab_mouse();
+    grab_mouse(config.mouse_modifier());
     std::vector<pid_t> children;
     mortar::Workspaces workspace_state;
     mortar::Scratchpad scratchpad;
@@ -1437,7 +1438,7 @@ int main() {
             auto old_alt = keyboard->alt_modifier();
             auto old_locks = keyboard->lock_modifiers();
             auto action = keyboard->process(*event);
-            if (old_alt != keyboard->alt_modifier() || old_locks != keyboard->lock_modifiers()) grab_mouse();
+            if (old_alt != keyboard->alt_modifier() || old_locks != keyboard->lock_modifiers()) grab_mouse(config.mouse_modifier());
             if (action) {
                 unsigned digit = (action->workspace + 1) % 10;
                 auto result = action->move ? config.run_move_workspace(digit) : config.run_workspace(digit);
@@ -1454,7 +1455,20 @@ int main() {
                         std::fprintf(stderr, "mortar: failed to reload configuration %s; keeping current configuration\n", path.c_str());
                     } else {
                         try {
-                            keyboard->replace_bindings(prepare_bindings(config.staged_bindings()));
+                            xcb_grab_server(c);
+                            try {
+                                grab_mouse(config.staged_mouse_modifier());
+                                try {
+                                    keyboard->replace_bindings(prepare_bindings(config.staged_bindings()));
+                                } catch (...) {
+                                    grab_mouse(config.mouse_modifier());
+                                    throw;
+                                }
+                            } catch (...) {
+                                xcb_ungrab_server(c);
+                                throw;
+                            }
+                            xcb_ungrab_server(c);
                             xcb_flush(c);
                             auto old_status = config.bar_status();
                             auto old_bar = config.bar();

@@ -95,6 +95,8 @@ public:
     const Border &staged_border() const noexcept;
     const Bar &bar() const noexcept { return bar_; }
     const Bar &staged_bar() const noexcept;
+    std::optional<std::uint16_t> mouse_modifier() const noexcept { return mouse_modifier_; }
+    std::optional<std::uint16_t> staged_mouse_modifier() const noexcept;
 
 private:
     Result run(SCM callback);
@@ -117,6 +119,7 @@ private:
     std::vector<std::string> bar_status_;
     Border border_;
     Bar bar_;
+    std::optional<std::uint16_t> mouse_modifier_;
     std::vector<WindowRule> window_rules_;
 
     std::unique_ptr<ConfigRuntime> staged_;
