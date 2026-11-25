@@ -35,9 +35,15 @@ Dir.mktmpdir('mortar-ipc') do |dir|
     raise 'evaluation failed' unless read_frame.call == 'ok 3'
     send_frame.call('eval (error "failure")')
     raise 'evaluation error missing' unless read_frame.call.start_with?('error ')
+    send_frame.call('subscribe output')
+    raise 'output subscription failed' unless read_frame.call == 'ok subscribed'
+    send_frame.call('subscribe output')
+    raise 'repeat output subscription failed' unless read_frame.call == 'ok subscribed'
     send_frame.call('eval (workspace 2)')
-    frames = [read_frame.call, read_frame.call]
-    raise "workspace event missing: #{frames.inspect}" unless frames.include?('event workspace 1') && frames.any? { |f| f.start_with?('ok ') }
+    frames = 3.times.map { read_frame.call }
+    raise "workspace or output event missing: #{frames.inspect}" unless frames.include?('event workspace 1') && frames.include?('event output unspecified') && frames.any? { |f| f.start_with?('ok ') }
+    send_frame.call('eval (workspace 2)')
+    raise 'unexpected event for unchanged workspace' unless read_frame.call.start_with?('ok ')
     send_frame.call('subscribe window')
     raise 'window subscription failed' unless read_frame.call == 'ok subscribed'
     client_reader, client_output = IO.pipe

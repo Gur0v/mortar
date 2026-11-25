@@ -44,6 +44,8 @@ Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(focus 'left)`
 
 `(bar-position 'top)` and `(bar-position 'bottom)` select the edge of each output; the default is top. `(bar-font "monospace 10")` selects a Pango font description. The string must be nonempty and at most 4096 UTF-8 bytes, without NUL.
 
+`(bar-output "HDMI-1")` restricts the bar to named RandR outputs. Repeat it to select multiple outputs; `"*"` selects all outputs. Without registrations, all outputs are selected. Names must be nonempty, at most 4096 UTF-8 bytes, and contain no NUL; at most 64 registrations are allowed. A missing output produces no bar until it appears.
+
 `(bar-colors background foreground focused unfocused)` sets 24-bit RGB integer colors. Defaults are `#x222222`, `#xffffff`, `#x285577`, and `#x333333`. Focused and unfocused colors fill workspace buttons; foreground colors their text and default status text. Status blocks may override their own colors.
 
 These settings are accepted only while loading. A successful reload restarts mortarbar if any changed, with the same failure behavior as a status-command change.

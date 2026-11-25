@@ -147,6 +147,29 @@ begin
   Process.kill('TERM', pid)
   Process.wait(pid)
 
+  if multi
+    [['right', 1], ['missing', 0], ['*', 3]].each do |name, expected|
+      pid = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, bar, '--mortar-settings', 'top', 'monospace 10',
+                          '2236962', '16777215', '2643319', '3355443', '--output', name, '--')
+      sleep 0.2
+      connection = X11.XOpenDisplay(":#{Integer(display)}")
+      root = X11.XDefaultRootWindow(connection)
+      X11.XQueryTree(connection, root, root_return, parent, children, count)
+      abort "selected output #{name} count incorrect" unless count[0, Fiddle::SIZEOF_INT].unpack1('I') == expected
+      list = Fiddle::Pointer.new(children[0, Fiddle::SIZEOF_VOIDP].unpack1('J'))
+      if expected == 1
+        selected = list[0, Fiddle::SIZEOF_LONG].unpack1('L!')
+        geometry = Array.new(6) { Fiddle::Pointer.malloc(Fiddle::SIZEOF_INT) }
+        X11.XGetGeometry(connection, selected, root_return, *geometry)
+        abort 'wrong selected output' unless geometry[0][0, Fiddle::SIZEOF_INT].unpack1('i') == 400
+      end
+      X11.XFree(list) unless list.null?
+      X11.XCloseDisplay(connection)
+      Process.kill('TERM', pid)
+      Process.wait(pid)
+    end
+  end
+
   child_reader, child_writer = IO.pipe
   code = 'child = fork { loop { sleep 1 } }; STDERR.puts(child); STDERR.flush; STDOUT.write("bad\n"); STDOUT.flush; loop { sleep 1 }'
   pid = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, bar, RbConfig.ruby, '-e', code, err: child_writer)

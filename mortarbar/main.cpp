@@ -60,10 +60,11 @@ int main(int argc, char **argv) {
     bool bottom = false;
     std::string font_name = "monospace 10";
     std::array<std::uint32_t, 4> colors{0x222222, 0xffffff, 0x285577, 0x333333};
+    std::vector<std::string_view> selected_outputs;
     int command = 1;
     if (argc > 1 && std::string_view(argv[1]) == "--mortar-settings") {
         if (argc < 9 || (std::string_view(argv[2]) != "top" && std::string_view(argv[2]) != "bottom") ||
-            !*argv[3] || std::string_view(argv[8]) != "--") {
+            !*argv[3]) {
             std::cerr << "mortarbar: invalid settings\n";
             return 1;
         }
@@ -77,7 +78,19 @@ int main(int argc, char **argv) {
                 return 1;
             }
         }
-        command = 9;
+        int index = 8;
+        while (index < argc && std::string_view(argv[index]) == "--output") {
+            if (++index >= argc || !*argv[index] || std::string_view(argv[index]).size() > 4096 || selected_outputs.size() >= 64) {
+                std::cerr << "mortarbar: invalid output\n";
+                return 1;
+            }
+            selected_outputs.emplace_back(argv[index++]);
+        }
+        if (index >= argc || std::string_view(argv[index]) != "--") {
+            std::cerr << "mortarbar: invalid settings\n";
+            return 1;
+        }
+        command = index + 1;
     }
     std::array<std::string, 4> color_names;
     for (std::size_t i = 0; i < colors.size(); ++i) {
@@ -158,6 +171,8 @@ int main(int argc, char **argv) {
         }
         std::vector<mortar::Rect> next_bounds;
         for (const auto& output : outputs) {
+            if (!selected_outputs.empty() && std::find(selected_outputs.begin(), selected_outputs.end(), "*") == selected_outputs.end() &&
+                std::find(selected_outputs.begin(), selected_outputs.end(), output.name) == selected_outputs.end()) continue;
             const auto& bounds = output.bounds;
             if (bounds.x < 0 || bounds.y < 0 || bounds.width <= 0 || bounds.width > 65535 || bounds.x > 32767 || bounds.y > 32767 || bounds.height < height ||
                 (bottom && int64_t(bounds.y) + bounds.height - height > 32767)) continue;

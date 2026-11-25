@@ -319,6 +319,20 @@ struct ConfigRuntime {
         return SCM_UNSPECIFIED;
     }
 
+    static SCM bar_output(SCM value) {
+        if (!active || !active->path) scm_misc_error("bar-output", "only allowed while loading", SCM_EOL);
+        if (!scm_is_string(value)) scm_wrong_type_arg_msg("bar-output", 1, value, "string");
+        size_t length = 0;
+        char *text = scm_to_utf8_stringn(value, &length);
+        bool failed = !length || length > 4096 || std::memchr(text, 0, length) || active->bar.outputs.size() >= 64;
+        try {
+            if (!failed) active->bar.outputs.emplace_back(text, length);
+        } catch (...) { failed = true; }
+        std::free(text);
+        if (failed) scm_misc_error("bar-output", "invalid output or allocation failure", SCM_EOL);
+        return SCM_UNSPECIFIED;
+    }
+
     static SCM bar_font(SCM value) {
         if (!active || !active->path) scm_misc_error("bar-font", "only allowed while loading", SCM_EOL);
         if (!scm_is_string(value)) scm_wrong_type_arg_msg("bar-font", 1, value, "string");
@@ -368,6 +382,7 @@ struct ConfigRuntime {
         scm_c_define_gsubr("bar-status", 0, 0, 1, reinterpret_cast<scm_t_subr>(bar_status_action));
         scm_c_define_gsubr("bar-position", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_position));
         scm_c_define_gsubr("bar-font", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_font));
+        scm_c_define_gsubr("bar-output", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_output));
         scm_c_define_gsubr("bar-colors", 4, 0, 0, reinterpret_cast<scm_t_subr>(bar_colors));
         scm_c_define_gsubr("window-rule", 3, 0, 0, reinterpret_cast<scm_t_subr>(window_rule));
         scm_c_define_gsubr("border", 3, 0, 0, reinterpret_cast<scm_t_subr>(set_border));

@@ -631,6 +631,7 @@ int main() {
         xcb_flush(c);
     };
     std::function<void(uint32_t)> workspace_event = [](uint32_t) {};
+    std::function<void()> output_event = [] {};
     std::function<void(uint32_t)> settle_workspace = [](uint32_t) {};
     auto switch_workspace = [&](uint32_t destination) {
         if (destination >= workspaces.size() || destination == current) return;
@@ -649,6 +650,7 @@ int main() {
                 for (auto window : workspaces[output.workspace].windows) xcb_map_window(c, window);
         restore_focus();
         workspace_event(current);
+        if (old_outputs != outputs.outputs()) output_event();
     };
     auto workspace_bounds = [&](uint32_t workspace) -> std::optional<mortar::Rect> {
         if (!outputs.owners()[workspace]) return std::nullopt;
@@ -1065,10 +1067,11 @@ int main() {
     sigaction(SIGTERM, &action, nullptr);
     sigaction(SIGINT, &action, nullptr);
 
-    std::vector<int> subscribers, window_subscribers;
+    std::vector<int> subscribers, window_subscribers, output_subscribers;
     if (ipc) ipc->on_close = [&](int client) {
         std::erase(subscribers, client);
         std::erase(window_subscribers, client);
+        std::erase(output_subscribers, client);
     };
     window_event = [&](std::string_view change, xcb_window_t window) {
         if (!ipc) return;
@@ -1080,6 +1083,11 @@ int main() {
         if (!ipc) return;
         auto targets = subscribers;
         for (int client : targets) ipc->send(client, "event workspace " + std::to_string(workspace));
+    };
+    output_event = [&] {
+        if (!ipc) return;
+        auto targets = output_subscribers;
+        for (int client : targets) ipc->send(client, "event output unspecified");
     };
     pid_t bar = -1;
     auto start_bar = [&] {
@@ -1093,7 +1101,12 @@ int main() {
                 const auto &settings = config.bar();
                 std::vector<std::string> options{"--mortar-settings", settings.bottom ? "bottom" : "top", settings.font,
                     std::to_string(settings.background), std::to_string(settings.foreground),
-                    std::to_string(settings.focused), std::to_string(settings.unfocused), "--"};
+                    std::to_string(settings.focused), std::to_string(settings.unfocused)};
+                for (const auto &output : settings.outputs) {
+                    options.emplace_back("--output");
+                    options.push_back(output);
+                }
+                options.emplace_back("--");
                 std::vector<char *> args{name};
                 for (auto &arg : options) args.push_back(arg.data());
                 for (const auto &arg : config.bar_status()) args.push_back(const_cast<char *>(arg.c_str()));
@@ -1270,6 +1283,10 @@ int main() {
                         if (std::find(window_subscribers.begin(), window_subscribers.end(), client) == window_subscribers.end())
                             window_subscribers.push_back(client);
                         ipc->send(client, "ok subscribed");
+                    } else if (frame == "subscribe output") {
+                        if (std::find(output_subscribers.begin(), output_subscribers.end(), client) == output_subscribers.end())
+                            output_subscribers.push_back(client);
+                        ipc->send(client, "ok subscribed");
                     } else if (frame.starts_with("eval ")) {
                         actions.time = XCB_CURRENT_TIME;
                         auto result = config.evaluate(std::string(frame.substr(5)));
@@ -1384,6 +1401,7 @@ int main() {
                 tile();
                 restore_focus();
                 if (current != previous_workspace) workspace_event(current);
+                if (old_outputs != outputs.outputs()) output_event();
             } catch (const std::exception &error) {
                 std::fprintf(stderr, "mortar: output update failed: %s; keeping previous outputs\n", error.what());
             }
