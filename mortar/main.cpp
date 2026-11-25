@@ -256,6 +256,8 @@ int main() {
     std::vector<std::pair<uint8_t, uint16_t>> mouse_grabs;
     auto grab_mouse = [&](std::optional<uint16_t> configured) {
         std::vector<std::pair<uint8_t, uint16_t>> next, added;
+        next.reserve(512);
+        added.reserve(512);
         auto modifier = configured.value_or(keyboard->alt_modifier());
         for (uint16_t locks = 0; modifier && locks < 256; ++locks) {
             if (locks & ~keyboard->lock_modifiers()) continue;
@@ -1455,11 +1457,14 @@ int main() {
                         std::fprintf(stderr, "mortar: failed to reload configuration %s; keeping current configuration\n", path.c_str());
                     } else {
                         try {
+                            auto old_status = config.bar_status();
+                            auto old_bar = config.bar();
+                            auto bindings = prepare_bindings(config.staged_bindings());
                             xcb_grab_server(c);
                             try {
                                 grab_mouse(config.staged_mouse_modifier());
                                 try {
-                                    keyboard->replace_bindings(prepare_bindings(config.staged_bindings()));
+                                    keyboard->replace_bindings(std::move(bindings));
                                 } catch (...) {
                                     grab_mouse(config.mouse_modifier());
                                     throw;
@@ -1470,11 +1475,13 @@ int main() {
                             }
                             xcb_ungrab_server(c);
                             xcb_flush(c);
-                            auto old_status = config.bar_status();
-                            auto old_bar = config.bar();
                             config.commit();
-                            tile();
-                            if ((old_status != config.bar_status() || old_bar != config.bar()) && stop_bar()) start_bar();
+                            try {
+                                tile();
+                                if ((old_status != config.bar_status() || old_bar != config.bar()) && stop_bar()) start_bar();
+                            } catch (const std::exception &error) {
+                                std::fprintf(stderr, "mortar: configuration reloaded, but applying changes failed: %s\n", error.what());
+                            }
                         } catch (const std::exception &error) {
                             config.discard();
                             std::fprintf(stderr, "mortar: failed to reload keybindings: %s; keeping current configuration\n", error.what());
@@ -1544,7 +1551,7 @@ int main() {
                     if (std::none_of(old_outputs.begin(), old_outputs.end(), [&](const auto &old) { return old.workspace == output.workspace; }))
                         for (auto window : workspaces[output.workspace].windows) xcb_map_window(c, window);
                 auto previous_workspace = current;
-                current = outputs.focused_workspace();
+                workspace_state.switch_to(outputs.focused_workspace());
                 for (const auto &output : outputs.outputs()) settle_workspace(output.workspace);
                 xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_current, XCB_ATOM_CARDINAL, 32, 1, &current);
                 tile();

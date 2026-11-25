@@ -150,9 +150,16 @@ bool StatusParser::feed(std::string_view input, const Callback& callback) {
     return true;
 }
 
-bool StatusParser::finish() {
+bool StatusParser::finish(const Callback& callback) {
     if (!error_.empty()) return false;
-    if (state_ == State::text || state_ == State::done || state_ == State::next || state_ == State::first || state_ == State::after_comma) return true;
+    if ((state_ == State::header || state_ == State::text) && !frame_.empty()) {
+        StatusBlock b;
+        b.full_text = std::move(frame_);
+        frame_.clear();
+        state_ = State::text;
+        callback({std::move(b)});
+    }
+    if (state_ == State::header || state_ == State::text || state_ == State::done || state_ == State::next || state_ == State::first || state_ == State::after_comma) return true;
     return fail("incomplete status stream");
 }
 

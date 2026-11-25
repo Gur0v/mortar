@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <poll.h>
@@ -43,6 +44,7 @@ private:
     std::uint64_t socket_inode_ = 0;
     std::vector<Client> clients_;
     std::size_t next_client_ = 0;
+    std::chrono::steady_clock::time_point accept_retry_ {};
     void close_client(int fd);
 };
 

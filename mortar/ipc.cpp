@@ -41,7 +41,10 @@ Ipc::Ipc(const std::string& path) : path_(path) {
         listener_ = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
         if (listener_ < 0) fail("socket");
         if (bind(listener_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0) fail("bind");
-        if (fstatat(dir_, name_.c_str(), &st, AT_SYMLINK_NOFOLLOW) < 0) fail("stat socket");
+        int status = -1;
+        for (int attempts = 0; attempts < 3 && status < 0; ++attempts)
+            status = fstatat(dir_, name_.c_str(), &st, AT_SYMLINK_NOFOLLOW);
+        if (status < 0) fail("stat socket; socket path may require manual cleanup");
         socket_inode_ = st.st_ino;
         if (listen(listener_, 32) < 0) fail("listen");
     } catch (...) {
@@ -68,7 +71,8 @@ Ipc::~Ipc() {
 }
 
 std::vector<pollfd> Ipc::poll_fds() const {
-    std::vector<pollfd> result {{listener_, POLLIN, 0}};
+    std::vector<pollfd> result;
+    if (std::chrono::steady_clock::now() >= accept_retry_) result.push_back({listener_, POLLIN, 0});
     for (const auto& client : clients_)
         result.push_back({client.fd, static_cast<short>((client.eof ? 0 : POLLIN) | (client.output.empty() ? 0 : POLLOUT)), 0});
     return result;
@@ -124,7 +128,10 @@ void Ipc::dispatch(const std::vector<pollfd>& ready, const Handler& handler) {
                 if (fd < 0) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) break;
                     if (errno == EINTR) continue;
-                    if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM || errno == ECONNABORTED) break;
+                    if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM || errno == ECONNABORTED) {
+                        accept_retry_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+                        break;
+                    }
                     fail("accept");
                 }
                 ucred cred {};

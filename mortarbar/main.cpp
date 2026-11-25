@@ -542,8 +542,11 @@ int main(int argc, char **argv) {
             int gap = i < blocks.size() ? std::clamp(block.separator_block_width.value_or(9), 0, static_cast<int>(bar.width) + 1) : 0;
             right -= gap;
             int left = right - width;
-            if (left < workspace_right) break;
-            status_bounds[i - 1] = {left, right};
+            if (right <= workspace_right) break;
+            status_bounds[i - 1] = {std::max(left, workspace_right), right};
+            cairo_save(cr);
+            cairo_rectangle(cr, workspace_right, 0, bar.width - workspace_right, height);
+            cairo_clip(cr);
             if (gap && block.separator) {
                 set_color({}, "#666666");
                 cairo_rectangle(cr, right + gap / 2, std::min<int>(3, height / 2), 1, std::max<int>(0, height - 6));
@@ -573,6 +576,7 @@ int main(int argc, char **argv) {
             int offset = block.align == "right" ? extra : block.align == "center" ? extra / 2 : 0;
             cairo_move_to(cr, left + 6 + offset, (height - text_height) / 2);
             pango_cairo_show_layout(cr, layout);
+            cairo_restore(cr);
             right = left;
         }
         cairo_surface_flush(surface);
@@ -581,12 +585,18 @@ int main(int argc, char **argv) {
     auto draw_all = [&] { for (auto& bar : bars) draw(bar); };
     draw_all();
     bool running = true;
+    bool dirty = false;
     while (running && !stopping && !xcb_connection_has_error(c)) {
+        if (child > 0) {
+            pid_t result;
+            do { result = waitpid(child, nullptr, WNOHANG); } while (result < 0 && errno == EINTR);
+            if (result == child || (result < 0 && errno == ECHILD)) child = -1;
+        }
         while (auto* event = xcb_poll_for_event(c)) {
             auto event_type = event->response_type & 0x7f;
             if (randr && randr->present && (event_type == randr->first_event + XCB_RANDR_SCREEN_CHANGE_NOTIFY ||
                 event_type == randr->first_event + XCB_RANDR_NOTIFY)) {
-                if (update_bars()) draw_all();
+                if (update_bars()) dirty = true;
             }
             if (xkb && event_type == xkb->first_event) {
                 auto* state = reinterpret_cast<xcb_xkb_state_notify_event_t*>(event);
@@ -594,23 +604,23 @@ int main(int argc, char **argv) {
                     bool next = (state->mods & XCB_MOD_MASK_4) != 0;
                     if (next != revealed) {
                         revealed = next;
-                        if (update_bars()) draw_all();
+                        if (update_bars()) dirty = true;
                     }
                 }
             }
             if (event_type == XCB_EXPOSE) {
                 auto* expose = reinterpret_cast<xcb_expose_event_t*>(event);
-                for (auto& bar : bars) if (bar.window == expose->window) draw(bar);
+                for (auto& bar : bars) if (bar.window == expose->window) dirty = true;
             }
             if (event_type == XCB_PROPERTY_NOTIFY) {
                 auto* changed = reinterpret_cast<xcb_property_notify_event_t*>(event);
                 if (changed->window == screen->root && changed->atom == clients) {
                     watch_clients();
-                    draw_all();
+                    dirty = true;
                 } else if (changed->window == screen->root && changed->atom == urgent_workspaces) {
-                    if (update_bars()) draw_all();
+                    if (update_bars()) dirty = true;
                 } else if ((changed->window == screen->root && (changed->atom == names || changed->atom == current || changed->atom == output_workspaces)) ||
-                           (changed->atom == desktop && std::find(watched_clients.begin(), watched_clients.end(), changed->window) != watched_clients.end())) draw_all();
+                           (changed->atom == desktop && std::find(watched_clients.begin(), watched_clients.end(), changed->window) != watched_clients.end())) dirty = true;
             }
             if (event_type == XCB_BUTTON_PRESS) {
                 auto* button = reinterpret_cast<xcb_button_press_event_t*>(event);
@@ -677,9 +687,10 @@ int main(int argc, char **argv) {
             free(event);
         }
         if (!running) break;
+        if (dirty) { draw_all(); dirty = false; }
         pollfd fds[] = {{xcb_get_file_descriptor(c), POLLIN, 0}, {input_open ? input_fd : -1, POLLIN, 0},
                         {output_open && !output.empty() ? output_fd : -1, POLLOUT, 0}};
-        int ready = poll(fds, 3, -1);
+        int ready = poll(fds, 3, child > 0 ? 1000 : -1);
         if (ready < 0) { if (errno == EINTR) continue; break; }
         if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
         if (fds[2].revents & (POLLERR | POLLHUP | POLLNVAL)) {
@@ -693,16 +704,19 @@ int main(int argc, char **argv) {
                 output.clear();
             }
         }
-        if (fds[1].revents & (POLLIN | POLLHUP)) {
+        if (fds[1].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) {
             std::array<char, 1024> buffer {};
             auto n = read(input_fd, buffer.data(), buffer.size());
-            if (n <= 0) {
+            auto save = [&](auto frame) { blocks = std::move(frame); dirty = true; };
+            if (n == 0) {
                 input_open = false;
-                if (!parser.finish()) std::cerr << "mortarbar: " << parser.error() << '\n';
-            } else if (!parser.feed(std::string_view(buffer.data(), static_cast<std::size_t>(n)), [&](auto frame) {
-                blocks = std::move(frame);
-                draw_all();
-            })) {
+                if (!parser.finish(save)) std::cerr << "mortarbar: " << parser.error() << '\n';
+            } else if (n < 0) {
+                if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
+                    std::cerr << "mortarbar: status read failed: " << std::strerror(errno) << '\n';
+                    input_open = false;
+                }
+            } else if (!parser.feed(std::string_view(buffer.data(), static_cast<std::size_t>(n)), save)) {
                 std::cerr << "mortarbar: " << parser.error() << '\n';
                 input_open = false;
                 close(input_fd);

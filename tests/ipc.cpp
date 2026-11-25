@@ -6,6 +6,7 @@
 #include <poll.h>
 #include <stdexcept>
 #include <string>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -86,6 +87,31 @@ int main() {
             check(count == before + 1);
         }
         for (int client : clients) close(client);
+    }
+    {
+        mortar::Ipc ipc(path);
+        int client = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        check(client >= 0);
+        sockaddr_un address {};
+        address.sun_family = AF_UNIX;
+        std::strcpy(address.sun_path, path.c_str());
+        check(connect(client, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0);
+        auto fds = ipc.poll_fds();
+        check(poll(fds.data(), fds.size(), 1000) > 0);
+        struct rlimit original {};
+        check(getrlimit(RLIMIT_NOFILE, &original) == 0);
+        struct rlimit limited = original;
+        limited.rlim_cur = 0;
+        check(setrlimit(RLIMIT_NOFILE, &limited) == 0);
+        ipc.dispatch(fds, [](int, std::string_view) {});
+        check(ipc.poll_fds().empty());
+        check(setrlimit(RLIMIT_NOFILE, &original) == 0);
+        usleep(150000);
+        fds = ipc.poll_fds();
+        check(poll(fds.data(), fds.size(), 1000) > 0);
+        ipc.dispatch(fds, [](int, std::string_view) {});
+        check(ipc.poll_fds().size() == 2);
+        close(client);
     }
     struct stat st {};
     check(lstat(path.c_str(), &st) < 0);

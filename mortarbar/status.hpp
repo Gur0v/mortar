@@ -26,7 +26,7 @@ class StatusParser {
 public:
     using Callback = std::function<void(std::vector<StatusBlock>)>;
     bool feed(std::string_view input, const Callback& callback);
-    bool finish();
+    bool finish(const Callback& callback);
     const std::string& error() const { return error_; }
     bool click_events() const { return click_events_; }
     int stop_signal() const { return stop_signal_; }
