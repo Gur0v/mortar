@@ -127,7 +127,14 @@ void Keyboard::reload()
                 for (int i = 0; i < count; ++i) {
                     if (symbols[i] >= XKB_KEY_0 && symbols[i] <= XKB_KEY_9) {
                         auto workspace = symbols[i] == XKB_KEY_0 ? 9U : symbols[i] - XKB_KEY_1;
-                        keys.push_back({static_cast<xcb_keycode_t>(key), group, workspace});
+                        xkb_mod_mask_t masks[256];
+                        auto mask_count = xkb_keymap_key_get_mods_for_level(map, key, group, level, masks, 256);
+                        for (std::size_t j = 0; j < mask_count; ++j) {
+                            if ((masks[j] & ~(0xffU | static_cast<unsigned>(locks))) != 0) continue;
+                            auto mods = static_cast<std::uint16_t>(masks[j] & ~locks);
+                            if ((mods & alt) != 0) continue;
+                            keys.push_back({static_cast<xcb_keycode_t>(key), group, workspace, mods});
+                        }
                     }
                 }
             }
@@ -136,19 +143,24 @@ void Keyboard::reload()
     std::vector<std::pair<xcb_keycode_t, std::uint16_t>> next;
     std::vector<std::pair<xcb_keycode_t, std::uint16_t>> added;
     try {
-        for (auto [key, group, workspace] : keys) {
+        for (auto [key, group, workspace, modifiers] : keys) {
             (void)group;
             (void)workspace;
             for (unsigned shift : {0U, static_cast<unsigned>(XCB_MOD_MASK_SHIFT)}) {
                 for (unsigned mask = 0; mask < 256; ++mask) {
                     if ((mask & ~locks) != 0) continue;
-                    auto grab = std::pair{key, static_cast<std::uint16_t>(alt | shift | mask)};
+                    auto grab = std::pair{key, static_cast<std::uint16_t>(alt | modifiers | shift | mask)};
                     if (std::find(next.begin(), next.end(), grab) != next.end()) continue;
                     next.push_back(grab);
                     if (std::find(grabs_.begin(), grabs_.end(), grab) != grabs_.end()) continue;
                     added.push_back(grab);
-                    check(connection_, xcb_grab_key_checked(connection_, 1, root_, grab.second, key,
-                        XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC));
+                    try {
+                        check(connection_, xcb_grab_key_checked(connection_, 1, root_, grab.second, key,
+                            XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC));
+                    } catch (...) {
+                        added.pop_back();
+                        throw;
+                    }
                 }
             }
         }
@@ -181,15 +193,18 @@ std::optional<WorkspaceAction> Keyboard::process(const xcb_generic_event_t& even
     } else if (type == XCB_KEY_PRESS) {
         const auto& press = reinterpret_cast<const xcb_key_press_event_t&>(event);
         auto mods = static_cast<std::uint16_t>(press.state & 0xff & ~locks_);
-        if (mods != alt_ && mods != (alt_ | XCB_MOD_MASK_SHIFT)) return std::nullopt;
+        if ((mods & alt_) != alt_) return std::nullopt;
         auto* state = xkb_state_new(keymap_);
         if (!state) throw std::runtime_error("XKB state creation failed");
         xkb_state_update_mask(state, 0, 0, 0, 0, 0, (press.state >> 13) & 3);
         auto group = xkb_state_key_get_layout(state, press.detail);
         xkb_state_unref(state);
-        for (auto [key, layout, workspace] : keys_) {
-            if (key == press.detail && layout == group)
-                return WorkspaceAction{workspace, (mods & XCB_MOD_MASK_SHIFT) != 0};
+        for (unsigned shift : {0U, static_cast<unsigned>(XCB_MOD_MASK_SHIFT)}) {
+            for (auto [key, layout, workspace, modifiers] : keys_) {
+                if (key == press.detail && layout == group &&
+                    mods == (alt_ | modifiers | shift))
+                    return WorkspaceAction{workspace, (mods & XCB_MOD_MASK_SHIFT) != 0};
+            }
         }
     }
     return std::nullopt;

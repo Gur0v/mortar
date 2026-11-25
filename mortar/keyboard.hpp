@@ -40,6 +40,7 @@ private:
         xcb_keycode_t key;
         xkb_layout_index_t group;
         std::uint32_t workspace;
+        std::uint16_t modifiers;
     };
     std::vector<Key> keys_;
 };
