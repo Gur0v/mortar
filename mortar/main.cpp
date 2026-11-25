@@ -160,6 +160,7 @@ int main() {
             case mortar::Config::WindowAction::scratch_move: actions.scratch_send(); break;
             case mortar::Config::WindowAction::scratch_show: actions.scratch_toggle(); break;
             case mortar::Config::WindowAction::fullscreen: actions.toggle_fullscreen(); break;
+            case mortar::Config::WindowAction::exit: stopping = 1; break;
             }
         },
         [](void *host, mortar::Config::WorkspaceNavigation action) {

@@ -36,6 +36,8 @@ If loading fails, Mortar reports the error and starts with built-in defaults. If
 
 Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(focus 'left)`, `(focus 'right)`, `(focus 'up)`, `(focus 'down)`, and `(close)` for the focused window. `(move direction)` moves a tiled window, and `(resize direction pixels)` resizes a tiled or floating window at the specified edge. Positive pixels grow it; negative pixels shrink it. Floating resize applies valid `WM_NORMAL_HINTS` size constraints when possible; conflicting constraints may be ignored. Alt+Control+arrow grows the focused window by 10 pixels at that edge; tiled resizing requires a neighbor at that edge. `(spawn executable argument ...)` launches an executable with separate string arguments, without a shell. Invoke a shell explicitly if needed. These actions, like workspace actions, are only available in callbacks, not while loading configuration.
 
+`(exit)` requests graceful window manager shutdown from a callback or IPC evaluation. Managed clients are preserved. It is unavailable while loading configuration. No default exit shortcut is provided: i3's default uses `i3-nagbar` and a shell command for confirmation, which Mortar does not provide. An IPC client requesting exit may disconnect before receiving its response.
+
 `(floating-toggle)` and `(fullscreen-toggle)` toggle the focused window. `(scratchpad-move)` moves the focused window to the scratchpad; `(scratchpad-show)` shows, focuses, or hides a scratchpad window. These actions also work in IPC evaluations. They are unavailable while loading configuration.
 
 ## Window rules
@@ -57,3 +59,5 @@ These settings are accepted only while loading. A successful reload restarts mor
 ## Bar status
 
 `(bar-status "program" "argument" ...)` selects a status producer. Mortarbar starts it directly, without a shell, and reads its stdout as an i3bar status stream. Click events go to its stdin. No producer runs by default. Arguments are separate strings; the program must be nonempty. The last registration wins. After a successful reload, a changed status command restarts mortarbar. Mortar stops the old bar before starting its replacement, escalating to SIGKILL if needed. Restart failures are reported; the committed configuration remains active.
+
+When the producer enables `click_events`, button presses over status blocks are sent as JSON, including scroll buttons 4–7, coordinates, block dimensions, modifiers, and `scale` (always 1 on X11). Unlike Swaybar, Mortarbar also sends events for blocks without a name and does not send Sway's Wayland-specific `event` field. Scroll outside status blocks changes workspace without wrapping.

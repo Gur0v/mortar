@@ -262,11 +262,15 @@ int main() {
     host.fail = true;
     check(config.run_binding(0) == Result::failure);
     host.fail = false;
-    for (const char *action : {"(floating-toggle)", "(scratchpad-move)", "(scratchpad-show)", "(fullscreen-toggle)"}) {
+    for (const char *action : {"(floating-toggle)", "(scratchpad-move)", "(scratchpad-show)", "(fullscreen-toggle)", "(exit)"}) {
         write(action);
         check(!config.load(path));
         check(config.evaluate(action).success);
     }
+    check(host.window_actions.back() == mortar::Config::WindowAction::exit);
+    write("(bind-key 1 0 (lambda () (exit)))");
+    check(config.load(path) && config.run_binding(0) == Result::success);
+    check(host.window_actions.back() == mortar::Config::WindowAction::exit);
     for (const char *action : {"(workspace-next)", "(workspace-previous)", "(workspace-back-and-forth)"}) {
         write(action);
         check(!config.load(path));

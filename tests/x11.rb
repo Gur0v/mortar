@@ -1,6 +1,7 @@
 require 'tmpdir'
 require 'timeout'
 require 'fcntl'
+require 'socket'
 
 Dir.mktmpdir('mortar-test-') do |dir|
   xvfb = nil
@@ -118,7 +119,8 @@ Dir.mktmpdir('mortar-test-') do |dir|
       Timeout.timeout(10) { client_reader.gets } == "existing window ready\n"
     wm_error_path = File.join(dir, 'wm.log')
     File.write(config, side_effect)
-    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: wm_error_path)
+    socket_path = File.join(dir, 'exit.sock')
+    wm = Process.spawn(env.merge('MORTARSOCK' => socket_path), ARGV.fetch(0), out: File::NULL, err: wm_error_path)
     client_writer.puts
     abort 'Window manager failed to manage existing window' unless
       Timeout.timeout(10) { client_reader.gets } == "window manager ready\n"
@@ -134,8 +136,11 @@ Dir.mktmpdir('mortar-test-') do |dir|
       File.read(error_path).include?('cannot acquire window management')
     abort 'Client failed to prepare lifecycle checks' unless
       Timeout.timeout(30) { client_reader.gets } == "lifecycle ready\n"
-    Process.kill('TERM', wm)
+    socket = UNIXSocket.new(socket_path)
+    request = 'eval (exit)'
+    socket.write([request.bytesize].pack('N') + request)
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
+    socket.close
     wm = nil
     abort "Window manager shutdown failed:\n#{File.read(wm_error_path)}" unless status.success?
     client_writer.puts

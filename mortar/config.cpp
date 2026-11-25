@@ -230,6 +230,7 @@ struct ConfigRuntime {
     static SCM scratchpad_move() { return window_action("scratchpad-move", Config::WindowAction::scratch_move); }
     static SCM scratchpad_show() { return window_action("scratchpad-show", Config::WindowAction::scratch_show); }
     static SCM fullscreen_toggle() { return window_action("fullscreen-toggle", Config::WindowAction::fullscreen); }
+    static SCM exit_action() { return window_action("exit", Config::WindowAction::exit); }
 
     struct SpawnArguments {
         SCM values;
@@ -401,6 +402,7 @@ struct ConfigRuntime {
         scm_c_define_gsubr("resize", 2, 0, 0, reinterpret_cast<scm_t_subr>(resize_action));
         scm_c_define_gsubr("focus", 1, 0, 0, reinterpret_cast<scm_t_subr>(focus_action));
         scm_c_define_gsubr("close", 0, 0, 0, reinterpret_cast<scm_t_subr>(close_action));
+        scm_c_define_gsubr("exit", 0, 0, 0, reinterpret_cast<scm_t_subr>(exit_action));
         scm_c_define_gsubr("floating-toggle", 0, 0, 0, reinterpret_cast<scm_t_subr>(floating_toggle));
         scm_c_define_gsubr("scratchpad-move", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_move));
         scm_c_define_gsubr("scratchpad-show", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_show));
