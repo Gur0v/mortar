@@ -40,6 +40,8 @@ public:
     struct Bar {
         bool bottom = false;
         bool hidden = false;
+        bool workspace_buttons = true;
+        bool wrap_scroll = false;
         std::string font = "monospace 10";
         std::vector<std::string> outputs;
         std::uint32_t background = 0x222222;

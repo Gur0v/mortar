@@ -335,6 +335,20 @@ struct ConfigRuntime {
         return SCM_UNSPECIFIED;
     }
 
+    static SCM bar_workspace_buttons(SCM value) {
+        if (!active || !active->path) scm_misc_error("bar-workspace-buttons", "only allowed while loading", SCM_EOL);
+        if (!scm_is_bool(value)) scm_wrong_type_arg_msg("bar-workspace-buttons", 1, value, "boolean");
+        active->bar.workspace_buttons = scm_is_true(value);
+        return SCM_UNSPECIFIED;
+    }
+
+    static SCM bar_wrap_scroll(SCM value) {
+        if (!active || !active->path) scm_misc_error("bar-wrap-scroll", "only allowed while loading", SCM_EOL);
+        if (!scm_is_bool(value)) scm_wrong_type_arg_msg("bar-wrap-scroll", 1, value, "boolean");
+        active->bar.wrap_scroll = scm_is_true(value);
+        return SCM_UNSPECIFIED;
+    }
+
     static SCM bar_position(SCM value) {
         if (!active || !active->path) scm_misc_error("bar-position", "only allowed while loading", SCM_EOL);
         if (scm_is_eq(value, scm_from_utf8_symbol("top"))) active->bar.bottom = false;
@@ -409,6 +423,8 @@ struct ConfigRuntime {
         scm_c_define_gsubr("fullscreen-toggle", 0, 0, 0, reinterpret_cast<scm_t_subr>(fullscreen_toggle));
         scm_c_define_gsubr("bar-status", 0, 0, 1, reinterpret_cast<scm_t_subr>(bar_status_action));
         scm_c_define_gsubr("bar-mode", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_mode));
+        scm_c_define_gsubr("bar-workspace-buttons", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_workspace_buttons));
+        scm_c_define_gsubr("bar-wrap-scroll", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_wrap_scroll));
         scm_c_define_gsubr("bar-position", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_position));
         scm_c_define_gsubr("bar-font", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_font));
         scm_c_define_gsubr("bar-output", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_output));

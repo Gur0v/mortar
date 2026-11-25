@@ -1165,6 +1165,8 @@ int main() {
                     std::to_string(settings.background), std::to_string(settings.foreground),
                     std::to_string(settings.focused), std::to_string(settings.unfocused)};
                 if (settings.hidden) options.emplace_back("--hidden");
+                if (!settings.workspace_buttons) options.emplace_back("--no-workspace-buttons");
+                if (settings.wrap_scroll) options.emplace_back("--wrap-scroll");
                 for (const auto &output : settings.outputs) {
                     options.emplace_back("--output");
                     options.push_back(output);

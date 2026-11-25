@@ -54,6 +54,8 @@ Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(focus 'left)`
 
 `(bar-colors background foreground focused unfocused)` sets 24-bit RGB integer colors. Defaults are `#x222222`, `#xffffff`, `#x285577`, and `#x333333`. Focused and unfocused colors fill workspace buttons; foreground colors their text and default status text. Status blocks may override their own colors.
 
+`(bar-workspace-buttons #f)` hides workspace buttons and disables workspace scrolling. The default is `#t`. `(bar-wrap-scroll #t)` wraps scrolling between the first and last displayed workspaces; the default is `#f`. Both accept only booleans. Status block scrolling remains unaffected.
+
 These settings are accepted only while loading. A successful reload restarts mortarbar if any changed, with the same failure behavior as a status-command change.
 
 ## Bar status

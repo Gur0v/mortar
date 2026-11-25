@@ -69,6 +69,8 @@ std::vector<std::uint8_t> property(xcb_connection_t* c, xcb_window_t window, xcb
 int main(int argc, char **argv) {
     bool bottom = false;
     bool hidden = false;
+    bool workspace_buttons = true;
+    bool wrap_scroll = false;
     std::string font_name = "monospace 10";
     std::array<std::uint32_t, 4> colors{0x222222, 0xffffff, 0x285577, 0x333333};
     std::vector<std::string_view> selected_outputs;
@@ -91,6 +93,8 @@ int main(int argc, char **argv) {
         }
         int index = 8;
         if (index < argc && std::string_view(argv[index]) == "--hidden") { hidden = true; ++index; }
+        if (index < argc && std::string_view(argv[index]) == "--no-workspace-buttons") { workspace_buttons = false; ++index; }
+        if (index < argc && std::string_view(argv[index]) == "--wrap-scroll") { wrap_scroll = true; ++index; }
         while (index < argc && std::string_view(argv[index]) == "--output") {
             if (++index >= argc || !*argv[index] || std::string_view(argv[index]).size() > 4096 || selected_outputs.size() >= 64) {
                 std::cerr << "mortarbar: invalid output\n";
@@ -423,7 +427,7 @@ int main(int argc, char **argv) {
         int workspace_width = 0;
         std::size_t label_start = 0;
         unsigned label_index = 0;
-        for (std::size_t i = 0; i < raw.size(); ++i) {
+        for (std::size_t i = 0; workspace_buttons && i < raw.size(); ++i) {
             if (raw[i] != 0) continue;
             if (valid && std::find(allowed.begin(), allowed.end(), label_index) == allowed.end()) {
                 label_start = i + 1;
@@ -437,7 +441,7 @@ int main(int argc, char **argv) {
             label_start = i + 1;
             ++label_index;
         }
-        if (!label_index) workspace_width = measure("[1] ").first;
+        if (workspace_buttons && !label_index) workspace_width = measure("[1] ").first;
         auto block_width = [&](const mortarbar::StatusBlock& block, bool short_text) {
             const auto& text = short_text && block.short_text && !block.short_text->empty() ? *block.short_text : block.full_text;
             int width = measure(text, block.markup == "pango").first;
@@ -458,7 +462,7 @@ int main(int argc, char **argv) {
         cairo_save(cr);
         cairo_rectangle(cr, 0, 0, status_left, height);
         cairo_clip(cr);
-        for (std::size_t i = 0; i < raw.size() && workspace_right < status_left; ++i) {
+        for (std::size_t i = 0; workspace_buttons && i < raw.size() && workspace_right < status_left; ++i) {
             if (raw[i] != 0) continue;
             if (valid && std::find(allowed.begin(), allowed.end(), index) == allowed.end()) {
                 start = i + 1;
@@ -484,7 +488,7 @@ int main(int argc, char **argv) {
             start = i + 1;
             ++index;
         }
-        if (workspace_bounds.empty()) {
+        if (workspace_buttons && workspace_bounds.empty()) {
             auto [width, text_height] = measure("[1] ");
             set_color({}, color_names[1].c_str());
             cairo_move_to(cr, workspace_right, (height - text_height) / 2);
@@ -617,6 +621,8 @@ int main(int argc, char **argv) {
                         auto index = static_cast<std::size_t>(it - found->workspace_ids.begin());
                         if (button->detail == 4 && index > 0) target = index - 1;
                         if (button->detail == 5 && index + 1 < workspace_bounds.size()) target = index + 1;
+                        if (wrap_scroll && button->detail == 4 && index == 0) target = workspace_bounds.size() - 1;
+                        if (wrap_scroll && button->detail == 5 && index + 1 == workspace_bounds.size()) target = 0;
                     }
                 }
                 if (target < workspace_bounds.size() && found->workspace_ids[target] != found->selected) {
