@@ -3,6 +3,10 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <cerrno>
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/syscall.h>
 #include <poll.h>
 #include <stdexcept>
 #include <string>
@@ -12,6 +16,16 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+bool fail_socket_stat = false;
+
+extern "C" int fstatat(int dirfd, const char* path, struct stat* st, int flags) noexcept {
+    if (fail_socket_stat && std::strcmp(path, "socket") == 0) {
+        errno = EIO;
+        return -1;
+    }
+    return static_cast<int>(syscall(SYS_newfstatat, dirfd, path, st, flags));
+}
+
 void check(bool value) {
     if (!value) std::abort();
 }
@@ -20,6 +34,19 @@ int main() {
     char directory[] = "/tmp/mortar-ipc-test-XXXXXX";
     check(mkdtemp(directory));
     std::string path;
+    {
+        std::string target = std::string(directory) + "/socket";
+        fail_socket_stat = true;
+        bool rejected = false;
+        try { mortar::Ipc ipc(target); } catch (const std::runtime_error&) { rejected = true; }
+        fail_socket_stat = false;
+        check(rejected);
+        DIR* contents = opendir(directory);
+        check(contents != nullptr);
+        while (auto* entry = readdir(contents))
+            check(std::strcmp(entry->d_name, ".") == 0 || std::strcmp(entry->d_name, "..") == 0);
+        check(closedir(contents) == 0);
+    }
     {
         mortar::Ipc ipc(std::string(directory) + "/socket");
         path = ipc.path();

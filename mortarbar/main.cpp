@@ -299,11 +299,41 @@ int main(int argc, char **argv) {
     };
     if (!update_bars()) { xcb_disconnect(c); return 1; }
     int input_fd = -1, output_fd = -1;
-    pid_t child = -1;
+    pid_t child = -1, watchdog = -1;
+    int watchdog_fd = -1;
     if (argc > command) {
-        int from_child[2] = {-1, -1}, to_child[2] = {-1, -1};
+        int from_child[2] = {-1, -1}, to_child[2] = {-1, -1}, lifetime[2] = {-1, -1}, ready_pipe[2] = {-1, -1};
         int error = 0;
-        if (pipe2(from_child, O_CLOEXEC) < 0 || pipe2(to_child, O_CLOEXEC) < 0) error = errno;
+        if (pipe2(from_child, O_CLOEXEC) < 0 || pipe2(to_child, O_CLOEXEC) < 0 || pipe2(lifetime, O_CLOEXEC) < 0 || pipe2(ready_pipe, O_CLOEXEC) < 0) error = errno;
+        if (!error) {
+            watchdog = fork();
+            if (watchdog < 0) error = errno;
+            else if (watchdog == 0) {
+                close(xcb_get_file_descriptor(c));
+                close(lifetime[1]);
+                close(from_child[0]); close(from_child[1]);
+                close(to_child[0]); close(to_child[1]);
+                close(ready_pipe[0]);
+                if (setpgid(0, 0) < 0) _exit(1);
+                char byte = 1;
+                if (write(ready_pipe[1], &byte, 1) != 1) _exit(1);
+                close(ready_pipe[1]);
+                while (read(lifetime[0], &byte, 1) < 0 && errno == EINTR) {}
+                kill(0, SIGKILL);
+                _exit(1);
+            }
+        }
+        if (ready_pipe[1] >= 0) close(ready_pipe[1]);
+        if (!error) {
+            pollfd ready{ready_pipe[0], POLLIN, 0};
+            int result;
+            do { result = poll(&ready, 1, 1000); } while (result < 0 && errno == EINTR);
+            char byte;
+            if (result <= 0 || read(ready_pipe[0], &byte, 1) != 1) error = EIO;
+        }
+        if (ready_pipe[0] >= 0) close(ready_pipe[0]);
+        if (lifetime[0] >= 0) close(lifetime[0]);
+        watchdog_fd = lifetime[1];
         posix_spawn_file_actions_t actions;
         bool initialized = false;
         if (!error) { error = posix_spawn_file_actions_init(&actions); initialized = !error; }
@@ -313,7 +343,7 @@ int main(int argc, char **argv) {
         bool attr_initialized = false;
         if (!error) { error = posix_spawnattr_init(&attributes); attr_initialized = !error; }
         if (!error) error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
-        if (!error) error = posix_spawnattr_setpgroup(&attributes, 0);
+        if (!error) error = posix_spawnattr_setpgroup(&attributes, watchdog);
         if (!error) error = posix_spawnp(&child, argv[command], &actions, &attributes, argv + command, environ);
         if (attr_initialized) posix_spawnattr_destroy(&attributes);
         if (initialized) posix_spawn_file_actions_destroy(&actions);
@@ -322,6 +352,12 @@ int main(int argc, char **argv) {
         if (error) {
             if (from_child[0] >= 0) close(from_child[0]);
             if (to_child[1] >= 0) close(to_child[1]);
+            if (watchdog_fd >= 0) { close(watchdog_fd); watchdog_fd = -1; }
+            if (watchdog > 0) {
+                kill(watchdog, SIGKILL);
+                while (waitpid(watchdog, nullptr, 0) < 0 && errno == EINTR) {}
+                watchdog = -1;
+            }
             std::cerr << "mortarbar: cannot start status command: " << std::strerror(error) << '\n';
         } else {
             input_fd = from_child[0];
@@ -587,6 +623,16 @@ int main(int argc, char **argv) {
     bool running = true;
     bool dirty = false;
     while (running && !stopping && !xcb_connection_has_error(c)) {
+        if (watchdog > 0) {
+            siginfo_t info {};
+            if (waitid(P_PID, static_cast<id_t>(watchdog), &info, WEXITED | WNOHANG | WNOWAIT) < 0 || info.si_pid != 0) {
+                std::cerr << "mortarbar: status watchdog exited unexpectedly\n";
+                kill(-watchdog, SIGKILL);
+                if (watchdog_fd >= 0) { close(watchdog_fd); watchdog_fd = -1; }
+                running = false;
+                break;
+            }
+        }
         if (child > 0) {
             pid_t result;
             do { result = waitpid(child, nullptr, WNOHANG); } while (result < 0 && errno == EINTR);
@@ -687,10 +733,10 @@ int main(int argc, char **argv) {
             free(event);
         }
         if (!running) break;
-        if (dirty) { draw_all(); dirty = false; }
+        if (dirty) { draw_all(); dirty = false; continue; }
         pollfd fds[] = {{xcb_get_file_descriptor(c), POLLIN, 0}, {input_open ? input_fd : -1, POLLIN, 0},
                         {output_open && !output.empty() ? output_fd : -1, POLLOUT, 0}};
-        int ready = poll(fds, 3, child > 0 ? 1000 : -1);
+        int ready = poll(fds, 3, watchdog > 0 ? 1000 : -1);
         if (ready < 0) { if (errno == EINTR) continue; break; }
         if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
         if (fds[2].revents & (POLLERR | POLLHUP | POLLNVAL)) {
@@ -721,16 +767,25 @@ int main(int argc, char **argv) {
                 input_open = false;
                 close(input_fd);
                 input_fd = -1;
-                if (child > 0) kill(-child, SIGKILL);
+                if (watchdog_fd >= 0) { close(watchdog_fd); watchdog_fd = -1; }
+                if (child > 0) kill(child, SIGKILL);
+                if (watchdog > 0) {
+                    while (waitpid(watchdog, nullptr, 0) < 0 && errno == EINTR) {}
+                    watchdog = -1;
+                }
             }
         }
     }
     if (input_fd >= 0) close(input_fd);
     if (output_fd >= 0) close(output_fd);
-    if (child > 0) {
-        kill(-child, SIGKILL);
-        while (waitpid(child, nullptr, 0) < 0 && errno == EINTR) {}
+    if (watchdog_fd >= 0) close(watchdog_fd);
+    if (child > 0) kill(child, SIGKILL);
+    if (watchdog > 0) {
+        kill(-watchdog, SIGKILL);
+        kill(watchdog, SIGKILL);
+        while (waitpid(watchdog, nullptr, 0) < 0 && errno == EINTR) {}
     }
+    if (child > 0) while (waitpid(child, nullptr, 0) < 0 && errno == EINTR) {}
     clear_bars();
     pango_cairo_font_map_set_default(nullptr);
     FcFini();

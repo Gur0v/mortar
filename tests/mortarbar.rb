@@ -201,10 +201,16 @@ begin
     values = Fiddle::Pointer.new(data[0, Fiddle::SIZEOF_VOIDP].unpack1('J'))
     abort 'configured strut incorrect' unless values[0, 12 * Fiddle::SIZEOF_LONG].unpack('L!*')[3] == 40
     X11.XFree(values)
-    image = X11.XGetImage(connection, configured, 0, 0, 800, 40, -1, 2)
-    abort 'configured padding incorrect' unless (X11.XGetPixel(image, 779, 0) & 0xffffff) == 0x222222 &&
-      (X11.XGetPixel(image, 779, 4) & 0xffffff) == 0x0000ff && (X11.XGetPixel(image, 780, 4) & 0xffffff) == 0x222222
-    X11.XDestroyImage(image)
+    Timeout.timeout(10) do
+      loop do
+        image = X11.XGetImage(connection, configured, 0, 0, 800, 40, -1, 2)
+        correct = (X11.XGetPixel(image, 779, 0) & 0xffffff) == 0x222222 &&
+          (X11.XGetPixel(image, 779, 4) & 0xffffff) == 0x0000ff && (X11.XGetPixel(image, 780, 4) & 0xffffff) == 0x222222
+        X11.XDestroyImage(image)
+        break if correct
+        sleep 0.02
+      end
+    end
     X11.XCloseDisplay(connection)
     Process.kill('TERM', pid)
     Process.wait(pid)
@@ -285,6 +291,42 @@ begin
     Process.kill('TERM', pid)
     Process.wait(pid)
   end
+
+  [false, true].each do |leader_exits|
+    child_reader, child_writer = IO.pipe
+    code = "child = fork { loop { sleep 1 } }; STDERR.puts(child); STDERR.flush; #{leader_exits ? 'exit!' : 'loop { sleep 1 }'}"
+    pid = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, bar, RbConfig.ruby, '-e', code, err: child_writer)
+    child_writer.close
+    descendant = Integer(Timeout.timeout(10) { child_reader.gets })
+    sleep 1.2 if leader_exits
+    Process.kill('KILL', pid)
+    Process.wait(pid)
+    Timeout.timeout(10) do
+      loop do
+        state = File.read("/proc/#{descendant}/stat").split[2] rescue 'Z'
+        break if state == 'Z'
+        sleep 0.05
+      end
+    end
+    child_reader.close
+  end
+
+  child_reader, child_writer = IO.pipe
+  code = 'child = fork { loop { sleep 1 } }; STDERR.puts(child); STDERR.flush; loop { sleep 1 }'
+  pid = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, bar, RbConfig.ruby, '-e', code, err: child_writer)
+  child_writer.close
+  descendant = Integer(Timeout.timeout(10) { child_reader.gets })
+  watchdog = Integer(File.read("/proc/#{descendant}/stat").split[4])
+  Process.kill('KILL', watchdog)
+  Timeout.timeout(10) { Process.wait(pid) }
+  Timeout.timeout(10) do
+    loop do
+      state = File.read("/proc/#{descendant}/stat").split[2] rescue 'Z'
+      break if state == 'Z'
+      sleep 0.05
+    end
+  end
+  child_reader.close
 
   child_reader, child_writer = IO.pipe
   code = 'child = fork { loop { sleep 1 } }; STDERR.puts(child); STDERR.flush; STDOUT.write(%Q({"version":1}\n[invalid]\n)); STDOUT.flush; loop { sleep 1 }'

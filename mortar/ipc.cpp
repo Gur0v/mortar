@@ -30,27 +30,45 @@ Ipc::Ipc(const std::string& path) : path_(path) {
     sockaddr_un address {};
     address.sun_family = AF_UNIX;
     if (path_.size() >= sizeof(address.sun_path)) throw std::runtime_error("IPC path too long");
-    std::memcpy(address.sun_path, path_.c_str(), path_.size() + 1);
     struct stat st {};
+    std::string staging;
+    int stage = -1;
+    bool bound = false;
+    bool published = false;
     try {
         dir_ = open(directory_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
         if (dir_ < 0) fail("open IPC directory");
         if (fstat(dir_, &st) < 0) fail("stat IPC directory");
         if (!S_ISDIR(st.st_mode) || st.st_uid != geteuid() || (st.st_mode & 077) != 0)
             throw std::runtime_error("IPC directory must be private and owned by the current user");
+        staging = directory_ + "/.mortar-XXXXXX";
+        if (!mkdtemp(staging.data())) fail("create IPC staging directory");
+        stage = open(staging.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        if (stage < 0) fail("open IPC staging directory");
+        std::string staged_path = "/proc/self/fd/" + std::to_string(stage) + "/socket";
+        std::memcpy(address.sun_path, staged_path.c_str(), staged_path.size() + 1);
         listener_ = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
         if (listener_ < 0) fail("socket");
         if (bind(listener_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0) fail("bind");
-        int status = -1;
-        for (int attempts = 0; attempts < 3 && status < 0; ++attempts)
-            status = fstatat(dir_, name_.c_str(), &st, AT_SYMLINK_NOFOLLOW);
-        if (status < 0) fail("stat socket; socket path may require manual cleanup");
+        bound = true;
+        if (fstatat(stage, "socket", &st, AT_SYMLINK_NOFOLLOW) < 0) fail("stat socket");
         socket_inode_ = st.st_ino;
         if (listen(listener_, 32) < 0) fail("listen");
+        if (linkat(stage, "socket", dir_, name_.c_str(), 0) < 0) fail("publish socket");
+        published = true;
+        if (unlinkat(stage, "socket", 0) < 0) fail("unlink staged socket");
+        bound = false;
+        if (rmdir(staging.c_str()) < 0) fail("remove IPC staging directory");
+        close(stage);
+        stage = -1;
+        staging.clear();
     } catch (...) {
+        if (bound) unlinkat(stage, "socket", 0);
+        if (stage >= 0) close(stage);
+        if (!staging.empty()) rmdir(staging.c_str());
         if (listener_ >= 0) close(listener_);
         if (dir_ >= 0) {
-            if (socket_inode_ && fstatat(dir_, name_.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0 &&
+            if (published && fstatat(dir_, name_.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0 &&
                 S_ISSOCK(st.st_mode) && st.st_ino == socket_inode_) unlinkat(dir_, name_.c_str(), 0);
             close(dir_);
         }

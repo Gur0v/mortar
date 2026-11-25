@@ -82,12 +82,17 @@ Dir.mktmpdir('mortar-reload-') do |dir|
                        "(call-with-output-file #{staged.dump} (lambda (p) (display \"yes\" p)))\n")
     send_key.call('c')
     wait_for.call('Reload did not stage configuration') { File.exist?(staged) }
+    wait_for.call('Binding conflict was not reported') { File.read(errors).include?('failed to reload keybindings') }
     check.call('x', 'new')
+    abort 'Failed reload restarted bar' unless File.readlines(bar_log).size == 3
     conflict_writer.puts
     conflict_writer.close
     _, status = Process.wait2(conflict)
     conflict = nil
     abort 'Conflict client failed' unless status.success?
+    File.write(config, binding.call('z', 'recovered') + '(bar-status "new")')
+    send_key.call('c')
+    check.call('z', 'recovered')
   ensure
     output&.close unless output&.closed?
     [conflict, client, wm, xvfb].compact.each do |pid|
