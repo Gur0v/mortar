@@ -92,12 +92,18 @@ begin
   X11.XChangeProperty(connection, root, clients, 33, 32, 0, [window].pack('L!'), 1)
   X11.XChangeProperty(connection, window, desktop, 6, 32, 0, [1].pack('L!'), 1)
   X11.XSync(connection, 0)
-  sleep 0.2
-  image = X11.XGetImage(connection, window, 0, 0, 100, 24, -1, 2)
-  colors = (0...100).map { |x| X11.XGetPixel(image, x, 0) & 0xffffff }
-  abort 'active workspace background missing' unless colors.include?(0x285577)
-  abort 'occupied workspace background missing' unless colors.include?(0x333333)
-  X11.XDestroyImage(image)
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
+  loop do
+    image = X11.XGetImage(connection, window, 0, 0, 100, 24, -1, 2)
+    abort 'cannot capture bar' if image.null?
+    colors = (0...100).map { |x| X11.XGetPixel(image, x, 0) & 0xffffff }
+    X11.XDestroyImage(image)
+    break if colors.include?(0x285577) && colors.include?(0x333333)
+    if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+      abort "workspace backgrounds missing: active=#{colors.include?(0x285577)}, occupied=#{colors.include?(0x333333)}, observed=#{colors.uniq.map { |color| format('#%06x', color) }.join(', ')}"
+    end
+    sleep 0.02
+  end
   X11.XChangeProperty(connection, window, desktop, 6, 32, 0, [0].pack('L!'), 1)
   X11.XSync(connection, 0)
   sleep 0.2
