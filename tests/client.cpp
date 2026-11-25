@@ -30,6 +30,31 @@ int main(int argc, char **argv) {
                         return static_cast<xcb_keycode_t>(setup->min_keycode + i);
             return 0;
         };
+        if (std::strcmp(mode, "startup-failure") == 0) {
+            auto window = xcb_generate_id(c);
+            xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, 100, 100, 0,
+                              XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+            xcb_map_window(c, window);
+            xcb_flush(c);
+            std::puts("startup failure ready");
+            std::fflush(stdout);
+            if (std::getchar() == EOF) return EXIT_FAILURE;
+            using Attributes = std::unique_ptr<xcb_get_window_attributes_reply_t, decltype(&std::free)>;
+            Attributes attributes{xcb_get_window_attributes_reply(c, xcb_get_window_attributes(c, window), nullptr), &std::free};
+            if (!attributes || attributes->map_state != XCB_MAP_STATE_VIEWABLE) return EXIT_FAILURE;
+            for (const char *name : {"_NET_SUPPORTED", "_NET_NUMBER_OF_DESKTOPS", "_NET_CURRENT_DESKTOP", "_NET_SUPPORTING_WM_CHECK"}) {
+                std::unique_ptr<xcb_intern_atom_reply_t, decltype(&std::free)> atom{
+                    xcb_intern_atom_reply(c, xcb_intern_atom(c, false, static_cast<uint16_t>(std::strlen(name)), name), nullptr), &std::free};
+                if (!atom) return EXIT_FAILURE;
+                std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)> property{
+                    xcb_get_property_reply(c, xcb_get_property(c, false, screen->root, atom->atom, XCB_GET_PROPERTY_TYPE_ANY, 0, 1), nullptr), &std::free};
+                if (!property || property->type != XCB_ATOM_NONE) {
+                    std::fprintf(stderr, "startup failure left root property %s\n", name);
+                    return EXIT_FAILURE;
+                }
+            }
+            return EXIT_SUCCESS;
+        }
         if (std::strcmp(mode, "grab-conflict") == 0) {
             auto one = key('1');
             if (!one) return EXIT_FAILURE;

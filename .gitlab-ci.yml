@@ -14,10 +14,11 @@ build:
   parallel:
     matrix:
       - CXX: [g++, clang++]
+        BUILD_TYPE: [debug, release]
   before_script:
     - apt-get update && apt-get install -y g++ clang meson ninja-build pkg-config guile-3.0-dev libxcb1-dev libxcb-randr0-dev libxcb-xkb-dev libxkbcommon-x11-dev libxcb-xtest0-dev ruby xvfb x11-xkb-utils xkb-data
   script:
-    - meson setup build -Dwerror=true
+    - meson setup build --buildtype=$BUILD_TYPE -Db_ndebug=if-release -Dwerror=true
     - meson compile -C build
     - meson test -C build --print-errorlogs
 

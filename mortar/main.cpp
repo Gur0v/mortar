@@ -63,30 +63,6 @@ static std::pair<uint32_t, uint32_t> hinted_size(uint32_t width, uint32_t height
 }
 
 int main() {
-    struct Actions {
-        std::function<void(unsigned)> workspace;
-        std::function<void(unsigned)> move;
-    } actions;
-    mortar::Config config(&actions,
-        [](void *host, unsigned digit) { static_cast<Actions *>(host)->workspace(digit); },
-        [](void *host, unsigned digit) { static_cast<Actions *>(host)->move(digit); });
-    const char *xdg = std::getenv("XDG_CONFIG_HOME");
-    const char *home = std::getenv("HOME");
-    std::filesystem::path config_dir;
-    if (xdg && *xdg && std::filesystem::path(xdg).is_absolute()) config_dir = xdg;
-    else if (home && *home && std::filesystem::path(home).is_absolute()) config_dir = std::filesystem::path(home) / ".config";
-    if (!config_dir.empty()) {
-        auto path = config_dir / "mortar/config.scm";
-        std::error_code error;
-        auto status = std::filesystem::status(path, error);
-        if (error && error != std::errc::no_such_file_or_directory) {
-            std::fprintf(stderr, "mortar: cannot inspect configuration %s: %s\n", path.c_str(), error.message().c_str());
-        } else if (std::filesystem::exists(status) && !config.load(path.c_str())) {
-            std::fprintf(stderr, "mortar: failed to load configuration %s; using defaults\n", path.c_str());
-        }
-    } else {
-        std::fputs("mortar: cannot locate configuration: HOME is not an absolute path\n", stderr);
-    }
     int screen_number = 0;
     using Connection = std::unique_ptr<xcb_connection_t, decltype(&xcb_disconnect)>;
     Connection connection{xcb_connect(nullptr, &screen_number), &xcb_disconnect};
@@ -116,6 +92,34 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    xcb_ungrab_server(connection.get());
+    xcb_flush(connection.get());
+
+    struct Actions {
+        std::function<void(unsigned)> workspace;
+        std::function<void(unsigned)> move;
+    } actions;
+    mortar::Config config(&actions,
+        [](void *host, unsigned digit) { static_cast<Actions *>(host)->workspace(digit); },
+        [](void *host, unsigned digit) { static_cast<Actions *>(host)->move(digit); });
+    const char *xdg = std::getenv("XDG_CONFIG_HOME");
+    const char *home = std::getenv("HOME");
+    std::filesystem::path config_dir;
+    if (xdg && *xdg && std::filesystem::path(xdg).is_absolute()) config_dir = xdg;
+    else if (home && *home && std::filesystem::path(home).is_absolute()) config_dir = std::filesystem::path(home) / ".config";
+    if (!config_dir.empty()) {
+        auto path = config_dir / "mortar/config.scm";
+        std::error_code error;
+        auto status = std::filesystem::status(path, error);
+        if (error && error != std::errc::no_such_file_or_directory) {
+            std::fprintf(stderr, "mortar: cannot inspect configuration %s: %s\n", path.c_str(), error.message().c_str());
+        } else if (std::filesystem::exists(status) && !config.load(path.c_str())) {
+            std::fprintf(stderr, "mortar: failed to load configuration %s; using defaults\n", path.c_str());
+        }
+    } else {
+        std::fputs("mortar: cannot locate configuration: HOME is not an absolute path\n", stderr);
+    }
+    xcb_grab_server(connection.get());
     auto *c = connection.get();
     const auto root = screens.data->root;
     std::unique_ptr<mortar::Keyboard> keyboard;
@@ -162,16 +166,6 @@ int main() {
     };
     current = cardinal(root, net_current, 0);
     auto support = xcb_generate_id(c);
-    xcb_create_window(c, XCB_COPY_FROM_PARENT, support, root, 0, 0, 1, 1, 0,
-                      XCB_WINDOW_CLASS_INPUT_OUTPUT, screens.data->root_visual, 0, nullptr);
-    xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_check, XCB_ATOM_WINDOW, 32, 1, &support);
-    xcb_change_property(c, XCB_PROP_MODE_REPLACE, support, net_check, XCB_ATOM_WINDOW, 32, 1, &support);
-    xcb_change_property(c, XCB_PROP_MODE_REPLACE, support, net_name, utf8, 8, 6, "mortar");
-    const xcb_atom_t supported_atoms[] = {net_number, net_current, net_desktop, net_check, net_name};
-    const uint32_t desktop_count = workspaces.size();
-    xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_supported, XCB_ATOM_ATOM, 32, 5, supported_atoms);
-    xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_number, XCB_ATOM_CARDINAL, 32, 1, &desktop_count);
-    xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_current, XCB_ATOM_CARDINAL, 32, 1, &current);
     auto set_desktop = [&](xcb_window_t window, uint32_t desktop) {
         xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, net_desktop, XCB_ATOM_CARDINAL, 32, 1, &desktop);
     };
@@ -380,6 +374,17 @@ int main() {
         std::fputs("mortar: cannot query root windows\n", stderr);
         return EXIT_FAILURE;
     }
+    xcb_create_window(c, XCB_COPY_FROM_PARENT, support, root, 0, 0, 1, 1, 0,
+                      XCB_WINDOW_CLASS_INPUT_OUTPUT, screens.data->root_visual, 0, nullptr);
+    xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_check, XCB_ATOM_WINDOW, 32, 1, &support);
+    xcb_change_property(c, XCB_PROP_MODE_REPLACE, support, net_check, XCB_ATOM_WINDOW, 32, 1, &support);
+    xcb_change_property(c, XCB_PROP_MODE_REPLACE, support, net_name, utf8, 8, 6, "mortar");
+    const xcb_atom_t supported_atoms[] = {net_number, net_current, net_desktop, net_check, net_name};
+    const uint32_t desktop_count = workspaces.size();
+    xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_supported, XCB_ATOM_ATOM, 32, 5, supported_atoms);
+    xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_number, XCB_ATOM_CARDINAL, 32, 1, &desktop_count);
+    xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_current, XCB_ATOM_CARDINAL, 32, 1, &current);
+    try {
     auto *children = xcb_query_tree_children(tree.get());
     for (int i = 0; i < xcb_query_tree_children_length(tree.get()); ++i) {
         manage(children[i], true);
@@ -395,6 +400,21 @@ int main() {
         std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
         pending_focus.push_back(workspaces[current].windows.back());
         focus_sequence = static_cast<uint16_t>(xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, focus_time, XCB_ATOM_WINDOW, 32, 0, nullptr).sequence);
+    }
+    } catch (...) {
+        xcb_delete_property(c, root, net_check);
+        xcb_delete_property(c, root, net_supported);
+        xcb_delete_property(c, root, net_number);
+        xcb_delete_property(c, root, focus_time);
+        const uint32_t no_events = 0;
+        xcb_change_window_attributes(c, root, XCB_CW_EVENT_MASK, &no_events);
+        for (const auto &workspace : workspaces)
+            for (auto window : workspace.windows) xcb_map_window(c, window);
+        xcb_destroy_window(c, support);
+        xcb_ungrab_server(c);
+        xcb_flush(c);
+        std::fputs("mortar: startup window management failed\n", stderr);
+        return EXIT_FAILURE;
     }
     xcb_ungrab_server(c);
     starting = false;

@@ -6,7 +6,7 @@ Configuration is trusted executable Scheme, running with your user privileges. I
 
 ## Workspace bindings
 
-The built-in shortcuts are Alt+digit to switch workspaces and Alt+Shift+digit to move the focused window. Digits are integers from 0 through 9: 1 selects workspace 1, through 9 for workspace 9, and 0 selects workspace 10. Keyboard layouts may require additional modifiers to produce a digit.
+The built-in shortcuts use Alt plus the modifiers required to produce a digit to switch workspaces. Add Shift to move the focused window, or add Control instead when the digit requires Shift. Digit levels requiring both Shift and Control are not bound. If a shortcut matches multiple digit levels, switch actions take priority over move actions. Digits are integers from 0 through 9: 1 selects workspace 1, through 9 for workspace 9, and 0 selects workspace 10.
 
 Configuration can replace the callbacks for these built-in shortcuts, but cannot change their keys or modifiers or add arbitrary shortcuts. A callback takes no arguments. For example:
 

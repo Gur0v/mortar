@@ -5,8 +5,45 @@ Dir.mktmpdir('mortar-test-') do |dir|
   xvfb = nil
   wm = nil
   begin
-    system({ 'DISPLAY' => '' }, ARGV.fetch(0), out: File::NULL, err: File::NULL) and
+    config_dir = File.join(dir, 'mortar')
+    Dir.mkdir(config_dir)
+    config = File.join(config_dir, 'config.scm')
+    marker = File.join(dir, 'side-effect')
+    side_effect = "(call-with-output-file #{marker.dump} (lambda (port) (display \"executed\" port)))\n"
+    File.write(config, side_effect)
+    invalid_env = { 'DISPLAY' => '', 'XDG_CONFIG_HOME' => dir, 'HOME' => dir }
+    system(invalid_env, ARGV.fetch(0), out: File::NULL, err: File::NULL) and
       abort 'Expected failure without an X server'
+    abort 'Configuration executed without an X server' if File.exist?(marker)
+    File.delete(config)
+    reader, writer = IO.pipe
+    xvfb = Process.spawn('Xvfb', '-displayfd', '3', '-screen', '0', '800x600x24', '-extension', 'RANDR',
+                         3 => writer, out: File::NULL, err: File::NULL)
+    writer.close
+    display = Timeout.timeout(10) { reader.gets }
+    reader.close
+    abort 'Xvfb without RandR failed to start' unless display
+    env = { 'DISPLAY' => ":#{Integer(display)}", 'XDG_CONFIG_HOME' => dir, 'HOME' => dir }
+    client_input, client_writer = IO.pipe
+    client_reader, client_output = IO.pipe
+    client = Process.spawn(env, ARGV.fetch(1), 'startup-failure', in: client_input, out: client_output)
+    client_input.close
+    client_output.close
+    abort 'Client failed to prepare startup failure check' unless
+      Timeout.timeout(10) { client_reader.gets } == "startup failure ready\n"
+    error_path = File.join(dir, 'no-randr.log')
+    success = system(env, ARGV.fetch(0), out: File::NULL, err: error_path)
+    abort 'Window manager unexpectedly started without RandR' if success
+    abort 'Window manager failed for an unexpected reason' unless File.read(error_path).include?('RandR extension unavailable')
+    client_writer.puts
+    client_writer.close
+    client_reader.close
+    _, status = Timeout.timeout(10) { Process.wait2(client) }
+    client = nil
+    abort 'Startup failure left stale EWMH state or unmapped an existing window' unless status.success?
+    Process.kill('TERM', xvfb)
+    Process.wait(xvfb)
+    xvfb = nil
     reader, writer = IO.pipe
     xvfb = Process.spawn('Xvfb', '-displayfd', '3', '-screen', '0', '800x600x24',
                          3 => writer, out: File::NULL, err: File::NULL)
@@ -43,12 +80,18 @@ Dir.mktmpdir('mortar-test-') do |dir|
     abort 'Client failed to create existing window' unless
       Timeout.timeout(10) { client_reader.gets } == "existing window ready\n"
     wm_error_path = File.join(dir, 'wm.log')
+    File.write(config, side_effect)
     wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: wm_error_path)
     client_writer.puts
     abort 'Window manager failed to manage existing window' unless
       Timeout.timeout(10) { client_reader.gets } == "window manager ready\n"
+    abort 'Valid configuration side effect did not execute' unless File.exist?(marker)
+    File.delete(marker)
     error_path = File.join(dir, 'second.log')
+    File.write(config, side_effect)
     success = system(env, ARGV.fetch(0), out: File::NULL, err: error_path)
+    abort 'Configuration executed while another window manager exists' if File.exist?(marker)
+    File.delete(config)
     abort 'Second window manager unexpectedly succeeded' if success
     abort 'Second window manager failed for an unexpected reason' unless
       File.read(error_path).include?('cannot acquire window management')
@@ -89,9 +132,6 @@ Dir.mktmpdir('mortar-test-') do |dir|
     wm = nil
     abort "Window manager shutdown failed:\n#{File.read(wm_error_path)}" unless status.success?
     abort 'Keyboard reset failed' unless system(env, 'setxkbmap', '-layout', 'us', out: File::NULL)
-    config_dir = File.join(dir, 'mortar')
-    Dir.mkdir(config_dir)
-    config = File.join(config_dir, 'config.scm')
     File.write(config, "(bind-workspace 2 (lambda () (workspace 3)))\n(error \"broken configuration\")\n")
     error_path = File.join(dir, 'config.log')
     wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: error_path)

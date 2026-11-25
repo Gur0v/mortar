@@ -74,6 +74,42 @@ int main()
             auto action = process();
             require(action && action->workspace == 8 && !action->move, "mapping failed after reload");
         }
+        require(std::system("setxkbmap -layout fr") == 0, "French layout setup failed");
+        {
+            mortar::Keyboard keyboard(connection, screen->root);
+            auto* context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+            require(context != nullptr, "XKB context unavailable");
+            auto* map = xkb_x11_keymap_new_from_device(context, connection,
+                xkb_x11_get_core_keyboard_device_id(connection), XKB_KEYMAP_COMPILE_NO_FLAGS);
+            require(map != nullptr, "XKB keymap unavailable");
+            auto key = xkb_keymap_key_by_name(map, "AE01");
+            auto alt_index = xkb_keymap_mod_get_index(map, XKB_MOD_NAME_ALT);
+            require(alt_index < 8, "Alt modifier unavailable");
+            auto alt = static_cast<std::uint16_t>(1U << alt_index);
+            xkb_keymap_unref(map);
+            xkb_context_unref(context);
+            xcb_key_press_event_t press{};
+            press.response_type = XCB_KEY_PRESS;
+            press.detail = static_cast<xcb_keycode_t>(key);
+            auto process = [&] { return keyboard.process(reinterpret_cast<const xcb_generic_event_t&>(press)); };
+            press.state = alt;
+            require(!process(), "shifted digit matched without Shift");
+            press.state = alt | XCB_MOD_MASK_SHIFT;
+            auto action = process();
+            require(action && action->workspace == 0 && !action->move, "shifted digit switch failed");
+            press.state |= XCB_MOD_MASK_CONTROL;
+            action = process();
+            require(action && action->workspace == 0 && action->move, "shifted digit move failed");
+            auto* other = xcb_connect(nullptr, nullptr);
+            require(other && !xcb_connection_has_error(other), "second X connection failed");
+            for (auto mods : {static_cast<std::uint16_t>(alt | XCB_MOD_MASK_SHIFT), press.state}) {
+                auto* error = xcb_request_check(other, xcb_grab_key_checked(other, 1, screen->root,
+                    mods, press.detail, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC));
+                require(error && error->error_code == XCB_ACCESS, "shifted digit shortcut was not grabbed");
+                std::free(error);
+            }
+            xcb_disconnect(other);
+        }
         require(std::system("setxkbmap -layout ir -variant ku_ara") == 0, "custom layout setup failed");
         {
             mortar::Keyboard keyboard(connection, screen->root);

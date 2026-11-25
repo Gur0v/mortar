@@ -132,7 +132,9 @@ void Keyboard::reload()
                         for (std::size_t j = 0; j < mask_count; ++j) {
                             if ((masks[j] & ~(0xffU | static_cast<unsigned>(locks))) != 0) continue;
                             auto mods = static_cast<std::uint16_t>(masks[j] & ~locks);
-                            if ((mods & alt) != 0) continue;
+                            if ((mods & alt) != 0 ||
+                                (mods & (XCB_MOD_MASK_SHIFT | XCB_MOD_MASK_CONTROL)) ==
+                                    (XCB_MOD_MASK_SHIFT | XCB_MOD_MASK_CONTROL)) continue;
                             keys.push_back({static_cast<xcb_keycode_t>(key), group, workspace, mods});
                         }
                     }
@@ -146,10 +148,11 @@ void Keyboard::reload()
         for (auto [key, group, workspace, modifiers] : keys) {
             (void)group;
             (void)workspace;
-            for (unsigned shift : {0U, static_cast<unsigned>(XCB_MOD_MASK_SHIFT)}) {
+            auto move = (modifiers & XCB_MOD_MASK_SHIFT) ? XCB_MOD_MASK_CONTROL : XCB_MOD_MASK_SHIFT;
+            for (unsigned extra : {0U, static_cast<unsigned>(move)}) {
                 for (unsigned mask = 0; mask < 256; ++mask) {
                     if ((mask & ~locks) != 0) continue;
-                    auto grab = std::pair{key, static_cast<std::uint16_t>(alt | modifiers | shift | mask)};
+                    auto grab = std::pair{key, static_cast<std::uint16_t>(alt | modifiers | extra | mask)};
                     if (std::find(next.begin(), next.end(), grab) != next.end()) continue;
                     next.push_back(grab);
                     if (std::find(grabs_.begin(), grabs_.end(), grab) != grabs_.end()) continue;
@@ -199,12 +202,14 @@ std::optional<WorkspaceAction> Keyboard::process(const xcb_generic_event_t& even
         xkb_state_update_mask(state, 0, 0, 0, 0, 0, (press.state >> 13) & 3);
         auto group = xkb_state_key_get_layout(state, press.detail);
         xkb_state_unref(state);
-        for (unsigned shift : {0U, static_cast<unsigned>(XCB_MOD_MASK_SHIFT)}) {
-            for (auto [key, layout, workspace, modifiers] : keys_) {
-                if (key == press.detail && layout == group &&
-                    mods == (alt_ | modifiers | shift))
-                    return WorkspaceAction{workspace, (mods & XCB_MOD_MASK_SHIFT) != 0};
-            }
+        for (auto [key, layout, workspace, modifiers] : keys_) {
+            if (key != press.detail || layout != group) continue;
+            if (mods == (alt_ | modifiers)) return WorkspaceAction{workspace, false};
+        }
+        for (auto [key, layout, workspace, modifiers] : keys_) {
+            auto move = (modifiers & XCB_MOD_MASK_SHIFT) ? XCB_MOD_MASK_CONTROL : XCB_MOD_MASK_SHIFT;
+            if (key == press.detail && layout == group && mods == (alt_ | modifiers | move))
+                return WorkspaceAction{workspace, true};
         }
     }
     return std::nullopt;
