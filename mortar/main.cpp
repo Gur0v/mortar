@@ -1,4 +1,5 @@
 #include "workspaces.hpp"
+#include "keyboard.hpp"
 
 #include <xcb/xcb.h>
 #include <xcb/randr.h>
@@ -89,6 +90,13 @@ int main() {
 
     auto *c = connection.get();
     const auto root = screens.data->root;
+    std::unique_ptr<mortar::Keyboard> keyboard;
+    try {
+        keyboard = std::make_unique<mortar::Keyboard>(c, root);
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "mortar: keyboard setup failed: %s\n", error.what());
+        return EXIT_FAILURE;
+    }
     mortar::Workspaces workspace_state;
     auto &workspaces = workspace_state.workspaces;
     auto &current = workspace_state.current;
@@ -235,6 +243,40 @@ int main() {
         } else xcb_set_input_focus(c, XCB_INPUT_FOCUS_POINTER_ROOT, root, XCB_CURRENT_TIME);
         xcb_flush(c);
     };
+    auto switch_workspace = [&](uint32_t destination) {
+        if (destination >= workspaces.size() || destination == current) return;
+        for (auto window : workspaces[current].windows) unmap(window);
+        workspace_state.switch_to(destination);
+        xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_current, XCB_ATOM_CARDINAL, 32, 1, &current);
+        tile();
+        for (auto window : workspaces[current].windows) xcb_map_window(c, window);
+        restore_focus();
+    };
+    auto move_window = [&](xcb_window_t window, uint32_t to) {
+        if (to >= workspaces.size()) return;
+        int from = owner(window);
+        if (from >= 0 && static_cast<uint32_t>(from) != to) {
+            auto &source = workspaces[from];
+            auto &destination = workspaces[to];
+            bool was_focused = source.focused == window;
+            bool destination_empty = destination.windows.empty();
+            if (!workspace_state.move(window, to)) return;
+            set_desktop(window, to);
+            if (static_cast<uint32_t>(from) == current) {
+                unmap(window);
+                tile();
+                if (was_focused) restore_focus();
+            } else if (to == current) {
+                tile();
+                xcb_map_window(c, window);
+                if (destination_empty) restore_focus();
+            }
+            xcb_flush(c);
+        } else if (from < 0 && std::find(iconic.begin(), iconic.end(), window) != iconic.end()) {
+            set_desktop(window, to);
+            xcb_flush(c);
+        }
+    };
     auto manage = [&](xcb_window_t window, bool existing) {
         if (window == support) return;
         if (owner(window) >= 0) {
@@ -341,6 +383,14 @@ int main() {
             poll(&fd, 1, 100);
             continue;
         }
+        try {
+            if (auto action = keyboard->process(*event)) {
+                if (action->move) move_window(workspaces[current].focused, action->workspace);
+                else switch_workspace(action->workspace);
+            }
+        } catch (const std::exception &error) {
+            std::fprintf(stderr, "mortar: keyboard update failed: %s\n", error.what());
+        }
         const auto type = event->response_type & 0x7f;
         if (type == randr->first_event + XCB_RANDR_SCREEN_CHANGE_NOTIFY) {
             auto *change = reinterpret_cast<xcb_randr_screen_change_notify_event_t *>(event);
@@ -381,39 +431,10 @@ int main() {
             auto *message = reinterpret_cast<xcb_client_message_event_t *>(event);
             if (message->format == 32 && message->type == net_current && message->window == root &&
                 message->data.data32[0] < workspaces.size() && message->data.data32[0] != current) {
-                for (auto window : workspaces[current].windows) {
-                    unmap(window);
-                }
-                workspace_state.switch_to(message->data.data32[0]);
-                xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_current, XCB_ATOM_CARDINAL, 32, 1, &current);
-                tile();
-                for (auto window : workspaces[current].windows) xcb_map_window(c, window);
-                restore_focus();
+                switch_workspace(message->data.data32[0]);
             } else if (message->format == 32 && message->type == net_desktop &&
                        message->data.data32[0] < workspaces.size()) {
-                int from = owner(message->window);
-                uint32_t to = message->data.data32[0];
-                if (from >= 0 && static_cast<uint32_t>(from) != to) {
-                    auto &source = workspaces[from];
-                    auto &destination = workspaces[to];
-                    bool was_focused = source.focused == message->window;
-                    bool destination_empty = destination.windows.empty();
-                    if (!workspace_state.move(message->window, to)) break;
-                    set_desktop(message->window, to);
-                    if (static_cast<uint32_t>(from) == current) {
-                        unmap(message->window);
-                        tile();
-                        if (was_focused) restore_focus();
-                    } else if (to == current) {
-                        tile();
-                        xcb_map_window(c, message->window);
-                        if (destination_empty) restore_focus();
-                    }
-                    xcb_flush(c);
-                } else if (from < 0 && std::find(iconic.begin(), iconic.end(), message->window) != iconic.end()) {
-                    set_desktop(message->window, to);
-                    xcb_flush(c);
-                }
+                move_window(message->window, message->data.data32[0]);
             } else if (message->type == wm_change_state && message->format == 32 && message->data.data32[0] == 3 &&
                 workspaces[current].layout.contains(message->window)) {
                 bool was_focused = workspaces[current].focused == message->window;

@@ -17,6 +17,26 @@ Dir.mktmpdir('mortar-test-') do |dir|
     env = { 'DISPLAY' => ":#{Integer(display)}" }
     client_input, client_writer = IO.pipe
     client_reader, client_output = IO.pipe
+    client = Process.spawn(env, ARGV.fetch(1), 'grab-conflict', in: client_input, out: client_output)
+    client_input.close
+    client_output.close
+    abort 'Client failed to grab Alt+1' unless
+      Timeout.timeout(10) { client_reader.gets } == "grab conflict ready\n"
+    error_path = File.join(dir, 'grab-conflict.log')
+    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: error_path)
+    _, status = Timeout.timeout(10) { Process.wait2(wm) }
+    wm = nil
+    abort 'Window manager unexpectedly accepted keyboard grab conflict' if status.success?
+    abort 'Window manager failed for an unexpected reason' unless
+      File.read(error_path).include?('keyboard setup failed')
+    client_writer.puts
+    client_writer.close
+    _, status = Timeout.timeout(10) { Process.wait2(client) }
+    client = nil
+    abort 'Existing client did not remain mapped' unless status.success?
+    client_reader.close
+    client_input, client_writer = IO.pipe
+    client_reader, client_output = IO.pipe
     client = Process.spawn(env, ARGV.fetch(1), in: client_input, out: client_output)
     client_input.close
     client_output.close
@@ -47,6 +67,22 @@ Dir.mktmpdir('mortar-test-') do |dir|
     _, status = Timeout.timeout(30) { Process.wait2(client) }
     client = nil
     abort 'Client geometry checks failed' unless status.success?
+    failures = %w[switch move caps num both move-caps move-num move-both remap].reject do |mode|
+      system(env, ARGV.fetch(1), mode, out: File::NULL)
+    end
+    abort "Keyboard checks failed: #{failures.join(', ')}" unless failures.empty?
+    Process.kill('TERM', wm)
+    _, status = Timeout.timeout(10) { Process.wait2(wm) }
+    wm = nil
+    abort 'Window manager shutdown failed' unless status.success?
+    abort 'French keyboard setup failed' unless system(env, 'setxkbmap', '-layout', 'fr', out: File::NULL)
+    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: File::NULL)
+    %w[switch move].each do |mode|
+      abort "French keyboard check failed: #{mode}" unless system(env, ARGV.fetch(1), mode, out: File::NULL)
+    end
+    abort 'Keyboard group setup failed' unless
+      system(env, 'setxkbmap', '-layout', 'us,fr', '-option', 'grp:alt_shift_toggle', out: File::NULL)
+    abort 'Keyboard group check failed' unless system(env, ARGV.fetch(1), 'group', out: File::NULL)
   ensure
     [client, wm, xvfb].compact.each do |pid|
       begin

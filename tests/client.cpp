@@ -1,18 +1,152 @@
 #include <xcb/xcb.h>
+#include <xcb/xtest.h>
 
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <thread>
+#include <cstring>
 
-int main() {
+int main(int argc, char **argv) {
     using Connection = std::unique_ptr<xcb_connection_t, decltype(&xcb_disconnect)>;
     Connection connection{xcb_connect(nullptr, nullptr), &xcb_disconnect};
     if (!connection || xcb_connection_has_error(connection.get())) return EXIT_FAILURE;
     auto *c = connection.get();
     auto *screen = xcb_setup_roots_iterator(xcb_get_setup(c)).data;
     if (!screen) return EXIT_FAILURE;
+    if (argc == 2) {
+        auto mode = argv[1];
+        auto setup = xcb_get_setup(c);
+        auto count = static_cast<uint8_t>(setup->max_keycode - setup->min_keycode + 1);
+        using Mapping = std::unique_ptr<xcb_get_keyboard_mapping_reply_t, decltype(&std::free)>;
+        Mapping mapping{xcb_get_keyboard_mapping_reply(c, xcb_get_keyboard_mapping(c, setup->min_keycode, count), nullptr), &std::free};
+        if (!mapping) return EXIT_FAILURE;
+        auto symbols = xcb_get_keyboard_mapping_keysyms(mapping.get());
+        auto key = [&](xcb_keysym_t symbol) -> xcb_keycode_t {
+            for (int i = 0; i < count; ++i)
+                for (int j = 0; j < mapping->keysyms_per_keycode; ++j)
+                    if (symbols[i * mapping->keysyms_per_keycode + j] == symbol)
+                        return static_cast<xcb_keycode_t>(setup->min_keycode + i);
+            return 0;
+        };
+        if (std::strcmp(mode, "grab-conflict") == 0) {
+            auto one = key('1');
+            if (!one) return EXIT_FAILURE;
+            auto error = xcb_request_check(c, xcb_grab_key_checked(c, false, screen->root, XCB_MOD_MASK_1,
+                                                                  one, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC));
+            if (error) { std::free(error); return EXIT_FAILURE; }
+            auto window = xcb_generate_id(c);
+            xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, 100, 100, 0,
+                              XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+            xcb_map_window(c, window);
+            using Attributes = std::unique_ptr<xcb_get_window_attributes_reply_t, decltype(&std::free)>;
+            auto viewable = [&] {
+                Attributes reply{xcb_get_window_attributes_reply(c, xcb_get_window_attributes(c, window), nullptr), &std::free};
+                return reply && reply->map_state == XCB_MAP_STATE_VIEWABLE;
+            };
+            if (!viewable()) return EXIT_FAILURE;
+            std::puts("grab conflict ready");
+            std::fflush(stdout);
+            return std::getchar() != EOF && viewable() ? EXIT_SUCCESS : EXIT_FAILURE;
+        }
+        auto extension = xcb_get_extension_data(c, &xcb_test_id);
+        if (!extension || !extension->present) return EXIT_FAILURE;
+        auto alt = key(0xffe9);
+        auto shift = key(0xffe1);
+        auto one = key('1');
+        auto two = key('2');
+        auto caps = key(0xffe5);
+        auto num = key(0xff7f);
+        if (!alt || !shift || !one || !two || !caps || !num) return EXIT_FAILURE;
+        auto press = [&](xcb_keycode_t code, bool down) {
+            xcb_test_fake_input(c, down ? XCB_KEY_PRESS : XCB_KEY_RELEASE, code, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+        };
+        auto tap = [&](xcb_keycode_t code) { press(code, true); press(code, false); };
+        auto intern_key = [&](const char *name) {
+            std::unique_ptr<xcb_intern_atom_reply_t, decltype(&std::free)> reply{
+                xcb_intern_atom_reply(c, xcb_intern_atom(c, false, static_cast<uint16_t>(std::strlen(name)), name), nullptr), &std::free};
+            return reply ? reply->atom : xcb_atom_t{XCB_ATOM_NONE};
+        };
+        auto current = intern_key("_NET_CURRENT_DESKTOP");
+        auto desktop = intern_key("_NET_WM_DESKTOP");
+        if (!current || !desktop) return EXIT_FAILURE;
+        xcb_client_message_event_t request{};
+        request.response_type = XCB_CLIENT_MESSAGE;
+        request.format = 32;
+        request.window = screen->root;
+        request.type = current;
+        xcb_send_event(c, false, screen->root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                       reinterpret_cast<const char *>(&request));
+        auto wait_property = [&](xcb_window_t window, xcb_atom_t atom, uint32_t expected) {
+            for (int i = 0; i < 250; ++i) {
+                std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)> reply{
+                    xcb_get_property_reply(c, xcb_get_property(c, false, window, atom, XCB_ATOM_CARDINAL, 0, 1), nullptr), &std::free};
+                if (reply && reply->type == XCB_ATOM_CARDINAL && reply->format == 32 &&
+                    xcb_get_property_value_length(reply.get()) == 4 &&
+                    *static_cast<uint32_t *>(xcb_get_property_value(reply.get())) == expected) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            std::fprintf(stderr, "%s: property %#x on %#x did not reach %u\n", mode, atom, window, expected);
+            return false;
+        };
+        if (!wait_property(screen->root, current, 0)) return EXIT_FAILURE;
+        auto window = xcb_generate_id(c);
+        xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, 100, 100, 0,
+                          XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+        xcb_map_window(c, window);
+        xcb_flush(c);
+        if (!wait_property(window, desktop, 0)) return EXIT_FAILURE;
+        bool focused = false;
+        for (int i = 0; i < 250; ++i) {
+            std::unique_ptr<xcb_get_input_focus_reply_t, decltype(&std::free)> reply{
+                xcb_get_input_focus_reply(c, xcb_get_input_focus(c), nullptr), &std::free};
+            if (reply && reply->focus == window) { focused = true; break; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        if (!focused) {
+            std::fprintf(stderr, "%s: test window did not receive focus\n", mode);
+            return EXIT_FAILURE;
+        }
+        if (std::strcmp(mode, "remap") == 0) {
+            auto width = mapping->keysyms_per_keycode;
+            auto first = symbols + (one - setup->min_keycode) * width;
+            auto second = symbols + (two - setup->min_keycode) * width;
+            auto error = xcb_request_check(c, xcb_change_keyboard_mapping_checked(c, 1, one, width, second));
+            if (error) { std::free(error); return EXIT_FAILURE; }
+            error = xcb_request_check(c, xcb_change_keyboard_mapping_checked(c, 1, two, width, first));
+            if (error) { std::free(error); return EXIT_FAILURE; }
+            std::swap(one, two);
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+        if (std::strcmp(mode, "group") == 0) {
+            press(alt, true); tap(shift); press(alt, false); xcb_flush(c);
+            std::unique_ptr<xcb_query_pointer_reply_t, decltype(&std::free)> pointer{
+                xcb_query_pointer_reply(c, xcb_query_pointer(c, screen->root), nullptr), &std::free};
+            if (!pointer || ((pointer->mask >> 13) & 3) != 1) return EXIT_FAILURE;
+        }
+        bool move = std::strncmp(mode, "move", 4) == 0;
+        bool caps_lock = std::strstr(mode, "caps") || std::strstr(mode, "both");
+        bool num_lock = std::strstr(mode, "num") || std::strstr(mode, "both");
+        if (caps_lock) tap(caps);
+        if (num_lock) tap(num);
+        press(alt, true);
+        if (move) press(shift, true);
+        tap(two);
+        if (move) press(shift, false);
+        press(alt, false);
+        if (caps_lock) tap(caps);
+        if (num_lock) tap(num);
+        xcb_flush(c);
+        if (move) {
+            if (!wait_property(window, desktop, 1) || !wait_property(screen->root, current, 0)) return EXIT_FAILURE;
+            press(alt, true); tap(two); press(alt, false); xcb_flush(c);
+        }
+        if (!wait_property(screen->root, current, 1)) return EXIT_FAILURE;
+        press(alt, true); tap(one); press(alt, false); xcb_flush(c);
+        if (!wait_property(screen->root, current, 0)) return EXIT_FAILURE;
+        return EXIT_SUCCESS;
+    }
     auto create = [&] {
         auto window = xcb_generate_id(c);
         xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root,
