@@ -150,5 +150,10 @@ int main() {
     xcb_destroy_window(c, third);
     xcb_flush(c);
     if (!tiled(first, 0, 800)) return EXIT_FAILURE;
+    auto fourth = create();
+    if (!tiled(first, 0, 400) || !tiled(fourth, 400, 400)) return EXIT_FAILURE;
+    xcb_destroy_window(c, first);
+    xcb_flush(c);
+    if (!tiled(fourth, 0, 800)) return EXIT_FAILURE;
     return EXIT_SUCCESS;
 }

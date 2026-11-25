@@ -1,3 +1,5 @@
+#include "layout.hpp"
+
 #include <xcb/xcb.h>
 #include <xcb/randr.h>
 
@@ -39,7 +41,7 @@ int main() {
 
     auto *c = connection.get();
     const auto root = screens.data->root;
-    std::vector<xcb_window_t> windows;
+    auto layout = mortar::Layout::split(mortar::Split::horizontal);
     std::vector<xcb_window_t> iconic;
     std::vector<xcb_window_t> pending_unmaps;
     auto atom = [&](const char *name, uint16_t length) {
@@ -102,12 +104,12 @@ int main() {
         xcb_flush(c);
     };
     auto tile = [&] {
-        if (windows.empty()) return;
-        for (size_t i = 0; i < windows.size(); ++i) {
-            const uint32_t left = width * i / windows.size();
-            const uint32_t right = width * (i + 1) / windows.size();
-            const uint32_t values[] = {left, 0, std::max(1u, right - left), height, 0};
-            xcb_configure_window(c, windows[i], XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+        for (const auto &placement : layout.geometry({0, 0, static_cast<int>(width), static_cast<int>(height)})) {
+            const uint32_t values[] = {static_cast<uint32_t>(placement.bounds.x),
+                                       static_cast<uint32_t>(placement.bounds.y),
+                                       static_cast<uint32_t>(std::max(1, placement.bounds.width)),
+                                       static_cast<uint32_t>(std::max(1, placement.bounds.height)), 0};
+            xcb_configure_window(c, placement.window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
                                  XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
                                  XCB_CONFIG_WINDOW_BORDER_WIDTH, values);
         }
@@ -115,7 +117,7 @@ int main() {
     };
     std::vector<xcb_window_t> pending_focus;
     auto manage = [&](xcb_window_t window, bool existing) {
-        if (std::find(windows.begin(), windows.end(), window) != windows.end()) {
+        if (layout.contains(window)) {
             if (!existing) {
                 xcb_map_window(c, window);
                 xcb_flush(c);
@@ -134,7 +136,7 @@ int main() {
         const uint32_t event_mask = XCB_EVENT_MASK_ENTER_WINDOW;
         xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &event_mask);
         std::erase(iconic, window);
-        windows.push_back(window);
+        if (!layout.insert(mortar::Layout::leaf(window))) return;
         set_state(window, 1);
         tile();
         if (!existing) {
@@ -171,7 +173,7 @@ int main() {
         case XCB_ENTER_NOTIFY: {
             auto *enter = reinterpret_cast<xcb_enter_notify_event_t *>(event);
             if (enter->mode == XCB_NOTIFY_MODE_NORMAL && enter->detail != XCB_NOTIFY_DETAIL_INFERIOR &&
-                std::find(windows.begin(), windows.end(), enter->event) != windows.end()) {
+                layout.contains(enter->event)) {
                 if (enter->time != XCB_CURRENT_TIME) focus(enter->event, enter->time);
             }
             break;
@@ -183,7 +185,7 @@ int main() {
                 auto window = pending_focus.front();
                 pending_focus.erase(pending_focus.begin());
                 if (property->time != XCB_CURRENT_TIME &&
-                    std::find(windows.begin(), windows.end(), window) != windows.end()) focus(window, property->time);
+                    layout.contains(window)) focus(window, property->time);
             }
             break;
         }
@@ -193,8 +195,8 @@ int main() {
         case XCB_CLIENT_MESSAGE: {
             auto *message = reinterpret_cast<xcb_client_message_event_t *>(event);
             if (message->type == wm_change_state && message->format == 32 && message->data.data32[0] == 3 &&
-                std::find(windows.begin(), windows.end(), message->window) != windows.end()) {
-                std::erase(windows, message->window);
+                layout.contains(message->window)) {
+                layout.remove(message->window);
                 iconic.push_back(message->window);
                 pending_unmaps.push_back(message->window);
                 set_state(message->window, 3);
@@ -214,19 +216,19 @@ int main() {
                     break;
                 }
             }
-            auto old_size = windows.size();
-            auto removed = std::erase(windows, window) + std::erase(iconic, window);
+            bool was_tiled = layout.remove(window);
+            auto removed = static_cast<size_t>(was_tiled) + std::erase(iconic, window);
             if (type == XCB_DESTROY_NOTIFY) std::erase(pending_unmaps, window);
             if (removed && type == XCB_UNMAP_NOTIFY) {
                 set_state(window, 0);
                 xcb_flush(c);
             }
-            if (windows.size() != old_size) tile();
+            if (was_tiled) tile();
             break;
         }
         case XCB_CONFIGURE_REQUEST: {
             auto *request = reinterpret_cast<xcb_configure_request_event_t *>(event);
-            if (std::find(windows.begin(), windows.end(), request->window) != windows.end()) {
+            if (layout.contains(request->window)) {
                 auto cookie = xcb_get_geometry(c, request->window);
                 std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
                     xcb_get_geometry_reply(c, cookie, nullptr), &std::free};
