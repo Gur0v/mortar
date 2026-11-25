@@ -53,7 +53,7 @@ public:
 
     enum class WorkspaceNavigation { next, previous, back_and_forth };
     using WorkspaceNavigationCallback = void (*)(void *, WorkspaceNavigation);
-    enum class WindowAction { floating, scratch_move, scratch_show, fullscreen, exit };
+    enum class WindowAction { floating, scratch_move, scratch_show, fullscreen, exit, focus_output_next, focus_output_previous, move_output_next, move_output_previous };
     using WindowActionCallback = void (*)(void *, WindowAction);
     using SplitAction = void (*)(void *, Split);
     using FocusAction = void (*)(void *, Direction);

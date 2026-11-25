@@ -100,6 +100,16 @@ bool Outputs::update(const std::vector<OutputGeometry> &geometries) {
     return true;
 }
 
+std::optional<std::uint32_t> Outputs::adjacent_workspace(bool forward) const {
+    if (!focused_ || outputs_.size() < 2) return std::nullopt;
+    auto current = std::find_if(outputs_.begin(), outputs_.end(), [&](const auto &output) {
+        return output.name == *focused_;
+    });
+    if (current == outputs_.end()) return std::nullopt;
+    auto index = static_cast<std::size_t>(current - outputs_.begin());
+    return outputs_[(index + (forward ? 1 : outputs_.size() - 1)) % outputs_.size()].workspace;
+}
+
 bool Outputs::focus_output(const std::string &name) {
     auto output = std::find_if(outputs_.begin(), outputs_.end(), [&](const auto &item) {
         return item.name == name;

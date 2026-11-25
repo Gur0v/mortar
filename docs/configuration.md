@@ -25,6 +25,7 @@ Here Alt+1 switches to workspace 2, and Alt+Shift+0 moves the focused window to 
 - `(workspace-next)` and `(workspace-previous)` switch among occupied or visible workspaces in numeric order, wrapping at either end.
 - `(workspace-back-and-forth)` switches to the previously focused workspace, including one that became empty. It does nothing until a workspace change occurs. These actions have no default shortcuts; use `bind-key` to assign them.
 - `(move-to-workspace digit)` moves the focused window to the specified workspace.
+- `(focus-output-next)` and `(focus-output-previous)` focus the visible workspace on the next or previous output. `(move-to-output-next)` and `(move-to-output-previous)` move the focused window to that workspace without changing output focus. These actions cycle through the outputs model's order, wrap at either end, and do nothing with fewer than two outputs. They have no default shortcuts.
 
 Bindings can only be registered while loading configuration. Workspace actions can only be called from a callback, not during configuration loading. Repeated registrations for the same shortcut replace the previous callback.
 

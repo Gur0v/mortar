@@ -12,13 +12,16 @@ void check(bool value) {
 int main() {
     Outputs state;
     check(!state.focused_output());
+    check(!state.adjacent_workspace(true));
     check(!state.switch_workspace(1));
     check(state.update({{"a", {0, 0, 100, 100}}, {"b", {100, 0, 100, 100}}}));
     check(state.outputs().size() == 2);
     check(state.focused_output() == "a");
     check(state.outputs()[0].workspace == 0 && state.outputs()[1].workspace == 1);
+    check(state.adjacent_workspace(true) == 1 && state.adjacent_workspace(false) == 1);
     check(state.switch_workspace(1));
     check(state.focused_output() == "b");
+    check(state.adjacent_workspace(true) == 0 && state.adjacent_workspace(false) == 0);
     check(state.switch_workspace(4));
     check(state.focused_workspace() == 4 && state.owners()[4] == "b");
     check(state.focus_output("a"));
@@ -34,6 +37,7 @@ int main() {
     check(state.focused_workspace() == 4 && state.outputs()[0].workspace == 4);
     check(state.update({{"c", {0, 0, 50, 50}}, {"clone", {0, 0, 50, 50}}}));
     check(state.outputs().size() == 1);
+    check(!state.adjacent_workspace(true) && !state.adjacent_workspace(false));
     check(!state.update({{"c", {0, 0, 50, 50}}, {"c", {50, 0, 50, 50}}}));
     check(!state.update({{"bad", {0, 0, 0, 1}}}));
     check(!state.update({{"bad", {std::numeric_limits<int>::max(), 0, 1, 1}}}));
@@ -41,6 +45,12 @@ int main() {
     check(!state.focus_output("missing") && !state.switch_workspace(10));
     check(state.update({{"c", {0, 0, 50, 50}}, {"d", {50, 0, 50, 50}}}));
     check(state.outputs()[0].workspace != state.outputs()[1].workspace);
+
+    Outputs cycle;
+    check(cycle.update({{"a", {0, 0, 50, 50}}, {"b", {50, 0, 50, 50}}, {"c", {100, 0, 50, 50}}}));
+    check(cycle.adjacent_workspace(true) == 1 && cycle.adjacent_workspace(false) == 2);
+    check(cycle.focus_output("b"));
+    check(cycle.adjacent_workspace(true) == 2 && cycle.adjacent_workspace(false) == 0);
 
     Outputs replacement;
     check(replacement.update({{"a", {0, 0, 50, 50}}, {"b", {50, 0, 50, 50}}}));

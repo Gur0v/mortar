@@ -275,6 +275,18 @@ int main() {
     write("(bind-key 1 0 (lambda () (exit)))");
     check(config.load(path) && config.run_binding(0) == Result::success);
     check(host.window_actions.back() == mortar::Config::WindowAction::exit);
+    for (const char *action : {"(focus-output-next)", "(focus-output-previous)", "(move-to-output-next)", "(move-to-output-previous)"}) {
+        write(action);
+        check(!config.load(path));
+        check(config.evaluate(action).success);
+    }
+    using WindowAction = mortar::Config::WindowAction;
+    check(std::vector<WindowAction>(host.window_actions.end() - 4, host.window_actions.end()) ==
+          std::vector<WindowAction>({WindowAction::focus_output_next, WindowAction::focus_output_previous,
+                                     WindowAction::move_output_next, WindowAction::move_output_previous}));
+    host.fail = true;
+    check(!config.evaluate("(focus-output-next)").success);
+    host.fail = false;
     for (const char *action : {"(workspace-next)", "(workspace-previous)", "(workspace-back-and-forth)"}) {
         write(action);
         check(!config.load(path));

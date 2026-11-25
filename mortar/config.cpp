@@ -231,6 +231,10 @@ struct ConfigRuntime {
     static SCM scratchpad_show() { return window_action("scratchpad-show", Config::WindowAction::scratch_show); }
     static SCM fullscreen_toggle() { return window_action("fullscreen-toggle", Config::WindowAction::fullscreen); }
     static SCM exit_action() { return window_action("exit", Config::WindowAction::exit); }
+    static SCM focus_output_next() { return window_action("focus-output-next", Config::WindowAction::focus_output_next); }
+    static SCM focus_output_previous() { return window_action("focus-output-previous", Config::WindowAction::focus_output_previous); }
+    static SCM move_output_next() { return window_action("move-to-output-next", Config::WindowAction::move_output_next); }
+    static SCM move_output_previous() { return window_action("move-to-output-previous", Config::WindowAction::move_output_previous); }
 
     struct SpawnArguments {
         SCM values;
@@ -417,6 +421,10 @@ struct ConfigRuntime {
         scm_c_define_gsubr("focus", 1, 0, 0, reinterpret_cast<scm_t_subr>(focus_action));
         scm_c_define_gsubr("close", 0, 0, 0, reinterpret_cast<scm_t_subr>(close_action));
         scm_c_define_gsubr("exit", 0, 0, 0, reinterpret_cast<scm_t_subr>(exit_action));
+        scm_c_define_gsubr("focus-output-next", 0, 0, 0, reinterpret_cast<scm_t_subr>(focus_output_next));
+        scm_c_define_gsubr("focus-output-previous", 0, 0, 0, reinterpret_cast<scm_t_subr>(focus_output_previous));
+        scm_c_define_gsubr("move-to-output-next", 0, 0, 0, reinterpret_cast<scm_t_subr>(move_output_next));
+        scm_c_define_gsubr("move-to-output-previous", 0, 0, 0, reinterpret_cast<scm_t_subr>(move_output_previous));
         scm_c_define_gsubr("floating-toggle", 0, 0, 0, reinterpret_cast<scm_t_subr>(floating_toggle));
         scm_c_define_gsubr("scratchpad-move", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_move));
         scm_c_define_gsubr("scratchpad-show", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_show));

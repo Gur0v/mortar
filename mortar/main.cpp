@@ -135,6 +135,7 @@ int main() {
         std::function<void(unsigned)> workspace;
         std::function<void(mortar::Config::WorkspaceNavigation)> workspace_navigation;
         std::function<void(unsigned)> move;
+        std::function<void(mortar::Config::WindowAction)> output_action;
         std::function<void(mortar::Split)> split;
         std::function<void(mortar::Direction)> focus;
         std::function<void(mortar::Direction)> move_direction;
@@ -161,6 +162,10 @@ int main() {
             case mortar::Config::WindowAction::scratch_show: actions.scratch_toggle(); break;
             case mortar::Config::WindowAction::fullscreen: actions.toggle_fullscreen(); break;
             case mortar::Config::WindowAction::exit: stopping = 1; break;
+            case mortar::Config::WindowAction::focus_output_next:
+            case mortar::Config::WindowAction::focus_output_previous:
+            case mortar::Config::WindowAction::move_output_next:
+            case mortar::Config::WindowAction::move_output_previous: actions.output_action(action); break;
             }
         },
         [](void *host, mortar::Config::WorkspaceNavigation action) {
@@ -794,6 +799,15 @@ int main() {
         std::array<bool, 10> visible_workspaces{};
         for (const auto &output : outputs.outputs()) visible_workspaces[output.workspace] = true;
         switch_workspace(workspace_state.adjacent(action == Navigation::next, visible_workspaces));
+    };
+    actions.output_action = [&](mortar::Config::WindowAction action) {
+        using Action = mortar::Config::WindowAction;
+        bool forward = action == Action::focus_output_next || action == Action::move_output_next;
+        auto destination = outputs.adjacent_workspace(forward);
+        if (!destination) return;
+        if (action == Action::focus_output_next || action == Action::focus_output_previous)
+            switch_workspace(*destination);
+        else move_window(workspaces[current].focused, *destination);
     };
     actions.workspace = [&](unsigned digit) { switch_workspace((digit + 9) % 10); };
     actions.move = [&](unsigned digit) { move_window(workspaces[current].focused, (digit + 9) % 10); };

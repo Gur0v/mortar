@@ -26,6 +26,7 @@ class Outputs {
 public:
     bool update(const std::vector<OutputGeometry> &outputs);
     bool focus_output(const std::string &name);
+    std::optional<std::uint32_t> adjacent_workspace(bool forward) const;
     bool switch_workspace(std::uint32_t workspace);
 
     const std::vector<Output> &outputs() const { return outputs_; }
