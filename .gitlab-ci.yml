@@ -20,7 +20,7 @@ build:
   script:
     - meson setup build --buildtype=$BUILD_TYPE -Db_ndebug=if-release -Dwerror=true
     - meson compile -C build
-    - meson test -C build --print-errorlogs
+    - meson test -C build config size-hints layout workspaces keyboard actions --print-errorlogs
 
 sanitizers:
   stage: test
@@ -30,7 +30,7 @@ sanitizers:
   script:
     - meson setup build -Dwerror=true -Db_sanitize=address,undefined
     - meson compile -C build
-    - ASAN_OPTIONS=fast_unwind_on_malloc=0 LSAN_OPTIONS=suppressions=$CI_PROJECT_DIR/tests/lsan.supp UBSAN_OPTIONS=halt_on_error=1 meson test -C build --print-errorlogs
+    - ASAN_OPTIONS=fast_unwind_on_malloc=0 LSAN_OPTIONS=suppressions=$CI_PROJECT_DIR/tests/lsan.supp UBSAN_OPTIONS=halt_on_error=1 meson test -C build config size-hints layout workspaces keyboard actions --print-errorlogs
 
 sast:
   stage: test
