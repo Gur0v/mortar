@@ -24,16 +24,27 @@ Dir.mktmpdir('mortar-test-') do |dir|
       Timeout.timeout(10) { client_reader.gets } == "existing window ready\n"
     wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: File::NULL)
     client_writer.puts
-    client_writer.close
     abort 'Window manager failed to manage existing window' unless
       Timeout.timeout(10) { client_reader.gets } == "window manager ready\n"
-    client_reader.close
     error_path = File.join(dir, 'second.log')
     success = system(env, ARGV.fetch(0), out: File::NULL, err: error_path)
     abort 'Second window manager unexpectedly succeeded' if success
     abort 'Second window manager failed for an unexpected reason' unless
       File.read(error_path).include?('cannot acquire window management')
-    _, status = Process.wait2(client)
+    abort 'Client failed to prepare lifecycle checks' unless
+      Timeout.timeout(30) { client_reader.gets } == "lifecycle ready\n"
+    Process.kill('TERM', wm)
+    _, status = Timeout.timeout(10) { Process.wait2(wm) }
+    wm = nil
+    abort 'Window manager shutdown failed' unless status.success?
+    client_writer.puts
+    abort 'Client failed shutdown checks' unless
+      Timeout.timeout(20) { client_reader.gets } == "shutdown checked\n"
+    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: File::NULL)
+    client_writer.puts
+    client_writer.close
+    client_reader.close
+    _, status = Timeout.timeout(30) { Process.wait2(client) }
     client = nil
     abort 'Client geometry checks failed' unless status.success?
   ensure

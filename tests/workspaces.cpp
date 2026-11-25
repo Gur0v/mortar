@@ -32,4 +32,37 @@ int main() {
     check(second.focused == 1 && first.focused == 2);
     check(state.switch_to(0));
     check(first.focused == 2 && second.focused == 1);
+
+    mortar::Workspaces nested;
+    auto &source = nested.workspaces[0];
+    auto &target = nested.workspaces[1];
+    source.layout = mortar::Layout::split(mortar::Split::horizontal, {
+        mortar::Layout::leaf(10),
+        mortar::Layout::split(mortar::Split::vertical, {
+            mortar::Layout::leaf(11), mortar::Layout::leaf(12)})});
+    source.windows = {10, 11, 12};
+    source.focused = 11;
+    check(target.layout.insert(mortar::Layout::leaf(20)));
+    target.windows = {20};
+    target.focused = 20;
+    check(nested.move(11, 1));
+    check(nested.owner(11) == 1 && source.focused == 12 && target.focused == 11);
+    check(source.windows == (std::vector<std::uint32_t>{10, 12}));
+    check(target.windows == (std::vector<std::uint32_t>{20, 11}));
+    check(source.layout.geometry({0, 0, 120, 80}) ==
+          (std::vector<mortar::Placement>{{10, {0, 0, 60, 80}}, {12, {60, 0, 60, 80}}}));
+    check(target.layout.geometry({0, 0, 120, 80}) ==
+          (std::vector<mortar::Placement>{{20, {0, 0, 60, 80}}, {11, {60, 0, 60, 80}}}));
+    check(nested.move(12, 1));
+    check(nested.owner(12) == 1 && source.focused == 10 && target.focused == 12);
+    check(source.windows == std::vector<std::uint32_t>{10});
+    check(source.layout.geometry({0, 0, 120, 80}) ==
+          (std::vector<mortar::Placement>{{10, {0, 0, 120, 80}}}));
+    check(target.layout.geometry({0, 0, 120, 80}) ==
+          (std::vector<mortar::Placement>{{20, {0, 0, 40, 80}}, {11, {40, 0, 40, 80}},
+                                          {12, {80, 0, 40, 80}}}));
+    check(nested.move(11, 0));
+    check(source.focused == 10 && target.focused == 12);
+    check(source.layout.geometry({0, 0, 120, 80}) ==
+          (std::vector<mortar::Placement>{{10, {0, 0, 60, 80}}, {11, {60, 0, 60, 80}}}));
 }

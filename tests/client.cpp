@@ -289,5 +289,43 @@ int main() {
     xcb_destroy_window(c, fourth);
     xcb_flush(c);
     if (!tiled(other, 0, 800) || !focused_on(other) || !property_is(screen->root, current_desktop, 1)) return EXIT_FAILURE;
+    auto hidden = create();
+    auto iconic = create();
+    if (!property_is(hidden, window_desktop, 1) || !property_is(iconic, window_desktop, 1)) return EXIT_FAILURE;
+    message.window = iconic;
+    xcb_send_event(c, false, screen->root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                   reinterpret_cast<const char *>(&message));
+    xcb_flush(c);
+    if (!state_is(iconic, 3)) return EXIT_FAILURE;
+    send_desktop(window_desktop, hidden, 2);
+    if (!property_is(hidden, window_desktop, 2)) return EXIT_FAILURE;
+    auto map_is = [&](xcb_window_t window, uint8_t expected) {
+        for (int i = 0; i < 250; ++i) {
+            Attributes reply{xcb_get_window_attributes_reply(c, xcb_get_window_attributes(c, window), nullptr), &std::free};
+            if (reply && reply->map_state == expected) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        std::fprintf(stderr, "window %#x did not reach map state %u\n", window, expected);
+        return false;
+    };
+    auto check = [&](bool hidden_visible) {
+        return property_is(screen->root, current_desktop, 1) &&
+               property_is(other, window_desktop, 1) && property_is(hidden, window_desktop, 2) &&
+               property_is(iconic, window_desktop, 1) && state_is(other, 1) &&
+               state_is(hidden, 1) && state_is(iconic, 3) &&
+               map_is(other, XCB_MAP_STATE_VIEWABLE) &&
+               map_is(hidden, hidden_visible ? XCB_MAP_STATE_VIEWABLE : XCB_MAP_STATE_UNMAPPED) &&
+               map_is(iconic, XCB_MAP_STATE_UNMAPPED);
+    };
+    if (!check(false)) return EXIT_FAILURE;
+    std::puts("lifecycle ready");
+    std::fflush(stdout);
+    if (std::getchar() == EOF || !check(true)) return EXIT_FAILURE;
+    std::puts("shutdown checked");
+    std::fflush(stdout);
+    if (std::getchar() == EOF || !check(false)) return EXIT_FAILURE;
+    send_desktop(current_desktop, screen->root, 2);
+    if (!property_is(screen->root, current_desktop, 2) || !map_is(hidden, XCB_MAP_STATE_VIEWABLE) ||
+        !map_is(other, XCB_MAP_STATE_UNMAPPED) || !map_is(iconic, XCB_MAP_STATE_UNMAPPED)) return EXIT_FAILURE;
     return EXIT_SUCCESS;
 }
