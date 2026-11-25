@@ -2,6 +2,16 @@
 #include "../mortar/randr.hpp"
 
 #include <xcb/randr.h>
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wkeyword-macro"
+#endif
+#define explicit explicit_field
+#include <xcb/xkb.h>
+#undef explicit
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 
 #include <xcb/xcb.h>
 #include <cairo/cairo-xcb.h>
@@ -128,6 +138,31 @@ int main(int argc, char **argv) {
         xcb_disconnect(c);
         return 1;
     }
+    bool revealed = false;
+    const xcb_query_extension_reply_t* xkb = nullptr;
+    if (hidden) {
+        xkb = xcb_get_extension_data(c, &xcb_xkb_id);
+        auto* version = xcb_xkb_use_extension_reply(c, xcb_xkb_use_extension(c, 1, 0), nullptr);
+        if (!xkb || !xkb->present || !version || !version->supported) {
+            free(version);
+            std::cerr << "mortarbar: XKB unavailable\n";
+            xcb_disconnect(c);
+            return 1;
+        }
+        free(version);
+        constexpr auto events = XCB_XKB_EVENT_TYPE_STATE_NOTIFY;
+        auto* error = xcb_request_check(c, xcb_xkb_select_events_checked(c, XCB_XKB_ID_USE_CORE_KBD,
+            events, 0, events, 0, 0, nullptr));
+        auto* state = xcb_xkb_get_state_reply(c, xcb_xkb_get_state(c, XCB_XKB_ID_USE_CORE_KBD), nullptr);
+        if (error || !state) {
+            free(error); free(state);
+            std::cerr << "mortarbar: cannot watch XKB state\n";
+            xcb_disconnect(c);
+            return 1;
+        }
+        revealed = (state->mods & XCB_MOD_MASK_4) != 0;
+        free(state);
+    }
     constexpr std::uint16_t height = 24;
     std::uint32_t root_mask = XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_STRUCTURE_NOTIFY;
     xcb_change_window_attributes(c, screen->root, XCB_CW_EVENT_MASK, &root_mask);
@@ -180,10 +215,13 @@ int main(int argc, char **argv) {
                 (bottom && int64_t(bounds.y) + bounds.height - height > 32767)) continue;
             if (std::find(next_bounds.begin(), next_bounds.end(), bounds) == next_bounds.end()) next_bounds.push_back(bounds);
         }
-        if (next_bounds == bar_bounds && !bars.empty()) return true;
+        if (next_bounds == bar_bounds && (hidden && !revealed ? bars.empty() : !bars.empty())) return true;
         clear_bars();
         bar_bounds = next_bounds;
-        if (hidden) return true;
+        if (hidden && !revealed) {
+            xcb_flush(c);
+            return true;
+        }
         for (const auto& bounds : next_bounds) {
             auto window = xcb_generate_id(c);
             std::uint32_t values[] = {colors[0], XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_PROPERTY_CHANGE};
@@ -194,8 +232,8 @@ int main(int argc, char **argv) {
             xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, type, XCB_ATOM_ATOM, 32, 1, &dock);
             const std::array<std::uint32_t, 4> output = {static_cast<std::uint32_t>(bounds.x), static_cast<std::uint32_t>(bounds.y),
                 static_cast<std::uint32_t>(bounds.width), static_cast<std::uint32_t>(bounds.height)};
-            xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, local_bar, XCB_ATOM_CARDINAL, 32, output.size(), output.data());
-            if ((!bottom && bounds.y == 0) || (bottom && int64_t(bounds.y) + bounds.height == screen->height_in_pixels)) {
+            if (!hidden) xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, local_bar, XCB_ATOM_CARDINAL, 32, output.size(), output.data());
+            if (!hidden && ((!bottom && bounds.y == 0) || (bottom && int64_t(bounds.y) + bounds.height == screen->height_in_pixels))) {
                 std::array<std::uint32_t, 12> reservation {};
                 reservation[bottom ? 3 : 2] = height;
                 reservation[bottom ? 10 : 8] = static_cast<std::uint32_t>(bounds.x);
@@ -503,6 +541,16 @@ int main(int argc, char **argv) {
             if (randr && randr->present && (event_type == randr->first_event + XCB_RANDR_SCREEN_CHANGE_NOTIFY ||
                 event_type == randr->first_event + XCB_RANDR_NOTIFY)) {
                 if (update_bars()) draw_all();
+            }
+            if (xkb && event_type == xkb->first_event) {
+                auto* state = reinterpret_cast<xcb_xkb_state_notify_event_t*>(event);
+                if (state->xkbType == XCB_XKB_STATE_NOTIFY) {
+                    bool next = (state->mods & XCB_MOD_MASK_4) != 0;
+                    if (next != revealed) {
+                        revealed = next;
+                        if (update_bars()) draw_all();
+                    }
+                }
             }
             if (event_type == XCB_EXPOSE) {
                 auto* expose = reinterpret_cast<xcb_expose_event_t*>(event);

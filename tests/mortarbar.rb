@@ -5,7 +5,8 @@ require 'fiddle/import'
 module X11
   extend Fiddle::Importer
   libdir = IO.popen(['pkg-config', '--variable=libdir', 'x11'], &:read).strip
-  dlload File.join(libdir, 'libX11.so.6')
+  xtest = IO.popen(['pkg-config', '--variable=libdir', 'xtst'], &:read).strip
+  dlload File.join(libdir, 'libX11.so.6'), File.join(xtest, 'libXtst.so.6')
   extern 'void *XOpenDisplay(char*)'
   extern 'unsigned long XDefaultRootWindow(void*)'
   extern 'int XQueryTree(void*, unsigned long, void*, void*, void*, void*)'
@@ -18,6 +19,8 @@ module X11
   extern 'unsigned long XInternAtom(void*, char*, int)'
   extern 'int XChangeProperty(void*, unsigned long, unsigned long, unsigned long, int, int, void*, int)'
   extern 'int XSync(void*, int)'
+  extern 'unsigned char XKeysymToKeycode(void*, unsigned long)'
+  extern 'int XTestFakeKeyEvent(void*, unsigned int, int, unsigned long)'
   extern 'int XGetWindowProperty(void*, unsigned long, unsigned long, long, long, int, unsigned long, void*, void*, void*, void*, void*)'
 end
 
@@ -174,6 +177,40 @@ begin
       Process.kill('TERM', pid)
       Process.wait(pid)
     end
+  end
+
+  unless multi
+    pid = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, bar, '--mortar-settings', 'top', 'monospace 10',
+                        '2236962', '16777215', '2643319', '3355443', '--hidden', '--')
+    connection = X11.XOpenDisplay(":#{Integer(display)}")
+    root = X11.XDefaultRootWindow(connection)
+    key = X11.XKeysymToKeycode(connection, 0xffeb)
+    abort 'Super key unavailable' if key == 0
+    get_windows = lambda do
+      X11.XSync(connection, 0)
+      X11.XQueryTree(connection, root, root_return, parent, children, count)
+      n = count[0, Fiddle::SIZEOF_INT].unpack1('I')
+      list = Fiddle::Pointer.new(children[0, Fiddle::SIZEOF_VOIDP].unpack1('J'))
+      result = n == 0 ? [] : list[0, n * Fiddle::SIZEOF_LONG].unpack('L!*')
+      X11.XFree(list) unless list.null?
+      result
+    end
+    sleep 0.2
+    abort 'hidden bar visible' unless get_windows.call.empty?
+    X11.XTestFakeKeyEvent(connection, key, 1, 0)
+    X11.XSync(connection, 0)
+    Timeout.timeout(10) { sleep 0.02 until get_windows.call.size == 1 }
+    window = get_windows.call.first
+    [strut, X11.XInternAtom(connection, '_MORTAR_BAR_OUTPUT', 0)].each do |property|
+      X11.XGetWindowProperty(connection, window, property, 0, 12, 0, 6, actual_type, actual_format, items, remaining, data)
+      abort 'revealed bar reserved space' unless items[0, Fiddle::SIZEOF_LONG].unpack1('L!') == 0
+    end
+    X11.XTestFakeKeyEvent(connection, key, 0, 0)
+    X11.XSync(connection, 0)
+    Timeout.timeout(10) { sleep 0.02 until get_windows.call.empty? }
+    X11.XCloseDisplay(connection)
+    Process.kill('TERM', pid)
+    Process.wait(pid)
   end
 
   child_reader, child_writer = IO.pipe
