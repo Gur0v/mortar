@@ -23,6 +23,7 @@ Dir.mktmpdir('mortar-test-') do |dir|
     abort 'Second window manager unexpectedly succeeded' if success
     abort 'Second window manager failed for an unexpected reason' unless
       File.read(error_path).include?('cannot acquire window management')
+    abort 'Client was not tiled' unless system(env, ARGV.fetch(1))
   ensure
     [wm, xvfb].compact.each do |pid|
       begin
