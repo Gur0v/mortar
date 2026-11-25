@@ -118,14 +118,11 @@ Dir.mktmpdir('mortar-test-') do |dir|
       system(env, ARGV.fetch(1), mode, out: File::NULL)
     end
     abort "Keyboard checks failed: #{failures.join(', ')}" unless failures.empty?
-    abort 'Milestone keyboard checks failed' unless system(env, ARGV.fetch(1), 'milestone', out: File::NULL)
-    Timeout.timeout(10) do
-      loop do
-        break if File.exist?(launch_log) && File.readlines(launch_log).size >= 2
-        sleep 0.02
-      end
+    unless system(env, ARGV.fetch(1), 'milestone', out: File::NULL)
+      records = File.exist?(launch_log) ? File.read(launch_log) : '(missing)'
+      abort "Milestone keyboard checks failed\nLaunch log:\n#{records}\nMortar stderr:\n#{File.read(wm_error_path)}"
     end
-    abort 'Default launch did not execute exact commands' unless
+    abort "Default launch did not execute exact commands\nLaunch log:\n#{File.read(launch_log)}\nMortar stderr:\n#{File.read(wm_error_path)}" unless
       File.readlines(launch_log).sort == ["dmenu_run 1\n", "x-terminal-emulator 1\n"]
     Process.kill('TERM', wm)
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
@@ -175,9 +172,9 @@ Dir.mktmpdir('mortar-test-') do |dir|
       (bind-key 111 8 (lambda () (spawn "mortar-test-spawn" "a b" "; touch forbidden")))
     SCHEME
     wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: error_path)
-    abort "Scheme action checks failed: #{File.read(error_path)}" unless system(env, ARGV.fetch(1), 'scheme-actions', out: File::NULL)
-    Timeout.timeout(10) do
-      sleep 0.02 until File.readlines(launch_log).include?("[a b][; touch forbidden]\n")
+    unless system(env, ARGV.fetch(1), 'scheme-actions', out: File::NULL)
+      records = File.exist?(launch_log) ? File.read(launch_log) : '(missing)'
+      abort "Scheme action checks failed\nLaunch log:\n#{records}\nMortar stderr:\n#{File.read(error_path)}"
     end
     Process.kill('TERM', wm)
     _, status = Timeout.timeout(10) { Process.wait2(wm) }

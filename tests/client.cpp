@@ -233,7 +233,27 @@ int main(int argc, char **argv) {
                 if (!received) std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
             if (!received || !tiled(third, 400, 300, 400, 300)) return EXIT_FAILURE;
-            return (scheme ? shortcut('o') : shortcut(0xff0d) && shortcut('d')) ? EXIT_SUCCESS : EXIT_FAILURE;
+            auto launch_seen = [&](const char *expected) {
+                const char *path = std::getenv("MORTAR_TEST_LAUNCH");
+                if (!path) return false;
+                for (int i = 0; i < 250; ++i) {
+                    if (auto *file = std::fopen(path, "r")) {
+                        char line[256];
+                        bool found = false;
+                        while (std::fgets(line, sizeof(line), file)) {
+                            if (std::strcmp(line, expected) == 0) found = true;
+                        }
+                        std::fclose(file);
+                        if (found) return true;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+                std::fprintf(stderr, "launch record missing: %s", expected);
+                return false;
+            };
+            if (scheme) return shortcut('o') && launch_seen("[a b][; touch forbidden]\n") ? EXIT_SUCCESS : EXIT_FAILURE;
+            return shortcut(0xff0d) && launch_seen("x-terminal-emulator 1\n") &&
+                   shortcut('d') && launch_seen("dmenu_run 1\n") ? EXIT_SUCCESS : EXIT_FAILURE;
         }
         if (std::strcmp(mode, "arbitrary") == 0) {
             auto f6 = key(0xffc3);
