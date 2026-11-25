@@ -88,6 +88,41 @@ int main() {
     check(live.geometry({0, 0, 100, 100}) ==
           (std::vector<Placement>{{10, {0, 0, 100, 25}}, {13, {0, 25, 100, 25}},
                                   {11, {0, 50, 100, 50}}}));
+    auto changed = Layout::split(Split::horizontal, {Layout::leaf(31), Layout::leaf(32)});
+    check(changed.resize(31, Direction::right, 10, {0, 0, 100, 20}));
+    check(changed.geometry({0, 0, 100, 20}) ==
+          (std::vector<Placement>{{31, {0, 0, 60, 20}}, {32, {60, 0, 40, 20}}}));
+    check(!changed.resize(31, Direction::right, 40, {0, 0, 100, 20}));
+    check(!changed.resize(31, Direction::left, 1, {0, 0, 100, 20}));
+    check(changed.move(31, Direction::right));
+    check(changed.geometry({0, 0, 100, 20}) ==
+          (std::vector<Placement>{{32, {0, 0, 40, 20}}, {31, {40, 0, 60, 20}}}));
+    check(!changed.move(31, Direction::right));
+    check(!changed.move(99, Direction::left));
+    auto nested = Layout::split(Split::vertical, {
+        Layout::split(Split::horizontal, {Layout::leaf(41), Layout::leaf(42)}),
+        Layout::leaf(43)});
+    check(nested.resize(41, Direction::down, 10, {0, 0, 100, 100}));
+    check(nested.geometry({0, 0, 100, 100}) ==
+          (std::vector<Placement>{{41, {0, 0, 50, 60}}, {42, {50, 0, 50, 60}},
+                                  {43, {0, 60, 100, 40}}}));
+    check(nested.move(41, Direction::down));
+    check(nested.geometry({0, 0, 100, 100}) ==
+          (std::vector<Placement>{{42, {0, 0, 100, 60}}, {43, {0, 60, 100, 20}},
+                                  {41, {0, 80, 100, 20}}}));
+    auto equal = Layout::split(Split::horizontal, {Layout::leaf(61), Layout::leaf(62)});
+    check(equal.insert_after(61, Layout::leaf(63)));
+    check(equal.geometry({0, 0, 800, 20}) ==
+          (std::vector<Placement>{{61, {0, 0, 266, 20}}, {63, {266, 0, 267, 20}},
+                                  {62, {533, 0, 267, 20}}}));
+    auto insertion = Layout::split(Split::horizontal, {Layout::leaf(51), Layout::leaf(52)});
+    check(insertion.resize(51, Direction::right, 10, {0, 0, 100, 20}));
+    check(insertion.insert_after(51, Layout::leaf(53)));
+    check(insertion.geometry({0, 0, 100, 20}) ==
+          (std::vector<Placement>{{51, {0, 0, 30, 20}}, {53, {30, 0, 30, 20}},
+                                  {52, {60, 0, 40, 20}}}));
+    check(!nested.resize(41, Direction::up, 1, {0, 0, 0, 0}));
+    check(!nested.resize(41, static_cast<Direction>(-1), 1, {0, 0, 100, 100}));
     bool rejected = false;
     try { Layout::split(static_cast<Split>(-1)); } catch (const std::invalid_argument &) { rejected = true; }
     check(rejected);

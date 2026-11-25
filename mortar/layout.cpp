@@ -47,6 +47,9 @@ bool Layout::insert(Layout child) {
     }
     focus_order_.push_back(children_.size());
     children_.push_back(std::move(child));
+    double total = 0;
+    for (double weight : weights_) total += weight;
+    weights_.push_back(weights_.empty() ? 1.0 : total / weights_.size());
     return true;
 }
 
@@ -63,6 +66,13 @@ bool Layout::insert_after(std::uint32_t focused, Layout child) {
                 for (auto &entry : node.focus_order_) if (entry >= index) ++entry;
                 node.focus_order_.push_back(index);
                 node.children_.insert(it + 1, std::move(child));
+                if (node.resized_) {
+                    const double weight = node.weights_[index - 1] / 2;
+                    node.weights_[index - 1] = weight;
+                    node.weights_.insert(node.weights_.begin() + index, weight);
+                } else {
+                    node.weights_.insert(node.weights_.begin() + index, 1.0);
+                }
                 return true;
             }
             if (!it->leaf_ && self(self, *it)) return true;
@@ -73,6 +83,7 @@ bool Layout::insert_after(std::uint32_t focused, Layout child) {
         if (!incoming.empty() && !children_.empty()) return false;
         focus_order_.push_back(children_.size());
         children_.push_back(std::move(child));
+        weights_.assign(children_.size(), 1.0);
         return true;
     }
     return insert_at_focus(insert_at_focus, *this);
@@ -144,12 +155,102 @@ bool Layout::remove(std::uint32_t window) {
         if (!found) continue;
         if (child.leaf_ || child.children_.empty()) {
             children_.erase(children_.begin() + i);
+            weights_.erase(weights_.begin() + i);
             std::erase(focus_order_, i);
             for (auto &entry : focus_order_) if (entry > i) --entry;
         }
         return true;
     }
     return false;
+}
+
+bool Layout::move(std::uint32_t window, Direction direction) {
+    if (direction != Direction::left && direction != Direction::right &&
+        direction != Direction::up && direction != Direction::down) return false;
+    const bool previous = direction == Direction::left || direction == Direction::up;
+    const Split axis = direction == Direction::left || direction == Direction::right
+                           ? Split::horizontal : Split::vertical;
+    auto move_in = [&](auto &&self, Layout &node) -> bool {
+        for (std::size_t i = 0; i < node.children_.size(); ++i) {
+            auto &child = node.children_[i];
+            if (!child.contains(window)) continue;
+            if (self(self, child)) return true;
+            if (node.direction_ != axis || (previous ? i == 0 : i + 1 == node.children_.size()))
+                return false;
+            const auto other = previous ? i - 1 : i + 1;
+            if (child.leaf_) {
+                std::swap(node.children_[i], node.children_[other]);
+                std::swap(node.weights_[i], node.weights_[other]);
+                for (auto &entry : node.focus_order_) {
+                    if (entry == i) entry = other;
+                    else if (entry == other) entry = i;
+                }
+                return true;
+            }
+            if (!child.remove(window)) return false;
+            const bool empty = child.children_.empty();
+            if (empty) {
+                node.children_.erase(node.children_.begin() + i);
+                node.weights_.erase(node.weights_.begin() + i);
+                std::erase(node.focus_order_, i);
+                for (auto &entry : node.focus_order_) if (entry > i) --entry;
+            }
+            const auto target = other - (empty && i < other ? 1 : 0);
+            const auto index = target + (previous ? 0 : 1);
+            const double weight = node.weights_[target] / 2;
+            node.weights_[target] = weight;
+            node.weights_.insert(node.weights_.begin() + index, weight);
+            node.children_.insert(node.children_.begin() + index, Layout::leaf(window));
+            for (auto &entry : node.focus_order_) if (entry >= index) ++entry;
+            node.focus_order_.insert(node.focus_order_.begin(), index);
+            return true;
+        }
+        return false;
+    };
+    return move_in(move_in, *this);
+}
+
+bool Layout::resize(std::uint32_t window, Direction direction, int pixels, Rect bounds) {
+    if (pixels == 0 || (direction != Direction::left && direction != Direction::right &&
+                        direction != Direction::up && direction != Direction::down)) return false;
+    geometry(bounds);
+    const bool previous = direction == Direction::left || direction == Direction::up;
+    const Split axis = direction == Direction::left || direction == Direction::right
+                           ? Split::horizontal : Split::vertical;
+    auto resize_in = [&](auto &&self, Layout &node, Rect area) -> bool {
+        if (node.leaf_) return false;
+        double total = 0;
+        for (double weight : node.weights_) total += weight;
+        double accumulated = 0;
+        const int extent = node.direction_ == Split::horizontal ? area.width : area.height;
+        for (std::size_t i = 0; i < node.children_.size(); ++i) {
+            const int start = static_cast<int>(extent * (accumulated / total));
+            accumulated += node.weights_[i];
+            const int end = i + 1 == node.children_.size() ? extent :
+                            static_cast<int>(extent * (accumulated / total));
+            Rect child_area = area;
+            if (node.direction_ == Split::horizontal) {
+                child_area.x += start;
+                child_area.width = end - start;
+            } else {
+                child_area.y += start;
+                child_area.height = end - start;
+            }
+            if (!node.children_[i].contains(window)) continue;
+            if (self(self, node.children_[i], child_area)) return true;
+            if (node.direction_ != axis || extent == 0 ||
+                (previous ? i == 0 : i + 1 == node.children_.size())) return false;
+            const auto other = previous ? i - 1 : i + 1;
+            const double delta = static_cast<double>(pixels) * total / extent;
+            if (node.weights_[i] + delta <= 0 || node.weights_[other] - delta <= 0) return false;
+            node.weights_[i] += delta;
+            node.weights_[other] -= delta;
+            node.resized_ = true;
+            return true;
+        }
+        return false;
+    };
+    return resize_in(resize_in, *this, bounds);
 }
 
 std::vector<Placement> Layout::geometry(Rect bounds) const {
@@ -169,11 +270,15 @@ void Layout::arrange(Rect bounds, std::vector<Placement> &result) const {
         return;
     }
     const auto count = children_.size();
+    double total = 0;
+    for (double weight : weights_) total += weight;
+    double accumulated = 0;
     for (std::size_t i = 0; i < count; ++i) {
         Rect child = bounds;
         const auto extent = direction_ == Split::horizontal ? bounds.width : bounds.height;
-        const auto left = static_cast<int>(static_cast<std::uint64_t>(extent) * i / count);
-        const auto right = static_cast<int>(static_cast<std::uint64_t>(extent) * (i + 1) / count);
+        const auto left = static_cast<int>(extent * (accumulated / total));
+        accumulated += weights_[i];
+        const auto right = i + 1 == count ? extent : static_cast<int>(extent * (accumulated / total));
         if (direction_ == Split::horizontal) {
             child.x += left;
             child.width = right - left;

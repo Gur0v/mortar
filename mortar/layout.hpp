@@ -32,6 +32,8 @@ public:
     std::uint32_t neighbor(std::uint32_t focused, Direction direction) const;
     bool focus(std::uint32_t window);
     bool remove(std::uint32_t window);
+    bool move(std::uint32_t window, Direction direction);
+    bool resize(std::uint32_t window, Direction direction, int pixels, Rect bounds);
     bool contains(std::uint32_t window) const;
     std::vector<Placement> geometry(Rect bounds) const;
 
@@ -45,6 +47,8 @@ private:
     Split direction_;
     std::vector<Layout> children_;
     std::vector<std::size_t> focus_order_;
+    std::vector<double> weights_;
+    bool resized_ = false;
 };
 
 }
