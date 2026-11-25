@@ -34,5 +34,8 @@ int main() {
     click.name = "a\"b"; click.button = 1; click.modifiers = {"Shift"};
     auto json = click_event_json(click, true);
     check(json.starts_with("[\n{") && json.find("a\\\"b") != std::string::npos && json.find("\"button\":1") != std::string::npos);
-    check(click_event_json(click, false).starts_with(",\n{"));
+    check(json.find("\"scale\":1") != std::string::npos);
+    click.button = 4;
+    auto scroll = click_event_json(click, false);
+    check(scroll.starts_with(",\n{") && scroll.find("\"button\":4") != std::string::npos);
 }

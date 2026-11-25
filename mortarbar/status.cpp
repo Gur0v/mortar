@@ -151,7 +151,7 @@ std::string click_event_json(const ClickEvent& e, bool first) {
     set_string("name", e.name); set_string("instance", e.instance);
     set_int("button", e.button); set_int("x", e.x); set_int("y", e.y);
     set_int("relative_x", e.relative_x); set_int("relative_y", e.relative_y);
-    set_int("width", e.width); set_int("height", e.height);
+    set_int("width", e.width); set_int("height", e.height); set_int("scale", 1);
     jv mods = jv_array();
     for (const auto& mod : e.modifiers) mods = jv_array_append(mods, jv_string_sized(mod.data(), static_cast<int>(mod.size())));
     obj = jv_object_set(obj, jv_string("modifiers"), mods);
