@@ -216,10 +216,11 @@ int main(int argc, char **argv) {
                 (bottom && int64_t(bounds.y) + bounds.height - height > 32767)) continue;
             if (std::find(next_bounds.begin(), next_bounds.end(), bounds) == next_bounds.end()) next_bounds.push_back(bounds);
         }
-        if (next_bounds == bar_bounds && (hidden && !revealed ? bars.empty() : !bars.empty())) return true;
+        bool urgent = !property(c, screen->root, urgent_workspaces, XCB_ATOM_CARDINAL, 32).empty();
+        if (next_bounds == bar_bounds && (hidden && !revealed && !urgent ? bars.empty() : !bars.empty())) return true;
         clear_bars();
         bar_bounds = next_bounds;
-        if (hidden && !revealed) {
+        if (hidden && !revealed && !urgent) {
             xcb_flush(c);
             return true;
         }
@@ -566,7 +567,9 @@ int main(int argc, char **argv) {
                 if (changed->window == screen->root && changed->atom == clients) {
                     watch_clients();
                     draw_all();
-                } else if ((changed->window == screen->root && (changed->atom == names || changed->atom == current || changed->atom == output_workspaces || changed->atom == urgent_workspaces)) ||
+                } else if (changed->window == screen->root && changed->atom == urgent_workspaces) {
+                    if (update_bars()) draw_all();
+                } else if ((changed->window == screen->root && (changed->atom == names || changed->atom == current || changed->atom == output_workspaces)) ||
                            (changed->atom == desktop && std::find(watched_clients.begin(), watched_clients.end(), changed->window) != watched_clients.end())) draw_all();
             }
             if (event_type == XCB_BUTTON_PRESS) {

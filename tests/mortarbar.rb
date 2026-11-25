@@ -208,6 +208,25 @@ begin
     X11.XTestFakeKeyEvent(connection, key, 0, 0)
     X11.XSync(connection, 0)
     Timeout.timeout(10) { sleep 0.02 until get_windows.call.empty? }
+    urgent = X11.XInternAtom(connection, '_MORTAR_URGENT_WORKSPACES', 0)
+    X11.XChangeProperty(connection, root, urgent, 6, 32, 0, [1].pack('L!'), 1)
+    X11.XSync(connection, 0)
+    Timeout.timeout(10) { sleep 0.02 until get_windows.call.size == 1 }
+    X11.XTestFakeKeyEvent(connection, key, 1, 0)
+    X11.XSync(connection, 0)
+    X11.XChangeProperty(connection, root, urgent, 6, 32, 0, '', 0)
+    X11.XSync(connection, 0)
+    sleep 0.2
+    abort 'modifier did not keep bar visible' unless get_windows.call.size == 1
+    X11.XTestFakeKeyEvent(connection, key, 0, 0)
+    X11.XSync(connection, 0)
+    Timeout.timeout(10) { sleep 0.02 until get_windows.call.empty? }
+    X11.XChangeProperty(connection, root, urgent, 6, 32, 0, [1].pack('L!'), 1)
+    X11.XSync(connection, 0)
+    Timeout.timeout(10) { sleep 0.02 until get_windows.call.size == 1 }
+    X11.XChangeProperty(connection, root, urgent, 6, 32, 0, '', 0)
+    X11.XSync(connection, 0)
+    Timeout.timeout(10) { sleep 0.02 until get_windows.call.empty? }
     X11.XCloseDisplay(connection)
     Process.kill('TERM', pid)
     Process.wait(pid)

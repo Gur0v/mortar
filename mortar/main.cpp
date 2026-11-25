@@ -414,9 +414,26 @@ int main() {
     auto set_urgent = [&](xcb_window_t window, bool value) {
         if (owner(window) < 0) return;
         if (owner(window) == static_cast<int>(current) && workspaces[current].focused == window) value = false;
+        Property state{xcb_get_property_reply(c, xcb_get_property(c, false, window, net_state,
+            XCB_ATOM_ATOM, 0, 1024), nullptr), &std::free};
+        if (!state || state->bytes_after || (state->type != XCB_ATOM_NONE &&
+            (state->type != XCB_ATOM_ATOM || state->format != 32))) return;
+        std::vector<xcb_atom_t> atoms;
+        if (state->type == XCB_ATOM_ATOM) {
+            auto *values = static_cast<const xcb_atom_t *>(xcb_get_property_value(state.get()));
+            auto count = xcb_get_property_value_length(state.get()) / 4;
+            if (count) atoms.assign(values, values + count);
+        }
+        bool present = std::find(atoms.begin(), atoms.end(), attention_atom) != atoms.end();
+        if (present != value) {
+            std::erase(atoms, attention_atom);
+            if (value) atoms.push_back(attention_atom);
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, net_state, XCB_ATOM_ATOM, 32, atoms.size(), atoms.data());
+        }
         bool old = std::find(urgent.begin(), urgent.end(), window) != urgent.end();
-        if (old == value) return;
-        if (value) urgent.push_back(window); else std::erase(urgent, window);
+        if (old != value) {
+            if (value) urgent.push_back(window); else std::erase(urgent, window);
+        }
     };
     auto hints_urgent = [&](xcb_window_t window) {
         Property hints{xcb_get_property_reply(c, xcb_get_property(c, false, window, XCB_ATOM_WM_HINTS,
@@ -468,7 +485,7 @@ int main() {
             }
         }
         if (accepts_focus) {
-            std::erase(urgent, window);
+            set_urgent(window, false);
             for (const auto &output : outputs.outputs())
                 for (auto managed : workspaces[output.workspace].windows)
                     border_colors.apply(managed, output.workspace == current && managed == window
@@ -968,17 +985,18 @@ int main() {
         if (desktop != current || !workspaces[desktop].focused) workspaces[desktop].focused = window;
         set_desktop(window, desktop);
         set_state(window, 1);
-        set_urgent(window, hints_urgent(window));
         window_event("new", window);
+        bool initial_urgent = hints_urgent(window);
         Property initial_state{xcb_get_property_reply(c, xcb_get_property(c, false, window, net_state,
             XCB_ATOM_ATOM, 0, 1024), nullptr), &std::free};
         if (initial_state && !initial_state->bytes_after && initial_state->type == XCB_ATOM_ATOM && initial_state->format == 32) {
             auto *values = static_cast<const xcb_atom_t *>(xcb_get_property_value(initial_state.get()));
             if (std::find(values, values + xcb_get_property_value_length(initial_state.get()) / 4, attention_atom) !=
-                values + xcb_get_property_value_length(initial_state.get()) / 4) set_urgent(window, true);
+                values + xcb_get_property_value_length(initial_state.get()) / 4) initial_urgent = true;
             if (std::find(values, values + xcb_get_property_value_length(initial_state.get()) / 4, fullscreen_atom) !=
                 values + xcb_get_property_value_length(initial_state.get()) / 4) set_fullscreen(window, true);
         }
+        set_urgent(window, initial_urgent);
         tile();
         if (!visible(desktop)) {
             if (attributes->map_state != XCB_MAP_STATE_UNMAPPED) unmap(window);
