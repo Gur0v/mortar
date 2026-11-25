@@ -11,7 +11,13 @@ namespace mortar {
 struct Workspace {
     Layout layout = Layout::split(Split::horizontal);
     std::vector<std::uint32_t> windows;
+    std::vector<std::uint32_t> floating;
     std::uint32_t focused = 0;
+
+    bool add_floating(std::uint32_t window);
+    bool remove_floating(std::uint32_t window);
+    bool toggle_floating(std::uint32_t window);
+    std::uint32_t tiled_focus() const;
 };
 
 struct Workspaces {

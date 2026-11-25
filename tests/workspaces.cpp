@@ -65,4 +65,28 @@ int main() {
     check(source.focused == 10 && target.focused == 12);
     check(source.layout.geometry({0, 0, 120, 80}) ==
           (std::vector<mortar::Placement>{{10, {0, 0, 60, 80}}, {11, {60, 0, 60, 80}}}));
+
+    mortar::Workspaces floating;
+    auto &a = floating.workspaces[0];
+    auto &b = floating.workspaces[1];
+    check(!a.add_floating(0) && a.add_floating(30) && !a.add_floating(30));
+    check(a.focused == 30 && floating.owner(30) == 0 && !a.layout.contains(30));
+    check(!a.remove_floating(31) && !a.toggle_floating(31));
+    check(a.toggle_floating(30) && a.layout.contains(30) && a.floating.empty());
+    check(a.focused == 30 && a.windows == std::vector<std::uint32_t>{30});
+    check(a.toggle_floating(30) && !a.layout.contains(30));
+    check(a.add_floating(31));
+    check(floating.move(30, 1));
+    check(floating.owner(30) == 1 && b.floating == std::vector<std::uint32_t>{30});
+    check(a.focused == 31 && b.focused == 30 && !b.layout.contains(30));
+    check(a.toggle_floating(31));
+    check(floating.move(31, 1));
+    check(b.layout.contains(31) && b.focused == 31 && a.focused == 0);
+    check(floating.switch_to(1));
+    check(b.toggle_floating(31) && b.focused == 31);
+    check(b.toggle_floating(31) && b.layout.contains(31));
+    check(b.remove_floating(30) && floating.owner(30) == -1 && b.focused == 31);
+    check(!b.remove_floating(30));
+    check(b.toggle_floating(31) && b.remove_floating(31));
+    check(b.windows.empty() && b.focused == 0);
 }

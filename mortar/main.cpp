@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <functional>
 #include <system_error>
+#include <stdexcept>
 #include <poll.h>
 #include <unistd.h>
 #include <memory>
@@ -141,8 +142,8 @@ int main() {
         std::fprintf(stderr, "mortar: keyboard setup failed: %s\n", error.what());
         return EXIT_FAILURE;
     }
-    enum : uint32_t { split_horizontal = UINT32_MAX - 8, split_vertical, focus_left, focus_down,
-        focus_up, focus_right, close_focused, terminal, launcher };
+    enum : uint32_t { split_horizontal = UINT32_MAX - 9, split_vertical, focus_left, focus_down,
+        focus_up, focus_right, close_focused, terminal, launcher, toggle_floating };
     std::vector<mortar::KeyboardBinding> defaults{
         {XKB_KEY_h, 0, split_horizontal, true}, {XKB_KEY_v, 0, split_vertical, true},
         {XKB_KEY_j, 0, focus_left, true}, {XKB_KEY_k, 0, focus_down, true},
@@ -150,6 +151,7 @@ int main() {
         {XKB_KEY_Left, 0, focus_left, true}, {XKB_KEY_Down, 0, focus_down, true},
         {XKB_KEY_Up, 0, focus_up, true}, {XKB_KEY_Right, 0, focus_right, true},
         {XKB_KEY_q, XCB_MOD_MASK_SHIFT, close_focused, true},
+        {XKB_KEY_space, XCB_MOD_MASK_SHIFT, toggle_floating, true},
         {XKB_KEY_Return, 0, terminal, true}, {XKB_KEY_d, 0, launcher, true}
     };
     auto bindings = defaults;
@@ -176,6 +178,7 @@ int main() {
     auto &workspaces = workspace_state.workspaces;
     auto &current = workspace_state.current;
     std::vector<xcb_window_t> iconic;
+    std::vector<std::pair<xcb_window_t, std::array<uint32_t, 5>>> floating_geometry;
     std::vector<std::pair<xcb_window_t, uint16_t>> pending_unmaps;
     auto atom = [&](const char *name, uint16_t length) {
         std::unique_ptr<xcb_intern_atom_reply_t, decltype(&std::free)> reply{
@@ -195,7 +198,9 @@ int main() {
     const auto net_check = atom("_NET_SUPPORTING_WM_CHECK", 24);
     const auto net_name = atom("_NET_WM_NAME", 12);
     const auto utf8 = atom("UTF8_STRING", 11);
-    if (!net_supported || !net_number || !net_current || !net_desktop || !net_check || !net_name || !utf8) return EXIT_FAILURE;
+    const auto window_type = atom("_NET_WM_WINDOW_TYPE", 19);
+    const auto dialog_type = atom("_NET_WM_WINDOW_TYPE_DIALOG", 26);
+    if (!net_supported || !net_number || !net_current || !net_desktop || !net_check || !net_name || !utf8 || !window_type || !dialog_type) return EXIT_FAILURE;
     using Property = std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)>;
     auto cardinal = [&](xcb_window_t window, xcb_atom_t property, uint32_t fallback) {
         Property reply{xcb_get_property_reply(c, xcb_get_property(c, false, window, property,
@@ -280,6 +285,10 @@ int main() {
         if (accepts_focus) {
             workspaces[current].focused = window;
             workspaces[current].layout.focus(window);
+            if (!workspaces[current].layout.contains(window)) {
+                const uint32_t above = XCB_STACK_MODE_ABOVE;
+                xcb_configure_window(c, window, XCB_CONFIG_WINDOW_STACK_MODE, &above);
+            }
         }
         xcb_flush(c);
     };
@@ -301,12 +310,19 @@ int main() {
                                  XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
                                  XCB_CONFIG_WINDOW_BORDER_WIDTH, values);
         }
+        const uint32_t above = XCB_STACK_MODE_ABOVE;
+        for (auto window : workspaces[current].floating)
+            if (window != workspaces[current].focused)
+                xcb_configure_window(c, window, XCB_CONFIG_WINDOW_STACK_MODE, &above);
+        if (std::find(workspaces[current].floating.begin(), workspaces[current].floating.end(),
+                      workspaces[current].focused) != workspaces[current].floating.end())
+            xcb_configure_window(c, workspaces[current].focused, XCB_CONFIG_WINDOW_STACK_MODE, &above);
         xcb_flush(c);
     };
     auto restore_focus = [&] {
         std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
         auto window = workspaces[current].focused;
-        if (window && workspaces[current].layout.contains(window)) {
+        if (window && owner(window) == static_cast<int>(current)) {
             pending_focus.push_back(window);
             focus_sequence = static_cast<uint16_t>(xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, focus_time, XCB_ATOM_WINDOW, 32, 0, nullptr).sequence);
         } else xcb_set_input_focus(c, XCB_INPUT_FOCUS_POINTER_ROOT, root, XCB_CURRENT_TIME);
@@ -350,12 +366,12 @@ int main() {
     actions.move = [&](unsigned digit) { move_window(workspaces[current].focused, (digit + 9) % 10); };
     actions.split = [&](mortar::Split direction) {
         auto &ws = workspaces[current];
-        ws.layout.set_split(ws.focused, direction);
+        ws.layout.set_split(ws.tiled_focus(), direction);
         tile();
     };
     actions.focus = [&](mortar::Direction direction) {
         auto &ws = workspaces[current];
-        auto target = ws.layout.neighbor(ws.focused, direction);
+        auto target = ws.layout.contains(ws.focused) ? ws.layout.neighbor(ws.focused, direction) : ws.tiled_focus();
         if (target) {
             std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
             focus(target, actions.time);
@@ -419,11 +435,27 @@ int main() {
                 }
             }
         }
+        Property transient{xcb_get_property_reply(c, xcb_get_property(c, false, window, XCB_ATOM_WM_TRANSIENT_FOR,
+            XCB_ATOM_WINDOW, 0, 1), nullptr), &std::free};
+        Property types{xcb_get_property_reply(c, xcb_get_property(c, false, window, window_type,
+            XCB_ATOM_ATOM, 0, 1024), nullptr), &std::free};
+        bool floating = transient && transient->type == XCB_ATOM_WINDOW && transient->format == 32 &&
+                        xcb_get_property_value_length(transient.get()) == 4 &&
+                        *static_cast<const xcb_window_t *>(xcb_get_property_value(transient.get())) != XCB_NONE;
+        if (types && types->type == XCB_ATOM_ATOM && types->format == 32) {
+            auto *values = static_cast<const xcb_atom_t *>(xcb_get_property_value(types.get()));
+            auto count = xcb_get_property_value_length(types.get()) / 4;
+            floating = floating || std::find(values, values + count, dialog_type) != values + count;
+        }
         const uint32_t event_mask = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_PROPERTY_CHANGE;
         xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &event_mask);
         std::erase(iconic, window);
-        if (!workspaces[desktop].layout.insert_after(workspaces[desktop].focused, mortar::Layout::leaf(window))) return;
-        workspaces[desktop].windows.push_back(window);
+        if (floating) {
+            if (!workspaces[desktop].add_floating(window)) return;
+        } else {
+            if (!workspaces[desktop].layout.insert_after(workspaces[desktop].tiled_focus(), mortar::Layout::leaf(window))) return;
+            workspaces[desktop].windows.push_back(window);
+        }
         if (desktop != current || !workspaces[desktop].focused) workspaces[desktop].focused = window;
         set_desktop(window, desktop);
         set_state(window, 1);
@@ -463,7 +495,7 @@ int main() {
 
     std::unique_ptr<xcb_query_pointer_reply_t, decltype(&std::free)> pointer{
         xcb_query_pointer_reply(c, xcb_query_pointer(c, root), nullptr), &std::free};
-    if (pointer && workspaces[current].layout.contains(pointer->child)) {
+    if (pointer && owner(pointer->child) == static_cast<int>(current)) {
         std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
         pending_focus.push_back(pointer->child);
         focus_sequence = static_cast<uint16_t>(xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, focus_time, XCB_ATOM_WINDOW, 32, 0, nullptr).sequence);
@@ -532,6 +564,30 @@ int main() {
                     actions.focus(directions[*id - focus_left]);
                 } else if (*id == close_focused) {
                     actions.close();
+                } else if (*id == toggle_floating) {
+                    auto &ws = workspaces[current];
+                    auto window = ws.focused;
+                    if (window && !ws.layout.contains(window)) {
+                        std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                            xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
+                        if (geometry) {
+                            std::erase_if(floating_geometry, [&](const auto &entry) { return entry.first == window; });
+                            floating_geometry.push_back({window, {static_cast<uint32_t>(geometry->x),
+                                static_cast<uint32_t>(geometry->y), geometry->width, geometry->height, geometry->border_width}});
+                        } else throw std::runtime_error("cannot query floating geometry");
+                    }
+                    if (window && ws.toggle_floating(window)) {
+                        if (!ws.layout.contains(window)) {
+                            auto saved = std::find_if(floating_geometry.begin(), floating_geometry.end(),
+                                [&](const auto &entry) { return entry.first == window; });
+                            const std::array<uint32_t, 5> centered{width / 4, height / 4,
+                                std::max(1u, width / 2), std::max(1u, height / 2), 0};
+                            xcb_configure_window(c, window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+                                XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT | XCB_CONFIG_WINDOW_BORDER_WIDTH,
+                                saved != floating_geometry.end() ? saved->second.data() : centered.data());
+                        }
+                        tile();
+                    }
                 } else if (*id == terminal || *id == launcher) {
                     actions.spawn({*id == terminal ? "x-terminal-emulator" : "dmenu_run"});
                 } else if (config.run_binding(*id) != mortar::Config::Result::success) {
@@ -552,7 +608,7 @@ int main() {
         case XCB_ENTER_NOTIFY: {
             auto *enter = reinterpret_cast<xcb_enter_notify_event_t *>(event);
             if (enter->mode == XCB_NOTIFY_MODE_NORMAL && enter->detail != XCB_NOTIFY_DETAIL_INFERIOR &&
-                workspaces[current].layout.contains(enter->event)) {
+                owner(enter->event) == static_cast<int>(current)) {
                 if (enter->time != XCB_CURRENT_TIME &&
                     (pending_focus.empty() || static_cast<int16_t>(enter->sequence - focus_sequence) >= 0)) {
                     std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
@@ -570,7 +626,7 @@ int main() {
                 auto window = pending_focus.front();
                 pending_focus.erase(pending_focus.begin());
                 if (property->time != XCB_CURRENT_TIME &&
-                    workspaces[current].layout.contains(window)) focus(window, property->time);
+                    owner(window) == static_cast<int>(current)) focus(window, property->time);
             }
             break;
         }
@@ -586,10 +642,12 @@ int main() {
                        message->data.data32[0] < workspaces.size()) {
                 move_window(message->window, message->data.data32[0]);
             } else if (message->type == wm_change_state && message->format == 32 && message->data.data32[0] == 3 &&
-                workspaces[current].layout.contains(message->window)) {
+                owner(message->window) == static_cast<int>(current)) {
                 bool was_focused = workspaces[current].focused == message->window;
-                workspaces[current].layout.remove(message->window);
-                std::erase(workspaces[current].windows, message->window);
+                if (!workspaces[current].remove_floating(message->window)) {
+                    workspaces[current].layout.remove(message->window);
+                    std::erase(workspaces[current].windows, message->window);
+                }
                 if (workspaces[current].focused == message->window)
                     workspaces[current].focused = workspaces[current].windows.empty() ? XCB_NONE : workspaces[current].windows.back();
                 iconic.push_back(message->window);
@@ -619,12 +677,15 @@ int main() {
             bool was_focused = was_tiled && workspaces[workspace].focused == window;
             if (was_tiled) {
                 auto &ws = workspaces[workspace];
-                ws.layout.remove(window);
-                std::erase(ws.windows, window);
+                if (!ws.remove_floating(window)) {
+                    ws.layout.remove(window);
+                    std::erase(ws.windows, window);
+                }
                 if (ws.focused == window) ws.focused = ws.windows.empty() ? XCB_NONE : ws.windows.back();
                 xcb_delete_property(c, window, net_desktop);
             }
             auto removed = static_cast<size_t>(was_tiled) + std::erase(iconic, window);
+            if (removed) std::erase_if(floating_geometry, [&](const auto &entry) { return entry.first == window; });
             if (type == XCB_DESTROY_NOTIFY) std::erase_if(pending_unmaps, [&](auto entry) { return entry.first == window; });
             if (removed && type == XCB_UNMAP_NOTIFY) {
                 set_state(window, 0);
@@ -638,7 +699,8 @@ int main() {
         }
         case XCB_CONFIGURE_REQUEST: {
             auto *request = reinterpret_cast<xcb_configure_request_event_t *>(event);
-            if (owner(request->window) >= 0) {
+            int workspace = owner(request->window);
+            if (workspace >= 0 && workspaces[workspace].layout.contains(request->window)) {
                 auto cookie = xcb_get_geometry(c, request->window);
                 std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
                     xcb_get_geometry_reply(c, cookie, nullptr), &std::free};

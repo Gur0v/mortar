@@ -118,6 +118,10 @@ Dir.mktmpdir('mortar-test-') do |dir|
       system(env, ARGV.fetch(1), mode, out: File::NULL)
     end
     abort "Keyboard checks failed: #{failures.join(', ')}" unless failures.empty?
+    %w[transient dialog floating-toggle].each do |mode|
+      abort "Floating window check failed: #{mode}\nMortar stderr:\n#{File.read(wm_error_path)}" unless
+        system(env, ARGV.fetch(1), mode, out: File::NULL)
+    end
     unless system(env, ARGV.fetch(1), 'milestone', out: File::NULL)
       records = File.exist?(launch_log) ? File.read(launch_log) : '(missing)'
       abort "Milestone keyboard checks failed\nLaunch log:\n#{records}\nMortar stderr:\n#{File.read(wm_error_path)}"
