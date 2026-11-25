@@ -132,7 +132,7 @@ int main(int argc, char **argv) {
         bar_bounds = next_bounds;
         for (const auto& bounds : next_bounds) {
             auto window = xcb_generate_id(c);
-            std::uint32_t values[] = {0x222222, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_BUTTON_PRESS};
+            std::uint32_t values[] = {0x222222, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_PROPERTY_CHANGE};
             xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, static_cast<std::int16_t>(bounds.x), 0,
                               static_cast<std::uint16_t>(bounds.width), height, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
                               screen->root_visual, XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, values);
@@ -205,12 +205,15 @@ int main(int argc, char **argv) {
         auto raw = property(c, screen->root, clients, XCB_ATOM_WINDOW, 32);
         std::vector<xcb_window_t> next(raw.size() / sizeof(xcb_window_t));
         if (!next.empty()) std::memcpy(next.data(), raw.data(), next.size() * sizeof(xcb_window_t));
+        auto own_bar = [&](auto window) {
+            return std::any_of(bars.begin(), bars.end(), [&](const auto& bar) { return bar.window == window; });
+        };
         std::uint32_t none = 0, mask = XCB_EVENT_MASK_PROPERTY_CHANGE;
         for (auto window : watched_clients)
-            if (std::find(next.begin(), next.end(), window) == next.end())
+            if (!own_bar(window) && std::find(next.begin(), next.end(), window) == next.end())
                 xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &none);
         for (auto window : next)
-            if (std::find(watched_clients.begin(), watched_clients.end(), window) == watched_clients.end())
+            if (!own_bar(window) && std::find(watched_clients.begin(), watched_clients.end(), window) == watched_clients.end())
                 xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &mask);
         watched_clients = std::move(next);
     };
