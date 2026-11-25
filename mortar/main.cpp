@@ -1,4 +1,5 @@
 #include <xcb/xcb.h>
+#include <xcb/randr.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -38,10 +39,16 @@ int main() {
     auto *c = connection.get();
     const auto root = screens.data->root;
     std::vector<xcb_window_t> windows;
+    uint32_t width = screens.data->width_in_pixels;
+    uint32_t height = screens.data->height_in_pixels;
+    const auto *randr = xcb_get_extension_data(c, &xcb_randr_id);
+    if (!randr || !randr->present) {
+        std::fputs("mortar: RandR extension unavailable\n", stderr);
+        return EXIT_FAILURE;
+    }
+    xcb_randr_select_input(c, root, XCB_RANDR_NOTIFY_MASK_SCREEN_CHANGE);
     auto tile = [&] {
         if (windows.empty()) return;
-        const uint32_t width = screens.data->width_in_pixels;
-        const uint32_t height = screens.data->height_in_pixels;
         for (size_t i = 0; i < windows.size(); ++i) {
             const uint32_t left = width * i / windows.size();
             const uint32_t right = width * (i + 1) / windows.size();
@@ -63,11 +70,20 @@ int main() {
         auto cookie = xcb_get_window_attributes(c, window);
         std::unique_ptr<xcb_get_window_attributes_reply_t, decltype(&std::free)> attributes{
             xcb_get_window_attributes_reply(c, cookie, nullptr), &std::free};
-        if (!attributes || attributes->override_redirect ||
-            (existing && attributes->map_state != XCB_MAP_STATE_VIEWABLE)) return;
+        if (!attributes) return;
+        if (attributes->override_redirect) {
+            if (!existing) xcb_map_window(c, window);
+            return;
+        }
+        if (existing && attributes->map_state != XCB_MAP_STATE_VIEWABLE) return;
+        const uint32_t event_mask = XCB_EVENT_MASK_ENTER_WINDOW;
+        xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &event_mask);
         windows.push_back(window);
         tile();
-        if (!existing) xcb_map_window(c, window);
+        if (!existing) {
+            xcb_map_window(c, window);
+            xcb_set_input_focus(c, XCB_INPUT_FOCUS_POINTER_ROOT, window, XCB_CURRENT_TIME);
+        }
         xcb_flush(c);
     };
     auto tree_cookie = xcb_query_tree(c, root);
@@ -86,7 +102,23 @@ int main() {
     xcb_flush(c);
 
     while (auto *event = xcb_wait_for_event(c)) {
-        switch (event->response_type & 0x7f) {
+        const auto type = event->response_type & 0x7f;
+        if (type == randr->first_event + XCB_RANDR_SCREEN_CHANGE_NOTIFY) {
+            auto *change = reinterpret_cast<xcb_randr_screen_change_notify_event_t *>(event);
+            width = change->width;
+            height = change->height;
+            tile();
+        }
+        switch (type) {
+        case XCB_ENTER_NOTIFY: {
+            auto *enter = reinterpret_cast<xcb_enter_notify_event_t *>(event);
+            if (enter->mode == XCB_NOTIFY_MODE_NORMAL && enter->detail != XCB_NOTIFY_DETAIL_INFERIOR &&
+                std::find(windows.begin(), windows.end(), enter->event) != windows.end()) {
+                xcb_set_input_focus(c, XCB_INPUT_FOCUS_POINTER_ROOT, enter->event, enter->time);
+                xcb_flush(c);
+            }
+            break;
+        }
         case XCB_MAP_REQUEST:
             manage(reinterpret_cast<xcb_map_request_event_t *>(event)->window, false);
             break;
@@ -100,7 +132,26 @@ int main() {
         }
         case XCB_CONFIGURE_REQUEST: {
             auto *request = reinterpret_cast<xcb_configure_request_event_t *>(event);
-            if (std::find(windows.begin(), windows.end(), request->window) != windows.end()) break;
+            if (std::find(windows.begin(), windows.end(), request->window) != windows.end()) {
+                auto cookie = xcb_get_geometry(c, request->window);
+                std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                    xcb_get_geometry_reply(c, cookie, nullptr), &std::free};
+                if (geometry) {
+                    xcb_configure_notify_event_t notify{};
+                    notify.response_type = XCB_CONFIGURE_NOTIFY;
+                    notify.event = request->window;
+                    notify.window = request->window;
+                    notify.x = geometry->x;
+                    notify.y = geometry->y;
+                    notify.width = geometry->width;
+                    notify.height = geometry->height;
+                    notify.border_width = geometry->border_width;
+                    xcb_send_event(c, false, request->window, XCB_EVENT_MASK_STRUCTURE_NOTIFY,
+                                   reinterpret_cast<const char *>(&notify));
+                    xcb_flush(c);
+                }
+                break;
+            }
             uint32_t values[7];
             unsigned int n = 0;
             if (request->value_mask & XCB_CONFIG_WINDOW_X) values[n++] = request->x;

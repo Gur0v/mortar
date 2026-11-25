@@ -15,17 +15,29 @@ Dir.mktmpdir('mortar-test-') do |dir|
     reader.close
     abort 'Xvfb failed to start' unless display
     env = { 'DISPLAY' => ":#{Integer(display)}" }
+    client_input, client_writer = IO.pipe
+    client_reader, client_output = IO.pipe
+    client = Process.spawn(env, ARGV.fetch(1), in: client_input, out: client_output)
+    client_input.close
+    client_output.close
+    abort 'Client failed to create existing window' unless
+      Timeout.timeout(10) { client_reader.gets } == "existing window ready\n"
     wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: File::NULL)
-    sleep 0.2
-    Process.kill(0, wm)
+    client_writer.puts
+    client_writer.close
+    abort 'Window manager failed to manage existing window' unless
+      Timeout.timeout(10) { client_reader.gets } == "window manager ready\n"
+    client_reader.close
     error_path = File.join(dir, 'second.log')
     success = system(env, ARGV.fetch(0), out: File::NULL, err: error_path)
     abort 'Second window manager unexpectedly succeeded' if success
     abort 'Second window manager failed for an unexpected reason' unless
       File.read(error_path).include?('cannot acquire window management')
-    abort 'Client was not tiled' unless system(env, ARGV.fetch(1))
+    _, status = Process.wait2(client)
+    client = nil
+    abort 'Client geometry checks failed' unless status.success?
   ensure
-    [wm, xvfb].compact.each do |pid|
+    [client, wm, xvfb].compact.each do |pid|
       begin
         Process.kill('TERM', pid)
       rescue Errno::ESRCH
