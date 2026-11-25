@@ -287,7 +287,7 @@ begin
   end
 
   child_reader, child_writer = IO.pipe
-  code = 'child = fork { loop { sleep 1 } }; STDERR.puts(child); STDERR.flush; STDOUT.write("bad\n"); STDOUT.flush; loop { sleep 1 }'
+  code = 'child = fork { loop { sleep 1 } }; STDERR.puts(child); STDERR.flush; STDOUT.write(%Q({"version":1}\n[invalid]\n)); STDOUT.flush; loop { sleep 1 }'
   pid = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, bar, RbConfig.ruby, '-e', code, err: child_writer)
   child_writer.close
   descendant = Integer(Timeout.timeout(10) { child_reader.gets })

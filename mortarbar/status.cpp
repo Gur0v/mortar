@@ -95,18 +95,32 @@ bool StatusParser::parse_frame(const Callback& callback) {
 bool StatusParser::feed(std::string_view input, const Callback& callback) {
     if (!error_.empty()) return false;
     for (char c : input) {
-        if (state_ == State::header) {
+        if (state_ == State::header || state_ == State::text) {
             if (c != '\n') {
-                if (frame_.size() == limit) return fail("header too large");
+                if (frame_.size() == limit) return fail("status line too large");
                 frame_ += c;
                 continue;
             }
+            if (state_ == State::text) {
+                StatusBlock b;
+                b.full_text = std::move(frame_);
+                frame_.clear();
+                callback({std::move(b)});
+                continue;
+            }
             Value header(jv_parse_sized(frame_.data(), static_cast<int>(frame_.size())));
-            frame_.clear();
-            if (jv_get_kind(header.value) != JV_KIND_OBJECT) return fail("invalid header JSON");
             std::optional<int> version, stop, cont;
-            if (!integer_field(header.value, "version", version) || version != 1 ||
-                !integer_field(header.value, "stop_signal", stop) || !integer_field(header.value, "cont_signal", cont) ||
+            if (jv_get_kind(header.value) != JV_KIND_OBJECT ||
+                !integer_field(header.value, "version", version) || version != 1) {
+                state_ = State::text;
+                StatusBlock b;
+                b.full_text = std::move(frame_);
+                frame_.clear();
+                callback({std::move(b)});
+                continue;
+            }
+            frame_.clear();
+            if (!integer_field(header.value, "stop_signal", stop) || !integer_field(header.value, "cont_signal", cont) ||
                 !bool_field(header.value, "click_events", click_events_) ||
                 (stop && (*stop < 0 || *stop >= NSIG)) || (cont && (*cont < 0 || *cont >= NSIG))) return fail("invalid header fields");
             stop_signal_ = stop.value_or(SIGSTOP);
@@ -138,7 +152,7 @@ bool StatusParser::feed(std::string_view input, const Callback& callback) {
 
 bool StatusParser::finish() {
     if (!error_.empty()) return false;
-    if (state_ == State::done || state_ == State::next || state_ == State::first || state_ == State::after_comma) return true;
+    if (state_ == State::text || state_ == State::done || state_ == State::next || state_ == State::first || state_ == State::after_comma) return true;
     return fail("incomplete status stream");
 }
 

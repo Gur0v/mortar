@@ -34,7 +34,7 @@ public:
 private:
     bool parse_frame(const Callback& callback);
     bool fail(const char* message);
-    enum class State { header, outer, first, after_comma, next, frame, done } state_ = State::header;
+    enum class State { header, text, outer, first, after_comma, next, frame, done } state_ = State::header;
     std::string frame_, error_;
     int depth_ = 0;
     bool quoted_ = false, escaped_ = false, click_events_ = false;
