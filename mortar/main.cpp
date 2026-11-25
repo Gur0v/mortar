@@ -1102,6 +1102,7 @@ int main() {
                 std::vector<std::string> options{"--mortar-settings", settings.bottom ? "bottom" : "top", settings.font,
                     std::to_string(settings.background), std::to_string(settings.foreground),
                     std::to_string(settings.focused), std::to_string(settings.unfocused)};
+                if (settings.hidden) options.emplace_back("--hidden");
                 for (const auto &output : settings.outputs) {
                     options.emplace_back("--output");
                     options.push_back(output);

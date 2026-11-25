@@ -69,8 +69,8 @@ int main() {
     check(!config.bar().bottom && config.bar().font == "monospace 10" &&
           config.bar().background == 0x222222 && config.bar().foreground == 0xffffff &&
           config.bar().focused == 0x285577 && config.bar().unfocused == 0x333333);
-    write("(bar-position 'bottom) (bar-font \"sans 12\") (bar-colors 1 2 3 4) (bar-output \"left\") (bar-output \"right\")");
-    check(config.stage(path) && config.staged_bar().bottom && config.staged_bar().font == "sans 12" &&
+    write("(bar-mode 'hide) (bar-position 'bottom) (bar-font \"sans 12\") (bar-colors 1 2 3 4) (bar-output \"left\") (bar-output \"right\")");
+    check(config.stage(path) && config.staged_bar().hidden && !config.bar().hidden && config.staged_bar().bottom && config.staged_bar().font == "sans 12" &&
           config.staged_bar().background == 1 && config.staged_bar().foreground == 2 &&
           config.staged_bar().focused == 3 && config.staged_bar().unfocused == 4 && !config.bar().bottom);
     check(config.staged_bar().outputs == std::vector<std::string>({"left", "right"}) && config.bar().outputs.empty());
@@ -78,7 +78,7 @@ int main() {
     check(!config.bar().bottom && !config.staged_bar().bottom && config.bar().outputs.empty());
     check(config.load(path) && config.bar().bottom && config.bar().font == "sans 12");
     check(config.bar().outputs == std::vector<std::string>({"left", "right"}));
-    for (const char *invalid : {"(bar-output \"\")", "(bar-output 1)", "(bar-output (string #\\nul))", "(bar-position 'left)", "(bar-font \"\")", "(bar-font 1)",
+    for (const char *invalid : {"(bar-mode 'show)", "(bar-output \"\")", "(bar-output 1)", "(bar-output (string #\\nul))", "(bar-position 'left)", "(bar-font \"\")", "(bar-font 1)",
                                 "(bar-font (string #\\nul))", "(bar-colors 0 0 0 #x1000000)",
                                 "(bar-colors 0 -1 0 0)", "(bar-position 'top) (error \"bad\")"}) {
         write(invalid);

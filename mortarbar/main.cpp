@@ -58,6 +58,7 @@ std::vector<std::uint8_t> property(xcb_connection_t* c, xcb_window_t window, xcb
 
 int main(int argc, char **argv) {
     bool bottom = false;
+    bool hidden = false;
     std::string font_name = "monospace 10";
     std::array<std::uint32_t, 4> colors{0x222222, 0xffffff, 0x285577, 0x333333};
     std::vector<std::string_view> selected_outputs;
@@ -79,6 +80,7 @@ int main(int argc, char **argv) {
             }
         }
         int index = 8;
+        if (index < argc && std::string_view(argv[index]) == "--hidden") { hidden = true; ++index; }
         while (index < argc && std::string_view(argv[index]) == "--output") {
             if (++index >= argc || !*argv[index] || std::string_view(argv[index]).size() > 4096 || selected_outputs.size() >= 64) {
                 std::cerr << "mortarbar: invalid output\n";
@@ -181,6 +183,7 @@ int main(int argc, char **argv) {
         if (next_bounds == bar_bounds && !bars.empty()) return true;
         clear_bars();
         bar_bounds = next_bounds;
+        if (hidden) return true;
         for (const auto& bounds : next_bounds) {
             auto window = xcb_generate_id(c);
             std::uint32_t values[] = {colors[0], XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_PROPERTY_CHANGE};

@@ -311,6 +311,14 @@ struct ConfigRuntime {
         return SCM_UNSPECIFIED;
     }
 
+    static SCM bar_mode(SCM value) {
+        if (!active || !active->path) scm_misc_error("bar-mode", "only allowed while loading", SCM_EOL);
+        if (scm_is_eq(value, scm_from_utf8_symbol("dock"))) active->bar.hidden = false;
+        else if (scm_is_eq(value, scm_from_utf8_symbol("hide"))) active->bar.hidden = true;
+        else scm_wrong_type_arg_msg("bar-mode", 1, value, "dock or hide symbol");
+        return SCM_UNSPECIFIED;
+    }
+
     static SCM bar_position(SCM value) {
         if (!active || !active->path) scm_misc_error("bar-position", "only allowed while loading", SCM_EOL);
         if (scm_is_eq(value, scm_from_utf8_symbol("top"))) active->bar.bottom = false;
@@ -380,6 +388,7 @@ struct ConfigRuntime {
         scm_c_define_gsubr("scratchpad-show", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_show));
         scm_c_define_gsubr("fullscreen-toggle", 0, 0, 0, reinterpret_cast<scm_t_subr>(fullscreen_toggle));
         scm_c_define_gsubr("bar-status", 0, 0, 1, reinterpret_cast<scm_t_subr>(bar_status_action));
+        scm_c_define_gsubr("bar-mode", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_mode));
         scm_c_define_gsubr("bar-position", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_position));
         scm_c_define_gsubr("bar-font", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_font));
         scm_c_define_gsubr("bar-output", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_output));

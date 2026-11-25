@@ -42,6 +42,8 @@ Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(focus 'left)`
 
 ## Bar appearance
 
+`(bar-mode 'dock)` shows the bar and reserves space; it is the default. `(bar-mode 'hide)` hides the bar and releases its space. Change the configuration and reload to switch modes. Modifier-triggered visibility and Sway's urgency and binding-mode reveal behavior are not supported.
+
 `(bar-position 'top)` and `(bar-position 'bottom)` select the edge of each output; the default is top. `(bar-font "monospace 10")` selects a Pango font description. The string must be nonempty and at most 4096 UTF-8 bytes, without NUL.
 
 `(bar-output "HDMI-1")` restricts the bar to named RandR outputs. Repeat it to select multiple outputs; `"*"` selects all outputs. Without registrations, all outputs are selected. Names must be nonempty, at most 4096 UTF-8 bytes, and contain no NUL; at most 64 registrations are allowed. A missing output produces no bar until it appears.
