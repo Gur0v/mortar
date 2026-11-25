@@ -1,4 +1,7 @@
 #include "status.hpp"
+#include "../mortar/randr.hpp"
+
+#include <xcb/randr.h>
 
 #include <xcb/xcb.h>
 #include <cairo/cairo-xcb.h>
@@ -77,34 +80,84 @@ int main(int argc, char **argv) {
         return 1;
     }
     constexpr std::uint16_t height = 24;
-    auto window = xcb_generate_id(c);
-    std::uint32_t values[] = {0x222222, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_BUTTON_PRESS};
-    xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0,
-                      screen->width_in_pixels, height, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
-                      screen->root_visual, XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, values);
-    xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, type, XCB_ATOM_ATOM, 32, 1, &dock);
-    std::array<std::uint32_t, 12> reservation {};
-    reservation[2] = height;
-    reservation[9] = screen->width_in_pixels - 1;
-    xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, strut, XCB_ATOM_CARDINAL, 32, reservation.size(), reservation.data());
-    std::uint32_t root_mask = XCB_EVENT_MASK_PROPERTY_CHANGE;
+    std::uint32_t root_mask = XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_STRUCTURE_NOTIFY;
     xcb_change_window_attributes(c, screen->root, XCB_CW_EVENT_MASK, &root_mask);
+    const auto* randr = xcb_get_extension_data(c, &xcb_randr_id);
+    if (randr && randr->present)
+        xcb_randr_select_input(c, screen->root, XCB_RANDR_NOTIFY_MASK_SCREEN_CHANGE |
+            XCB_RANDR_NOTIFY_MASK_CRTC_CHANGE | XCB_RANDR_NOTIFY_MASK_OUTPUT_CHANGE |
+            XCB_RANDR_NOTIFY_MASK_RESOURCE_CHANGE);
     xcb_visualtype_t* visual = nullptr;
     for (auto depths = xcb_screen_allowed_depths_iterator(screen); depths.rem; xcb_depth_next(&depths))
         for (auto visuals = xcb_depth_visuals_iterator(depths.data); visuals.rem; xcb_visualtype_next(&visuals))
             if (visuals.data->visual_id == screen->root_visual) visual = visuals.data;
     if (!visual) { std::cerr << "mortarbar: cannot find root visual\n"; xcb_disconnect(c); return 1; }
-    auto* surface = cairo_xcb_surface_create(c, window, visual, screen->width_in_pixels, height);
-    auto* cr = cairo_create(surface);
-    if (cairo_status(cr) != CAIRO_STATUS_SUCCESS || cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
-        std::cerr << "mortarbar: cannot create drawing surface\n";
-        cairo_destroy(cr); cairo_surface_destroy(surface); xcb_disconnect(c); return 1;
-    }
-    auto* layout = pango_cairo_create_layout(cr);
-    auto* font = pango_font_description_from_string("monospace 10");
-    pango_layout_set_font_description(layout, font);
-    pango_font_description_free(font);
-    xcb_map_window(c, window);
+    struct Bar {
+        xcb_window_t window;
+        int width;
+        cairo_surface_t* surface;
+        cairo_t* cr;
+        PangoLayout* layout;
+        std::vector<std::pair<int, int>> workspace_bounds;
+        std::vector<std::pair<int, int>> status_bounds;
+    };
+    std::vector<Bar> bars;
+    std::vector<mortar::Rect> bar_bounds;
+    auto clear_bars = [&] {
+        for (auto& bar : bars) {
+            g_object_unref(bar.layout);
+            cairo_destroy(bar.cr);
+            cairo_surface_destroy(bar.surface);
+            xcb_destroy_window(c, bar.window);
+        }
+        bars.clear();
+    };
+    auto update_bars = [&] {
+        std::vector<mortar::OutputGeometry> outputs;
+        try { outputs = mortar::discover_outputs(c, screen->root); }
+        catch (const std::exception& e) {
+            std::cerr << "mortarbar: cannot discover outputs: " << e.what() << '\n';
+            return false;
+        }
+        std::vector<mortar::Rect> next_bounds;
+        for (const auto& output : outputs) {
+            const auto& bounds = output.bounds;
+            if (bounds.y != 0 || bounds.x < 0 || bounds.width <= 0 || bounds.width > 65535 || bounds.x > 32767 || bounds.height < height) continue;
+            if (std::find(next_bounds.begin(), next_bounds.end(), bounds) == next_bounds.end()) next_bounds.push_back(bounds);
+        }
+        if (next_bounds == bar_bounds && !bars.empty()) return true;
+        clear_bars();
+        bar_bounds = next_bounds;
+        for (const auto& bounds : next_bounds) {
+            auto window = xcb_generate_id(c);
+            std::uint32_t values[] = {0x222222, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_BUTTON_PRESS};
+            xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, static_cast<std::int16_t>(bounds.x), 0,
+                              static_cast<std::uint16_t>(bounds.width), height, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+                              screen->root_visual, XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, values);
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, type, XCB_ATOM_ATOM, 32, 1, &dock);
+            std::array<std::uint32_t, 12> reservation {};
+            reservation[2] = height;
+            reservation[8] = static_cast<std::uint32_t>(bounds.x);
+            reservation[9] = static_cast<std::uint32_t>(bounds.x + bounds.width - 1);
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, strut, XCB_ATOM_CARDINAL, 32, reservation.size(), reservation.data());
+            auto* surface = cairo_xcb_surface_create(c, window, visual, bounds.width, height);
+            auto* cr = cairo_create(surface);
+            if (cairo_status(cr) != CAIRO_STATUS_SUCCESS || cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+                std::cerr << "mortarbar: cannot create drawing surface\n";
+                cairo_destroy(cr); cairo_surface_destroy(surface); xcb_destroy_window(c, window);
+                clear_bars(); return false;
+            }
+            auto* layout = pango_cairo_create_layout(cr);
+            auto* font = pango_font_description_from_string("monospace 10");
+            pango_layout_set_font_description(layout, font);
+            pango_font_description_free(font);
+            bars.push_back({window, bounds.width, surface, cr, layout, {}, {}});
+            xcb_map_window(c, window);
+        }
+        xcb_flush(c);
+        return true;
+    };
+    if (!update_bars()) { xcb_disconnect(c); return 1; }
     int input_fd = -1, output_fd = -1;
     pid_t child = -1;
     if (argc > 1) {
@@ -137,7 +190,6 @@ int main(int argc, char **argv) {
     }
     mortarbar::StatusParser parser;
     std::vector<mortarbar::StatusBlock> blocks;
-    std::vector<std::pair<int, int>> status_bounds;
     bool first_click = true;
     bool output_open = false;
     std::string output;
@@ -145,8 +197,13 @@ int main(int argc, char **argv) {
     int flags = fcntl(output_fd, F_GETFL);
     if (flags >= 0 && fcntl(output_fd, F_SETFL, flags | O_NONBLOCK) == 0) output_open = true;
     bool input_open = input_fd >= 0;
-    std::vector<std::pair<int, int>> workspace_bounds;
     std::uint32_t selected = 0;
+    auto draw = [&](Bar& bar) {
+    auto* cr = bar.cr;
+    auto* layout = bar.layout;
+    auto* surface = bar.surface;
+    auto& workspace_bounds = bar.workspace_bounds;
+    auto& status_bounds = bar.status_bounds;
     auto set_color = [&](const std::optional<std::string>& color, const char* fallback) {
         const std::string value = color.value_or(fallback);
         unsigned r = 255, g = 255, b = 255, alpha = 255;
@@ -186,7 +243,6 @@ int main(int argc, char **argv) {
         pango_layout_get_pixel_size(layout, &width, &text_height);
         return std::pair{width, text_height};
     };
-    auto draw = [&] {
         cairo_set_source_rgb(cr, 0x22 / 255.0, 0x22 / 255.0, 0x22 / 255.0);
         cairo_paint(cr);
         auto raw = property(c, screen->root, names, utf8, 8);
@@ -204,7 +260,7 @@ int main(int argc, char **argv) {
             std::string label = label_index == selected ? "[" : " ";
             label.append(reinterpret_cast<const char*>(raw.data() + label_start), i - label_start);
             label += label_index == selected ? "] " : "  ";
-            workspace_width = std::min<int>(screen->width_in_pixels, workspace_width + std::min<int>(screen->width_in_pixels, measure(label).first));
+            workspace_width = std::min<int>(bar.width, workspace_width + std::min<int>(bar.width, measure(label).first));
             label_start = i + 1;
             ++label_index;
         }
@@ -213,18 +269,18 @@ int main(int argc, char **argv) {
             const auto& text = short_text && block.short_text && !block.short_text->empty() ? *block.short_text : block.full_text;
             int width = measure(text, block.markup == "pango").first;
             int minimum = block.min_width_text ? measure(*block.min_width_text, block.markup == "pango").first : block.min_width.value_or(0);
-            return std::min<int>(screen->width_in_pixels + 1, std::max(std::min<int>(width, screen->width_in_pixels + 1), std::clamp(minimum, 0, static_cast<int>(screen->width_in_pixels) + 1)) + 12);
+            return std::min<int>(bar.width + 1, std::max(std::min<int>(width, bar.width + 1), std::clamp(minimum, 0, static_cast<int>(bar.width) + 1)) + 12);
         };
         auto total_width = [&](bool short_text) {
             int total = 0;
             for (std::size_t i = 0; i < blocks.size(); ++i) {
-                int gap = i + 1 < blocks.size() ? std::clamp(blocks[i].separator_block_width.value_or(9), 0, static_cast<int>(screen->width_in_pixels) + 1) : 0;
-                total = std::min<int>(screen->width_in_pixels + 1, total + block_width(blocks[i], short_text) + gap);
+                int gap = i + 1 < blocks.size() ? std::clamp(blocks[i].separator_block_width.value_or(9), 0, static_cast<int>(bar.width) + 1) : 0;
+                total = std::min<int>(bar.width + 1, total + block_width(blocks[i], short_text) + gap);
             }
             return total;
         };
-        bool use_short = total_width(false) > std::max(0, static_cast<int>(screen->width_in_pixels) - 16 - workspace_width);
-        int status_left = std::max(8, static_cast<int>(screen->width_in_pixels) - 8 - total_width(use_short));
+        bool use_short = total_width(false) > std::max(0, static_cast<int>(bar.width) - 16 - workspace_width);
+        int status_left = std::max(8, static_cast<int>(bar.width) - 8 - total_width(use_short));
         int workspace_right = 8;
         cairo_save(cr);
         cairo_rectangle(cr, 0, 0, status_left, height);
@@ -253,13 +309,13 @@ int main(int argc, char **argv) {
         }
         cairo_restore(cr);
         status_bounds.assign(blocks.size(), {0, 0});
-        int right = screen->width_in_pixels - 8;
+        int right = bar.width - 8;
         for (std::size_t i = blocks.size(); i > 0; --i) {
             const auto& block = blocks[i - 1];
             const auto& text = use_short && block.short_text && !block.short_text->empty() ? *block.short_text : block.full_text;
             int width = block_width(block, use_short);
             auto [text_width, text_height] = measure(text, block.markup == "pango");
-            int gap = i < blocks.size() ? std::clamp(block.separator_block_width.value_or(9), 0, static_cast<int>(screen->width_in_pixels) + 1) : 0;
+            int gap = i < blocks.size() ? std::clamp(block.separator_block_width.value_or(9), 0, static_cast<int>(bar.width) + 1) : 0;
             right -= gap;
             int left = right - width;
             if (left < workspace_right) break;
@@ -296,23 +352,30 @@ int main(int argc, char **argv) {
         cairo_surface_flush(surface);
         xcb_flush(c);
     };
-    draw();
+    auto draw_all = [&] { for (auto& bar : bars) draw(bar); };
+    draw_all();
     bool running = true;
     while (running && !stopping && !xcb_connection_has_error(c)) {
         while (auto* event = xcb_poll_for_event(c)) {
             auto event_type = event->response_type & 0x7f;
-            if (event_type == XCB_DESTROY_NOTIFY && reinterpret_cast<xcb_destroy_notify_event_t*>(event)->window == window) {
-                running = false;
-                free(event);
-                break;
+            if (randr && randr->present && (event_type == randr->first_event + XCB_RANDR_SCREEN_CHANGE_NOTIFY ||
+                event_type == randr->first_event + XCB_RANDR_NOTIFY)) {
+                if (update_bars()) draw_all();
             }
-            if (event_type == XCB_EXPOSE) draw();
+            if (event_type == XCB_EXPOSE) {
+                auto* expose = reinterpret_cast<xcb_expose_event_t*>(event);
+                for (auto& bar : bars) if (bar.window == expose->window) draw(bar);
+            }
             if (event_type == XCB_PROPERTY_NOTIFY) {
                 auto* changed = reinterpret_cast<xcb_property_notify_event_t*>(event);
-                if (changed->window == screen->root && (changed->atom == names || changed->atom == current)) draw();
+                if (changed->window == screen->root && (changed->atom == names || changed->atom == current)) draw_all();
             }
             if (event_type == XCB_BUTTON_PRESS) {
                 auto* button = reinterpret_cast<xcb_button_press_event_t*>(event);
+                auto found = std::find_if(bars.begin(), bars.end(), [&](const auto& bar) { return bar.window == button->event; });
+                if (found == bars.end()) { free(event); continue; }
+                auto& status_bounds = found->status_bounds;
+                auto& workspace_bounds = found->workspace_bounds;
                 bool status_click = false;
                 if (parser.click_events()) {
                     for (std::size_t i = 0; i < status_bounds.size(); ++i) {
@@ -388,7 +451,7 @@ int main(int argc, char **argv) {
                 if (!parser.finish()) std::cerr << "mortarbar: " << parser.error() << '\n';
             } else if (!parser.feed(std::string_view(buffer.data(), static_cast<std::size_t>(n)), [&](auto frame) {
                 blocks = std::move(frame);
-                draw();
+                draw_all();
             })) {
                 std::cerr << "mortarbar: " << parser.error() << '\n';
                 input_open = false;
@@ -404,10 +467,8 @@ int main(int argc, char **argv) {
         kill(-child, SIGKILL);
         while (waitpid(child, nullptr, 0) < 0 && errno == EINTR) {}
     }
-    g_object_unref(layout);
+    clear_bars();
     pango_cairo_font_map_set_default(nullptr);
-    cairo_destroy(cr);
-    cairo_surface_destroy(surface);
     FcFini();
     xcb_disconnect(c);
     return 0;

@@ -17,6 +17,7 @@ module X11
   extern 'unsigned long XInternAtom(void*, char*, int)'
   extern 'int XChangeProperty(void*, unsigned long, unsigned long, unsigned long, int, int, void*, int)'
   extern 'int XSync(void*, int)'
+  extern 'int XGetWindowProperty(void*, unsigned long, unsigned long, long, long, int, unsigned long, void*, void*, void*, void*, void*)'
 end
 
 bar = ARGV.fetch(0)
@@ -44,19 +45,37 @@ begin
   children = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP)
   count = Fiddle::Pointer.malloc(Fiddle::SIZEOF_INT)
   abort 'cannot query windows' if X11.XQueryTree(connection, root, root_return, parent, children, count) == 0
-  abort 'bar window missing' unless count[0, Fiddle::SIZEOF_INT].unpack1('I') == 1
+  multi = ARGV[1] == 'outputs'
+  abort 'bar window count incorrect' unless count[0, Fiddle::SIZEOF_INT].unpack1('I') == (multi ? 2 : 1)
   list = Fiddle::Pointer.new(children[0, Fiddle::SIZEOF_VOIDP].unpack1('J'))
-  window = list[0, Fiddle::SIZEOF_LONG].unpack1('L!')
+  windows = list[0, (multi ? 2 : 1) * Fiddle::SIZEOF_LONG].unpack('L!*')
+  window = windows.last
   X11.XFree(list)
+  strut = X11.XInternAtom(connection, '_NET_WM_STRUT_PARTIAL', 0)
+  actual_type = Fiddle::Pointer.malloc(Fiddle::SIZEOF_LONG)
+  actual_format = Fiddle::Pointer.malloc(Fiddle::SIZEOF_INT)
+  items = Fiddle::Pointer.malloc(Fiddle::SIZEOF_LONG)
+  remaining = Fiddle::Pointer.malloc(Fiddle::SIZEOF_LONG)
+  data = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP)
+  reservations = windows.map do |bar_window|
+  result = X11.XGetWindowProperty(connection, bar_window, strut, 0, 12, 0, 6, actual_type, actual_format, items, remaining, data)
+  abort 'bar strut missing' unless result == 0 && items[0, Fiddle::SIZEOF_LONG].unpack1('L!') == 12
+  values = Fiddle::Pointer.new(data[0, Fiddle::SIZEOF_VOIDP].unpack1('J'))
+  reservation = values[0, 12 * Fiddle::SIZEOF_LONG].unpack('L!*')
+  X11.XFree(values)
+  reservation
+  end
+  spans = reservations.map { |reservation| [reservation[2], reservation[8], reservation[9]] }.sort
+  abort 'bar strut incorrect' unless spans == (multi ? [[24, 0, 399], [24, 400, 799]] : [[24, 0, 799]])
   names = X11.XInternAtom(connection, '_NET_DESKTOP_NAMES', 0)
   utf8 = X11.XInternAtom(connection, 'UTF8_STRING', 0)
   long_name = ('W' * 400 + "\0").b
   X11.XChangeProperty(connection, root, names, utf8, 8, 0, long_name, long_name.bytesize)
   X11.XSync(connection, 0)
   sleep 0.2
-  image = X11.XGetImage(connection, window, 0, 0, 800, 24, -1, 2)
+  image = X11.XGetImage(connection, window, 0, 0, (multi ? 400 : 800), 24, -1, 2)
   abort 'cannot capture bar' if image.null?
-  colors = (600...800).flat_map { |x| (0...24).map { |y| X11.XGetPixel(image, x, y) & 0xffffff } }
+  colors = (multi ? (200...400) : (600...800)).flat_map { |x| (0...24).map { |y| X11.XGetPixel(image, x, y) & 0xffffff } }
   abort 'urgent background missing' unless colors.include?(0x900000)
   abort 'urgent border missing' unless colors.include?(0x2f343a)
   abort 'disabled separator drawn' if colors.include?(0x666666)
