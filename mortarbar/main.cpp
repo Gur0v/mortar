@@ -11,10 +11,12 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <charconv>
 #include <cstdint>
 #include <csignal>
 #include <fcntl.h>
 #include <cstdlib>
+#include <cstdio>
 #include <iostream>
 #include <poll.h>
 #include <spawn.h>
@@ -55,6 +57,34 @@ std::vector<std::uint8_t> property(xcb_connection_t* c, xcb_window_t window, xcb
 }
 
 int main(int argc, char **argv) {
+    bool bottom = false;
+    std::string font_name = "monospace 10";
+    std::array<std::uint32_t, 4> colors{0x222222, 0xffffff, 0x285577, 0x333333};
+    int command = 1;
+    if (argc > 1 && std::string_view(argv[1]) == "--mortar-settings") {
+        if (argc < 9 || (std::string_view(argv[2]) != "top" && std::string_view(argv[2]) != "bottom") ||
+            !*argv[3] || std::string_view(argv[8]) != "--") {
+            std::cerr << "mortarbar: invalid settings\n";
+            return 1;
+        }
+        bottom = std::string_view(argv[2]) == "bottom";
+        font_name = argv[3];
+        for (std::size_t i = 0; i < colors.size(); ++i) {
+            std::string_view value(argv[4 + i]);
+            auto result = std::from_chars(value.data(), value.data() + value.size(), colors[i]);
+            if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || colors[i] > 0xffffff) {
+                std::cerr << "mortarbar: invalid color\n";
+                return 1;
+            }
+        }
+        command = 9;
+    }
+    std::array<std::string, 4> color_names;
+    for (std::size_t i = 0; i < colors.size(); ++i) {
+        char text[8];
+        std::snprintf(text, sizeof(text), "#%06x", colors[i]);
+        color_names[i] = text;
+    }
     std::signal(SIGTERM, stop);
     std::signal(SIGINT, stop);
     int screen_number = 0;
@@ -77,7 +107,8 @@ int main(int argc, char **argv) {
     auto type = atom(c, "_NET_WM_WINDOW_TYPE");
     auto dock = atom(c, "_NET_WM_WINDOW_TYPE_DOCK");
     auto strut = atom(c, "_NET_WM_STRUT_PARTIAL");
-    if (!output_workspaces || !names || !current || !utf8 || !clients || !desktop || !type || !dock || !strut) {
+    auto local_bar = atom(c, "_MORTAR_BAR_OUTPUT");
+    if (!output_workspaces || !names || !current || !utf8 || !clients || !desktop || !type || !dock || !strut || !local_bar) {
         std::cerr << "mortarbar: cannot intern X11 atoms\n";
         xcb_disconnect(c);
         return 1;
@@ -128,7 +159,8 @@ int main(int argc, char **argv) {
         std::vector<mortar::Rect> next_bounds;
         for (const auto& output : outputs) {
             const auto& bounds = output.bounds;
-            if (bounds.y != 0 || bounds.x < 0 || bounds.width <= 0 || bounds.width > 65535 || bounds.x > 32767 || bounds.height < height) continue;
+            if (bounds.x < 0 || bounds.y < 0 || bounds.width <= 0 || bounds.width > 65535 || bounds.x > 32767 || bounds.y > 32767 || bounds.height < height ||
+                (bottom && int64_t(bounds.y) + bounds.height - height > 32767)) continue;
             if (std::find(next_bounds.begin(), next_bounds.end(), bounds) == next_bounds.end()) next_bounds.push_back(bounds);
         }
         if (next_bounds == bar_bounds && !bars.empty()) return true;
@@ -136,16 +168,22 @@ int main(int argc, char **argv) {
         bar_bounds = next_bounds;
         for (const auto& bounds : next_bounds) {
             auto window = xcb_generate_id(c);
-            std::uint32_t values[] = {0x222222, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_PROPERTY_CHANGE};
-            xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, static_cast<std::int16_t>(bounds.x), 0,
+            std::uint32_t values[] = {colors[0], XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_PROPERTY_CHANGE};
+            const int y = bottom ? bounds.y + bounds.height - height : bounds.y;
+            xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, static_cast<std::int16_t>(bounds.x), static_cast<std::int16_t>(y),
                               static_cast<std::uint16_t>(bounds.width), height, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
                               screen->root_visual, XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, values);
             xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, type, XCB_ATOM_ATOM, 32, 1, &dock);
-            std::array<std::uint32_t, 12> reservation {};
-            reservation[2] = height;
-            reservation[8] = static_cast<std::uint32_t>(bounds.x);
-            reservation[9] = static_cast<std::uint32_t>(bounds.x + bounds.width - 1);
-            xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, strut, XCB_ATOM_CARDINAL, 32, reservation.size(), reservation.data());
+            const std::array<std::uint32_t, 4> output = {static_cast<std::uint32_t>(bounds.x), static_cast<std::uint32_t>(bounds.y),
+                static_cast<std::uint32_t>(bounds.width), static_cast<std::uint32_t>(bounds.height)};
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, local_bar, XCB_ATOM_CARDINAL, 32, output.size(), output.data());
+            if ((!bottom && bounds.y == 0) || (bottom && int64_t(bounds.y) + bounds.height == screen->height_in_pixels)) {
+                std::array<std::uint32_t, 12> reservation {};
+                reservation[bottom ? 3 : 2] = height;
+                reservation[bottom ? 10 : 8] = static_cast<std::uint32_t>(bounds.x);
+                reservation[bottom ? 11 : 9] = static_cast<std::uint32_t>(bounds.x + bounds.width - 1);
+                xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, strut, XCB_ATOM_CARDINAL, 32, reservation.size(), reservation.data());
+            }
             auto* surface = cairo_xcb_surface_create(c, window, visual, bounds.width, height);
             auto* cr = cairo_create(surface);
             if (cairo_status(cr) != CAIRO_STATUS_SUCCESS || cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
@@ -154,7 +192,7 @@ int main(int argc, char **argv) {
                 clear_bars(); return false;
             }
             auto* layout = pango_cairo_create_layout(cr);
-            auto* font = pango_font_description_from_string("monospace 10");
+            auto* font = pango_font_description_from_string(font_name.c_str());
             pango_layout_set_font_description(layout, font);
             pango_font_description_free(font);
             bars.push_back({window, bounds.width, bounds, 0, {}, surface, cr, layout, {}, {}});
@@ -166,7 +204,7 @@ int main(int argc, char **argv) {
     if (!update_bars()) { xcb_disconnect(c); return 1; }
     int input_fd = -1, output_fd = -1;
     pid_t child = -1;
-    if (argc > 1) {
+    if (argc > command) {
         int from_child[2] = {-1, -1}, to_child[2] = {-1, -1};
         int error = 0;
         if (pipe2(from_child, O_CLOEXEC) < 0 || pipe2(to_child, O_CLOEXEC) < 0) error = errno;
@@ -180,7 +218,7 @@ int main(int argc, char **argv) {
         if (!error) { error = posix_spawnattr_init(&attributes); attr_initialized = !error; }
         if (!error) error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
         if (!error) error = posix_spawnattr_setpgroup(&attributes, 0);
-        if (!error) error = posix_spawnp(&child, argv[1], &actions, &attributes, argv + 1, environ);
+        if (!error) error = posix_spawnp(&child, argv[command], &actions, &attributes, argv + command, environ);
         if (attr_initialized) posix_spawnattr_destroy(&attributes);
         if (initialized) posix_spawn_file_actions_destroy(&actions);
         if (from_child[1] >= 0) close(from_child[1]);
@@ -266,7 +304,8 @@ int main(int argc, char **argv) {
         pango_layout_get_pixel_size(layout, &width, &text_height);
         return std::pair{width, text_height};
     };
-        cairo_set_source_rgb(cr, 0x22 / 255.0, 0x22 / 255.0, 0x22 / 255.0);
+        cairo_set_source_rgb(cr, ((colors[0] >> 16) & 255) / 255.0, ((colors[0] >> 8) & 255) / 255.0,
+                             (colors[0] & 255) / 255.0);
         cairo_paint(cr);
         auto raw = property(c, screen->root, names, utf8, 8);
         auto active = property(c, screen->root, current, XCB_ATOM_CARDINAL, 32);
@@ -370,11 +409,11 @@ int main(int argc, char **argv) {
             label += index == selected ? "] " : "  ";
             auto [width, text_height] = measure(label);
             if (index == selected || std::find(occupied.begin(), occupied.end(), index) != occupied.end()) {
-                set_color({}, index == selected && (!valid || bar_focused) ? "#285577" : "#333333");
+                set_color({}, color_names[index == selected && (!valid || bar_focused) ? 2 : 3].c_str());
                 cairo_rectangle(cr, workspace_right, 0, width, height);
                 cairo_fill(cr);
             }
-            set_color({}, "#ffffff");
+            set_color({}, color_names[1].c_str());
             cairo_move_to(cr, workspace_right, (height - text_height) / 2);
             pango_cairo_show_layout(cr, layout);
             workspace_bounds.emplace_back(workspace_right, std::min(workspace_right + width, status_left));
@@ -385,7 +424,7 @@ int main(int argc, char **argv) {
         }
         if (workspace_bounds.empty()) {
             auto [width, text_height] = measure("[1] ");
-            set_color({}, "#ffffff");
+            set_color({}, color_names[1].c_str());
             cairo_move_to(cr, workspace_right, (height - text_height) / 2);
             pango_cairo_show_layout(cr, layout);
             workspace_bounds.emplace_back(workspace_right, std::min(workspace_right + width, status_left));
@@ -411,7 +450,7 @@ int main(int argc, char **argv) {
                 cairo_fill(cr);
             }
             if (block.background || block.urgent) {
-                set_color(block.urgent ? std::optional<std::string>{"#900000"} : block.background, "#222222");
+                set_color(block.urgent ? std::optional<std::string>{"#900000"} : block.background, color_names[0].c_str());
                 cairo_rectangle(cr, left, 0, width, height);
                 cairo_fill(cr);
             }
@@ -427,7 +466,7 @@ int main(int argc, char **argv) {
                 cairo_rectangle(cr, right - r, 0, r, height);
                 cairo_fill(cr);
             }
-            set_color(block.urgent ? std::optional<std::string>{"#ffffff"} : block.color, "#ffffff");
+            set_color(block.urgent ? std::optional<std::string>{"#ffffff"} : block.color, color_names[1].c_str());
             int extra = std::max(0, width - 12 - text_width);
             int offset = block.align == "right" ? extra : block.align == "center" ? extra / 2 : 0;
             cairo_move_to(cr, left + 6 + offset, (height - text_height) / 2);

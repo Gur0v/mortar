@@ -272,9 +272,10 @@ int main() {
     const auto dock_type = atom("_NET_WM_WINDOW_TYPE_DOCK", 24);
     const auto strut = atom("_NET_WM_STRUT", 13);
     const auto strut_partial = atom("_NET_WM_STRUT_PARTIAL", 21);
+    const auto local_bar = atom("_MORTAR_BAR_OUTPUT", 18);
     const auto net_state = atom("_NET_WM_STATE", 13);
     const auto fullscreen_atom = atom("_NET_WM_STATE_FULLSCREEN", 24);
-    if (!output_workspaces || !net_clients || !net_stacking || !net_active || !net_names || !net_supported || !net_number || !net_current || !net_desktop || !net_check || !net_name || !utf8 || !window_type || !dialog_type || !dock_type || !strut || !strut_partial || !net_state || !fullscreen_atom) return EXIT_FAILURE;
+    if (!output_workspaces || !net_clients || !net_stacking || !net_active || !net_names || !net_supported || !net_number || !net_current || !net_desktop || !net_check || !net_name || !utf8 || !window_type || !dialog_type || !dock_type || !strut || !strut_partial || !local_bar || !net_state || !fullscreen_atom) return EXIT_FAILURE;
     using Property = std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)>;
     auto cardinal = [&](xcb_window_t window, xcb_atom_t property, uint32_t fallback) {
         Property reply{xcb_get_property_reply(c, xcb_get_property(c, false, window, property,
@@ -464,6 +465,23 @@ int main() {
         int64_t left = area.x, top = area.y, right = int64_t(area.x) + area.width, bottom = int64_t(area.y) + area.height;
         const int64_t root_width = screens.data->width_in_pixels, root_height = screens.data->height_in_pixels;
         for (auto window : docks) {
+            Property local{xcb_get_property_reply(c, xcb_get_property(c, false, window, local_bar,
+                XCB_ATOM_CARDINAL, 0, 4), nullptr), &std::free};
+            if (local && local->type == XCB_ATOM_CARDINAL && local->format == 32 && !local->bytes_after &&
+                xcb_get_property_value_length(local.get()) == 16) {
+                const auto *v = static_cast<const uint32_t *>(xcb_get_property_value(local.get()));
+                if (v[0] == static_cast<uint32_t>(area.x) && v[1] == static_cast<uint32_t>(area.y) &&
+                    v[2] == static_cast<uint32_t>(area.width) && v[3] == static_cast<uint32_t>(area.height)) {
+                    std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                        xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
+                    if (geometry && geometry->x == area.x && geometry->width == area.width &&
+                        geometry->height > 0 && geometry->height <= area.height && geometry->border_width == 0) {
+                        if (geometry->y == area.y) top = std::max(top, int64_t(area.y) + geometry->height);
+                        else if (int64_t(geometry->y) + geometry->height == int64_t(area.y) + area.height)
+                            bottom = std::min(bottom, int64_t(geometry->y));
+                    }
+                }
+            }
             Property reply{xcb_get_property_reply(c, xcb_get_property(c, false, window, strut_partial,
                 XCB_ATOM_CARDINAL, 0, 12), nullptr), &std::free};
             bool partial = reply && reply->type == XCB_ATOM_CARDINAL && reply->format == 32 &&
@@ -1072,7 +1090,12 @@ int main() {
             if (!bar_error) bar_error = posix_spawn_file_actions_addopen(&bar_actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
             if (!bar_error) {
                 char name[] = "mortarbar";
+                const auto &settings = config.bar();
+                std::vector<std::string> options{"--mortar-settings", settings.bottom ? "bottom" : "top", settings.font,
+                    std::to_string(settings.background), std::to_string(settings.foreground),
+                    std::to_string(settings.focused), std::to_string(settings.unfocused), "--"};
                 std::vector<char *> args{name};
+                for (auto &arg : options) args.push_back(arg.data());
                 for (const auto &arg : config.bar_status()) args.push_back(const_cast<char *>(arg.c_str()));
                 args.push_back(nullptr);
                 bar_error = posix_spawnp(&bar, name, &bar_actions, nullptr, args.data(), environ);
@@ -1282,9 +1305,10 @@ int main() {
                             keyboard->replace_bindings(prepare_bindings(config.staged_bindings()));
                             xcb_flush(c);
                             auto old_status = config.bar_status();
+                            auto old_bar = config.bar();
                             config.commit();
                             tile();
-                            if (old_status != config.bar_status() && stop_bar()) start_bar();
+                            if ((old_status != config.bar_status() || old_bar != config.bar()) && stop_bar()) start_bar();
                         } catch (const std::exception &error) {
                             config.discard();
                             std::fprintf(stderr, "mortar: failed to reload keybindings: %s; keeping current configuration\n", error.what());
@@ -1389,7 +1413,7 @@ int main() {
         }
         case XCB_PROPERTY_NOTIFY: {
             auto *property = reinterpret_cast<xcb_property_notify_event_t *>(event);
-            if (!(event->response_type & 0x80) && (property->atom == strut || property->atom == strut_partial) &&
+            if (!(event->response_type & 0x80) && (property->atom == strut || property->atom == strut_partial || property->atom == local_bar) &&
                 std::find(docks.begin(), docks.end(), property->window) != docks.end()) tile();
             if (!(event->response_type & 0x80) && property->atom == XCB_ATOM_WM_NORMAL_HINTS &&
                 owner(property->window) >= 0 && visible(owner(property->window))) tile();

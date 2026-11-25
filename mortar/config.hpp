@@ -37,6 +37,16 @@ public:
         std::uint32_t unfocused = 0x333333;
     };
 
+    struct Bar {
+        bool bottom = false;
+        std::string font = "monospace 10";
+        std::uint32_t background = 0x222222;
+        std::uint32_t foreground = 0xffffff;
+        std::uint32_t focused = 0x285577;
+        std::uint32_t unfocused = 0x333333;
+        bool operator==(const Bar &) const = default;
+    };
+
     enum class WindowAction { floating, scratch_move, scratch_show, fullscreen };
     using WindowActionCallback = void (*)(void *, WindowAction);
     using SplitAction = void (*)(void *, Split);
@@ -71,6 +81,8 @@ public:
     const std::vector<WindowRule> &window_rules() const noexcept { return window_rules_; }
     const Border &border() const noexcept { return border_; }
     const Border &staged_border() const noexcept;
+    const Bar &bar() const noexcept { return bar_; }
+    const Bar &staged_bar() const noexcept;
 
 private:
     Result run(SCM callback);
@@ -91,6 +103,7 @@ private:
     std::vector<SCM> callbacks_;
     std::vector<std::string> bar_status_;
     Border border_;
+    Bar bar_;
     std::vector<WindowRule> window_rules_;
 
     std::unique_ptr<ConfigRuntime> staged_;

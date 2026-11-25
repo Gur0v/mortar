@@ -19,6 +19,7 @@ struct ConfigRuntime {
     std::vector<SCM> callbacks;
     std::vector<std::string> bar_status;
     Config::Border border;
+    Config::Bar bar;
     std::vector<Config::WindowRule> window_rules;
     const char *path;
     SCM callback;
@@ -310,6 +311,39 @@ struct ConfigRuntime {
         return SCM_UNSPECIFIED;
     }
 
+    static SCM bar_position(SCM value) {
+        if (!active || !active->path) scm_misc_error("bar-position", "only allowed while loading", SCM_EOL);
+        if (scm_is_eq(value, scm_from_utf8_symbol("top"))) active->bar.bottom = false;
+        else if (scm_is_eq(value, scm_from_utf8_symbol("bottom"))) active->bar.bottom = true;
+        else scm_wrong_type_arg_msg("bar-position", 1, value, "top or bottom symbol");
+        return SCM_UNSPECIFIED;
+    }
+
+    static SCM bar_font(SCM value) {
+        if (!active || !active->path) scm_misc_error("bar-font", "only allowed while loading", SCM_EOL);
+        if (!scm_is_string(value)) scm_wrong_type_arg_msg("bar-font", 1, value, "string");
+        size_t length = 0;
+        char *text = scm_to_utf8_stringn(value, &length);
+        bool failed = !length || length > 4096 || std::memchr(text, 0, length);
+        try {
+            if (!failed) active->bar.font.assign(text, length);
+        } catch (...) { failed = true; }
+        std::free(text);
+        if (failed) scm_misc_error("bar-font", "invalid font or allocation failure", SCM_EOL);
+        return SCM_UNSPECIFIED;
+    }
+
+    static SCM bar_colors(SCM background, SCM foreground, SCM focused, SCM unfocused) {
+        if (!active || !active->path) scm_misc_error("bar-colors", "only allowed while loading", SCM_EOL);
+        for (SCM value : {background, foreground, focused, unfocused})
+            if (!scm_is_unsigned_integer(value, 0, 0xffffff)) scm_out_of_range("bar-colors", value);
+        active->bar.background = scm_to_uint32(background);
+        active->bar.foreground = scm_to_uint32(foreground);
+        active->bar.focused = scm_to_uint32(focused);
+        active->bar.unfocused = scm_to_uint32(unfocused);
+        return SCM_UNSPECIFIED;
+    }
+
     static SCM load_body(void *data) {
         auto *runtime = static_cast<ConfigRuntime *>(data);
         SCM module = scm_c_eval_string("(make-fresh-user-module)");
@@ -332,6 +366,9 @@ struct ConfigRuntime {
         scm_c_define_gsubr("scratchpad-show", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_show));
         scm_c_define_gsubr("fullscreen-toggle", 0, 0, 0, reinterpret_cast<scm_t_subr>(fullscreen_toggle));
         scm_c_define_gsubr("bar-status", 0, 0, 1, reinterpret_cast<scm_t_subr>(bar_status_action));
+        scm_c_define_gsubr("bar-position", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_position));
+        scm_c_define_gsubr("bar-font", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_font));
+        scm_c_define_gsubr("bar-colors", 4, 0, 0, reinterpret_cast<scm_t_subr>(bar_colors));
         scm_c_define_gsubr("window-rule", 3, 0, 0, reinterpret_cast<scm_t_subr>(window_rule));
         scm_c_define_gsubr("border", 3, 0, 0, reinterpret_cast<scm_t_subr>(set_border));
         scm_c_define_gsubr("spawn", 0, 0, 1, reinterpret_cast<scm_t_subr>(spawn_action));
@@ -473,6 +510,10 @@ const Config::Border &Config::staged_border() const noexcept {
     return staged_ ? staged_->border : border_;
 }
 
+const Config::Bar &Config::staged_bar() const noexcept {
+    return staged_ ? staged_->bar : bar_;
+}
+
 void Config::commit() noexcept {
     if (!staged_) return;
     std::swap(module_, staged_->module);
@@ -482,6 +523,7 @@ void Config::commit() noexcept {
     callbacks_.swap(staged_->callbacks);
     bar_status_.swap(staged_->bar_status);
     std::swap(border_, staged_->border);
+    std::swap(bar_, staged_->bar);
     window_rules_.swap(staged_->window_rules);
     discard();
 }

@@ -40,6 +40,14 @@ Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(focus 'left)`
 
 `(window-rule "Class" workspace floating)` matches the class component of `WM_CLASS` exactly. `workspace` is a desktop index from 0 to 9 or `#f` to leave it unchanged. `floating` is `'floating`, `'tiled`, or `#f` to leave the classification unchanged. Later matching rules override fields set by earlier rules. Rules apply when a window is managed and are replaced on successful configuration reload; existing windows are not reassigned automatically.
 
+## Bar appearance
+
+`(bar-position 'top)` and `(bar-position 'bottom)` select the edge of each output; the default is top. `(bar-font "monospace 10")` selects a Pango font description. The string must be nonempty and at most 4096 UTF-8 bytes, without NUL.
+
+`(bar-colors background foreground focused unfocused)` sets 24-bit RGB integer colors. Defaults are `#x222222`, `#xffffff`, `#x285577`, and `#x333333`. Focused and unfocused colors fill workspace buttons; foreground colors their text and default status text. Status blocks may override their own colors.
+
+These settings are accepted only while loading. A successful reload restarts mortarbar if any changed, with the same failure behavior as a status-command change.
+
 ## Bar status
 
 `(bar-status "program" "argument" ...)` selects a status producer. Mortarbar starts it directly, without a shell, and reads its stdout as an i3bar status stream. Click events go to its stdin. No producer runs by default. Arguments are separate strings; the program must be nonempty. The last registration wins. After a successful reload, a changed status command restarts mortarbar. Mortar stops the old bar before starting its replacement, escalating to SIGKILL if needed. Restart failures are reported; the committed configuration remains active.

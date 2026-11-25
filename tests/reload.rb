@@ -63,11 +63,15 @@ Dir.mktmpdir('mortar-reload-') do |dir|
       abort 'Old bar survived reload'
     rescue Errno::ESRCH
     end
-    File.write(config, binding.call('z', 'bad') + "(error \"reload failed\")\n")
+    File.write(config, binding.call('x', 'new') + "(bar-status \"new\") (bar-position 'bottom) (bar-font \"sans 12\") (bar-colors 1 2 3 4)")
+    send_key.call('c')
+    wait_for.call('Bar appearance did not restart bar') { File.readlines(bar_log).size == 3 }
+    abort 'Bar settings not passed' unless File.readlines(bar_log).last.include?('--mortar-settings bottom sans 12 1 2 3 4 -- new')
+    File.write(config, binding.call('z', 'bad') + "(bar-position 'top) (error \"reload failed\")\n")
     send_key.call('c')
     wait_for.call('Failed reload was not reported') { File.read(errors).include?('failed to reload configuration') }
     check.call('x', 'new')
-    abort 'Failed reload restarted bar' unless File.readlines(bar_log).size == 2
+    abort 'Failed reload restarted bar' unless File.readlines(bar_log).size == 3
     conflict_input, conflict_writer = IO.pipe
     conflict_reader, conflict_output = IO.pipe
     conflict = Process.spawn(env, ARGV.fetch(1), 'reload-conflict', in: conflict_input, out: conflict_output)

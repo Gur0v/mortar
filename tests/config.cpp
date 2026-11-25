@@ -66,6 +66,25 @@ int main() {
     using Result = mortar::Config::Result;
     check(config.bar_status().empty());
     check(!config.evaluate("1").success);
+    check(!config.bar().bottom && config.bar().font == "monospace 10" &&
+          config.bar().background == 0x222222 && config.bar().foreground == 0xffffff &&
+          config.bar().focused == 0x285577 && config.bar().unfocused == 0x333333);
+    write("(bar-position 'bottom) (bar-font \"sans 12\") (bar-colors 1 2 3 4)");
+    check(config.stage(path) && config.staged_bar().bottom && config.staged_bar().font == "sans 12" &&
+          config.staged_bar().background == 1 && config.staged_bar().foreground == 2 &&
+          config.staged_bar().focused == 3 && config.staged_bar().unfocused == 4 && !config.bar().bottom);
+    config.discard();
+    check(!config.bar().bottom && !config.staged_bar().bottom);
+    check(config.load(path) && config.bar().bottom && config.bar().font == "sans 12");
+    for (const char *invalid : {"(bar-position 'left)", "(bar-font \"\")", "(bar-font 1)",
+                                "(bar-font (string #\\nul))", "(bar-colors 0 0 0 #x1000000)",
+                                "(bar-colors 0 -1 0 0)", "(bar-position 'top) (error \"bad\")"}) {
+        write(invalid);
+        check(!config.load(path) && config.bar().bottom && config.bar().font == "sans 12");
+    }
+    check(!config.evaluate("(bar-position 'top)").success);
+    write("#t");
+    check(config.load(path) && !config.bar().bottom && config.bar().font == "monospace 10");
     write("(window-rule \"Editor\" 2 (quote floating))");
     check(config.load(path));
     check(config.window_rules().size() == 1 && config.window_rules()[0].workspace == 2 &&

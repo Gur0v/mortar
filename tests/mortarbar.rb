@@ -9,6 +9,7 @@ module X11
   extern 'void *XOpenDisplay(char*)'
   extern 'unsigned long XDefaultRootWindow(void*)'
   extern 'int XQueryTree(void*, unsigned long, void*, void*, void*, void*)'
+  extern 'int XGetGeometry(void*, unsigned long, void*, void*, void*, void*, void*, void*, void*)'
   extern 'int XFree(void*)'
   extern 'void *XGetImage(void*, unsigned long, int, int, unsigned int, unsigned int, unsigned long, int)'
   extern 'unsigned long XGetPixel(void*, int, int)'
@@ -46,10 +47,10 @@ begin
   count = Fiddle::Pointer.malloc(Fiddle::SIZEOF_INT)
   abort 'cannot query windows' if X11.XQueryTree(connection, root, root_return, parent, children, count) == 0
   multi = ARGV[1] == 'outputs'
-  abort 'bar window count incorrect' unless count[0, Fiddle::SIZEOF_INT].unpack1('I') == (multi ? 2 : 1)
+  abort 'bar window count incorrect' unless count[0, Fiddle::SIZEOF_INT].unpack1('I') == (multi ? 3 : 1)
   list = Fiddle::Pointer.new(children[0, Fiddle::SIZEOF_VOIDP].unpack1('J'))
-  windows = list[0, (multi ? 2 : 1) * Fiddle::SIZEOF_LONG].unpack('L!*')
-  window = windows.last
+  windows = list[0, (multi ? 3 : 1) * Fiddle::SIZEOF_LONG].unpack('L!*')
+  window = multi ? windows[1] : windows.last
   X11.XFree(list)
   strut = X11.XInternAtom(connection, '_NET_WM_STRUT_PARTIAL', 0)
   actual_type = Fiddle::Pointer.malloc(Fiddle::SIZEOF_LONG)
@@ -57,7 +58,7 @@ begin
   items = Fiddle::Pointer.malloc(Fiddle::SIZEOF_LONG)
   remaining = Fiddle::Pointer.malloc(Fiddle::SIZEOF_LONG)
   data = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP)
-  reservations = windows.map do |bar_window|
+  reservations = windows.first(multi ? 2 : 1).map do |bar_window|
   result = X11.XGetWindowProperty(connection, bar_window, strut, 0, 12, 0, 6, actual_type, actual_format, items, remaining, data)
   abort 'bar strut missing' unless result == 0 && items[0, Fiddle::SIZEOF_LONG].unpack1('L!') == 12
   values = Fiddle::Pointer.new(data[0, Fiddle::SIZEOF_VOIDP].unpack1('J'))
@@ -67,6 +68,19 @@ begin
   end
   spans = reservations.map { |reservation| [reservation[2], reservation[8], reservation[9]] }.sort
   abort 'bar strut incorrect' unless spans == (multi ? [[24, 0, 399], [24, 400, 799]] : [[24, 0, 799]])
+  if multi
+    geometry = Array.new(6) { Fiddle::Pointer.malloc(Fiddle::SIZEOF_INT) }
+    abort 'cannot get lower bar geometry' if X11.XGetGeometry(connection, windows[2], root_return, *geometry) == 0
+    abort 'lower bar geometry incorrect' unless geometry.first(4).map { |v| v[0, Fiddle::SIZEOF_INT].unpack1('i') } == [0, 300, 800, 24]
+    local = X11.XInternAtom(connection, '_MORTAR_BAR_OUTPUT', 0)
+    result = X11.XGetWindowProperty(connection, windows[2], local, 0, 4, 0, 6, actual_type, actual_format, items, remaining, data)
+    abort 'local bar property missing' unless result == 0 && items[0, Fiddle::SIZEOF_LONG].unpack1('L!') == 4
+    values = Fiddle::Pointer.new(data[0, Fiddle::SIZEOF_VOIDP].unpack1('J'))
+    abort 'local bar output incorrect' unless values[0, 4 * Fiddle::SIZEOF_LONG].unpack('L!*') == [0, 300, 800, 200]
+    X11.XFree(values)
+    X11.XGetWindowProperty(connection, windows[2], strut, 0, 12, 0, 6, actual_type, actual_format, items, remaining, data)
+    abort 'local bar has root strut' unless items[0, Fiddle::SIZEOF_LONG].unpack1('L!') == 0
+  end
   names = X11.XInternAtom(connection, '_NET_DESKTOP_NAMES', 0)
   utf8 = X11.XInternAtom(connection, 'UTF8_STRING', 0)
   current = X11.XInternAtom(connection, '_NET_CURRENT_DESKTOP', 0)
