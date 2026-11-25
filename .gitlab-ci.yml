@@ -21,6 +21,16 @@ build:
     - meson compile -C build
     - meson test -C build --print-errorlogs
 
+sanitizers:
+  stage: test
+  image: debian:trixie
+  before_script:
+    - apt-get update && apt-get install -y g++ meson ninja-build pkg-config libxcb1-dev libxcb-randr0-dev ruby xvfb
+  script:
+    - meson setup build -Dwerror=true -Db_sanitize=address,undefined
+    - meson compile -C build
+    - UBSAN_OPTIONS=halt_on_error=1 meson test -C build --print-errorlogs
+
 sast:
   stage: test
 include:
