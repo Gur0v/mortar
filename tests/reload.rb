@@ -17,9 +17,13 @@ Dir.mktmpdir('mortar-reload-') do |dir|
     log = File.join(dir, 'callbacks')
     staged = File.join(dir, 'staged')
     errors = File.join(dir, 'wm.log')
-    env = { 'DISPLAY' => ":#{Integer(display)}", 'XDG_CONFIG_HOME' => dir, 'HOME' => dir }
+    bar_log = File.join(dir, 'bars')
+    bar = File.join(dir, 'mortarbar')
+    File.write(bar, "#!/bin/sh\ntrap '' TERM\nprintf '%s %s\\n' \"$$\" \"$*\" >> #{bar_log}\nwhile :; do sleep 1; done\n")
+    File.chmod(0755, bar)
+    env = { 'PATH' => "#{dir}:#{ENV.fetch('PATH')}", 'DISPLAY' => ":#{Integer(display)}", 'XDG_CONFIG_HOME' => dir, 'HOME' => dir }
     binding = ->(key, value) { "(bind-key #{key.ord} 8 (lambda () (call-with-output-file #{log.dump} (lambda (p) (display #{value.dump} p)))))\n" }
-    File.write(config, binding.call('z', 'old'))
+    File.write(config, binding.call('z', 'old') + '(bar-status "old")')
     wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: errors)
     input, output = IO.pipe
     response, child_output = IO.pipe
@@ -47,13 +51,23 @@ Dir.mktmpdir('mortar-reload-') do |dir|
       send_key.call('z')
       File.exist?(log) && File.read(log) == 'old'
     end
-    File.write(config, binding.call('x', 'new'))
+    wait_for.call('Initial bar did not start') { File.exist?(bar_log) }
+    old_bar = Integer(File.read(bar_log).split.first)
+    File.write(config, binding.call('x', 'new') + '(bar-status "new")')
     send_key.call('c')
     check.call('x', 'new')
+    wait_for.call('Bar did not restart') { File.readlines(bar_log).size == 2 }
+    abort 'Bar arguments did not change' unless File.readlines(bar_log).last.split.last == 'new'
+    begin
+      Process.kill(0, old_bar)
+      abort 'Old bar survived reload'
+    rescue Errno::ESRCH
+    end
     File.write(config, binding.call('z', 'bad') + "(error \"reload failed\")\n")
     send_key.call('c')
     wait_for.call('Failed reload was not reported') { File.read(errors).include?('failed to reload configuration') }
     check.call('x', 'new')
+    abort 'Failed reload restarted bar' unless File.readlines(bar_log).size == 2
     conflict_input, conflict_writer = IO.pipe
     conflict_reader, conflict_output = IO.pipe
     conflict = Process.spawn(env, ARGV.fetch(1), 'reload-conflict', in: conflict_input, out: conflict_output)

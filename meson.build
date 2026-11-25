@@ -10,7 +10,9 @@ if not libjq.found()
   libjq = meson.get_compiler('cpp').find_library('jq')
 endif
 libjq = libjq.as_system('system')
-mortarbar = executable('mortarbar', 'mortarbar/main.cpp', 'mortarbar/status.cpp', dependencies: [xcb, libjq], install: true)
+pangocairo = dependency('pangocairo')
+fontconfig = dependency('fontconfig')
+mortarbar = executable('mortarbar', 'mortarbar/main.cpp', 'mortarbar/status.cpp', dependencies: [xcb, libjq, pangocairo, fontconfig], install: true)
 mortar = executable('mortar', 'mortar/main.cpp', 'mortar/randr.cpp', 'mortar/outputs.cpp', 'mortar/scratchpad.cpp', 'mortar/ipc.cpp', 'mortar/actions.cpp', 'mortar/layout.cpp', 'mortar/workspaces.cpp', 'mortar/keyboard.cpp', 'mortar/config.cpp', dependencies: [xcb, xcb_randr, xcb_xkb, xkbcommon, guile], install: true)
 
 if get_option('tests')
@@ -19,7 +21,6 @@ if get_option('tests')
   test('status', status_test)
   ipc_test = executable('test-ipc', 'tests/ipc.cpp', 'mortar/ipc.cpp')
   test('ipc', ipc_test)
-  test('ipc-integration', find_program('ruby'), args: [files('tests/ipc-integration.rb'), mortar])
   config_test = executable('test-config', 'tests/config.cpp', 'mortar/config.cpp', dependencies: guile)
   test('config', config_test)
   size_hints_test = executable('test-size-hints', 'tests/size-hints.cpp', 'mortar/randr.cpp', 'mortar/outputs.cpp', 'mortar/scratchpad.cpp', 'mortar/ipc.cpp', 'mortar/actions.cpp', 'mortar/layout.cpp', 'mortar/workspaces.cpp', 'mortar/keyboard.cpp', 'mortar/config.cpp', dependencies: [xcb, xcb_randr, xcb_xkb, xkbcommon, guile])
@@ -97,6 +98,30 @@ end
 ''', actions_test])
   xcb_xtest = dependency('xcb-xtest')
   client = executable('test-client', 'tests/client.cpp', dependencies: [xcb, xcb_xtest])
+  test('ipc-integration', find_program('ruby'), args: [files('tests/ipc-integration.rb'), mortar, client])
+  ewmh_test = executable('test-ewmh', 'tests/ewmh.cpp', dependencies: xcb)
+  test('ewmh', find_program('ruby'), args: ['-e', '''
+require 'timeout'
+reader, writer = IO.pipe
+server = Process.spawn('Xvfb', '-displayfd', '3', '-screen', '0', '800x600x24', 3 => writer, out: File::NULL, err: File::NULL)
+writer.close
+wm = nil
+begin
+  display = Timeout.timeout(10) { reader.gets }
+  abort 'Xvfb failed to start' unless display
+  env = { 'DISPLAY' => ":#{Integer(display)}", 'HOME' => '/nonexistent', 'XDG_CONFIG_HOME' => '/nonexistent' }
+  wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: File::NULL)
+  exit(system(env, ARGV.fetch(1)) ? 0 : 1)
+ensure
+  Process.kill('TERM', wm) rescue nil if wm
+  Process.wait(wm) rescue nil if wm
+  reader.close
+  Process.kill('TERM', server) rescue nil
+  Process.wait(server)
+end
+''', mortar, ewmh_test])
+  rules_test = executable('test-window-rules', 'tests/window-rules.cpp', dependencies: xcb)
+  test('window-rules', find_program('ruby'), args: [files('tests/window-rules.rb'), mortar, rules_test])
   test('reload', find_program('ruby'), args: [files('tests/reload.rb'), mortar, client])
   test('x11', find_program('ruby'), args: [files('tests/x11.rb'), mortar, client, mortarbar], timeout: 180)
 endif

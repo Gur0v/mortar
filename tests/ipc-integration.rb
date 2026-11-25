@@ -9,6 +9,7 @@ Dir.mktmpdir('mortar-ipc') do |dir|
   server = Process.spawn('Xvfb', '-displayfd', '3', '-screen', '0', '800x600x24', 3 => writer, out: File::NULL, err: File::NULL)
   writer.close
   wm = nil
+  client = nil
   begin
     display = Timeout.timeout(10) { reader.gets }
     raise 'Xvfb failed' unless display
@@ -33,8 +34,30 @@ Dir.mktmpdir('mortar-ipc') do |dir|
     send_frame.call('eval (workspace 2)')
     frames = [read_frame.call, read_frame.call]
     raise "workspace event missing: #{frames.inspect}" unless frames.include?('event workspace 1') && frames.any? { |f| f.start_with?('ok ') }
+    send_frame.call('subscribe window')
+    raise 'window subscription failed' unless read_frame.call == 'ok subscribed'
+    client_reader, client_output = IO.pipe
+    client_input, client_writer = IO.pipe
+    client = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, ARGV.fetch(1), 'ipc-window', in: client_input, out: client_output)
+    client_input.close
+    client_output.close
+    window = Timeout.timeout(5) { Integer(client_reader.gets) }
+    events = []
+    Timeout.timeout(5) do
+      events << read_frame.call until events.include?("event window new #{window}") && events.include?("event window focus #{window}")
+    end
+    send_frame.call('eval (move-to-workspace 3)')
+    frames = [read_frame.call, read_frame.call]
+    raise "window move missing: #{frames.inspect}" unless frames.include?("event window move #{window}") && frames.any? { |f| f.start_with?('ok ') }
+    client_writer.puts
+    client_writer.close
+    Timeout.timeout(5) { events << read_frame.call until events.include?("event window close #{window}") }
+    Process.wait(client)
+    client = nil
     socket.close
   ensure
+    Process.kill('TERM', client) rescue nil if client
+    Process.wait(client) rescue nil if client
     Process.kill('TERM', wm) rescue nil if wm
     Process.wait(wm) rescue nil if wm
     Process.kill('TERM', server) rescue nil

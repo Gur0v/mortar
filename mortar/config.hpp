@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <libguile.h>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,18 @@ public:
         std::uint32_t keysym;
         std::uint16_t modifiers;
         std::uint32_t callback;
+    };
+
+    struct WindowRule {
+        std::string window_class;
+        std::optional<unsigned> workspace;
+        std::optional<bool> floating;
+    };
+
+    struct Border {
+        std::uint16_t width = 0;
+        std::uint32_t focused = 0x4c7899;
+        std::uint32_t unfocused = 0x333333;
     };
 
     using SplitAction = void (*)(void *, Split);
@@ -53,6 +66,9 @@ public:
     const std::vector<Binding> &bindings() const noexcept { return bindings_; }
     Result run_binding(std::uint32_t callback);
     const std::vector<std::string> &bar_status() const noexcept { return bar_status_; }
+    const std::vector<WindowRule> &window_rules() const noexcept { return window_rules_; }
+    const Border &border() const noexcept { return border_; }
+    const Border &staged_border() const noexcept;
 
 private:
     Result run(SCM callback);
@@ -71,6 +87,8 @@ private:
     std::vector<Binding> bindings_;
     std::vector<SCM> callbacks_;
     std::vector<std::string> bar_status_;
+    Border border_;
+    std::vector<WindowRule> window_rules_;
 
     std::unique_ptr<ConfigRuntime> staged_;
     friend struct ConfigRuntime;

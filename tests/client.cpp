@@ -26,6 +26,90 @@ int main(int argc, char **argv) {
     auto *c = connection.get();
     auto *screen = xcb_setup_roots_iterator(xcb_get_setup(c)).data;
     if (!screen) return EXIT_FAILURE;
+    if (argc == 2 && std::strcmp(argv[1], "ipc-window") == 0) {
+        auto window = xcb_generate_id(c);
+        xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, 100, 100, 0,
+                          XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+        xcb_map_window(c, window);
+        xcb_flush(c);
+        std::printf("%u\n", window);
+        std::fflush(stdout);
+        std::getchar();
+        xcb_destroy_window(c, window);
+        xcb_flush(c);
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "borders") == 0) {
+        bool rgb_visual = false;
+        for (auto depths = xcb_screen_allowed_depths_iterator(screen); depths.rem; xcb_depth_next(&depths)) {
+            if (depths.data->depth != 24) continue;
+            for (auto visuals = xcb_depth_visuals_iterator(depths.data); visuals.rem; xcb_visualtype_next(&visuals)) {
+                auto *visual = visuals.data;
+                if (visual->visual_id == screen->root_visual && visual->_class == XCB_VISUAL_CLASS_TRUE_COLOR &&
+                    visual->red_mask == 0xff0000 && visual->green_mask == 0xff00 && visual->blue_mask == 0xff)
+                    rgb_visual = true;
+            }
+        }
+        if (!rgb_visual || xcb_get_setup(c)->image_byte_order != XCB_IMAGE_ORDER_LSB_FIRST) {
+            std::fprintf(stderr, "borders: expected 24-bit little-endian RGB visual\n");
+            return EXIT_FAILURE;
+        }
+        auto make_window = [&](int x, int y) {
+            auto window = xcb_generate_id(c);
+            xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, x, y, 100, 100, 0,
+                              XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+            return window;
+        };
+        auto first = make_window(0, 0);
+        auto second = make_window(200, 100);
+        auto dialog = [&] {
+            std::unique_ptr<xcb_intern_atom_reply_t, decltype(&std::free)> type{
+                xcb_intern_atom_reply(c, xcb_intern_atom(c, false, 19, "_NET_WM_WINDOW_TYPE"), nullptr), &std::free};
+            std::unique_ptr<xcb_intern_atom_reply_t, decltype(&std::free)> value{
+                xcb_intern_atom_reply(c, xcb_intern_atom(c, false, 26, "_NET_WM_WINDOW_TYPE_DIALOG"), nullptr), &std::free};
+            if (!type || !value) return false;
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, second, type->atom, XCB_ATOM_ATOM, 32, 1, &value->atom);
+            return true;
+        };
+        if (!dialog()) return EXIT_FAILURE;
+        xcb_map_window(c, first);
+        xcb_flush(c);
+        auto wait = [&](auto predicate) {
+            for (int i = 0; i < 100; ++i) {
+                if (predicate()) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            return false;
+        };
+        auto border = [&](xcb_window_t window, uint16_t width) {
+            std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
+            return geometry && geometry->border_width == width;
+        };
+        if (!wait([&] { return border(first, 3); })) return EXIT_FAILURE;
+        xcb_map_window(c, second);
+        xcb_flush(c);
+        if (!wait([&] { return border(second, 3); })) return EXIT_FAILURE;
+        auto pixel = [&](int16_t x, int16_t y, uint32_t expected) {
+            std::unique_ptr<xcb_get_image_reply_t, decltype(&std::free)> image{
+                xcb_get_image_reply(c, xcb_get_image(c, XCB_IMAGE_FORMAT_Z_PIXMAP, screen->root,
+                                                    x, y, 1, 1, ~uint32_t{0}), nullptr), &std::free};
+            if (!image || xcb_get_image_data_length(image.get()) < 4) return false;
+            const auto *data = xcb_get_image_data(image.get());
+            const uint32_t value = uint32_t(data[0]) | (uint32_t(data[1]) << 8) | (uint32_t(data[2]) << 16);
+            return value == expected;
+        };
+        if (!wait([&] { return pixel(0, 100, 0x654321) && pixel(200, 100, 0x123456); })) {
+            std::fprintf(stderr, "borders: focused or unfocused color mismatch\n");
+            return EXIT_FAILURE;
+        }
+        const uint32_t requested = 9;
+        xcb_configure_window(c, second, XCB_CONFIG_WINDOW_BORDER_WIDTH, &requested);
+        xcb_flush(c);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (!border(second, 3)) return EXIT_FAILURE;
+        return EXIT_SUCCESS;
+    }
     if (argc == 2 && std::strcmp(argv[1], "bar-reservation") == 0) {
         auto window = xcb_generate_id(c);
         xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, 100, 100, 0,
@@ -39,6 +123,69 @@ int main(int argc, char **argv) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         return EXIT_FAILURE;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "bar-workspaces") == 0) {
+        auto atom = [&](const char *name) {
+            std::unique_ptr<xcb_intern_atom_reply_t, decltype(&std::free)> reply{
+                xcb_intern_atom_reply(c, xcb_intern_atom(c, false, static_cast<uint16_t>(std::strlen(name)), name), nullptr), &std::free};
+            return reply ? reply->atom : xcb_atom_t{XCB_ATOM_NONE};
+        };
+        auto names = atom("_NET_DESKTOP_NAMES");
+        auto utf8 = atom("UTF8_STRING");
+        auto current = atom("_NET_CURRENT_DESKTOP");
+        auto supported = atom("_NET_SUPPORTED");
+        if (!names || !utf8 || !current || !supported) {
+            std::fprintf(stderr, "bar-workspaces: failed to intern EWMH atoms\n");
+            return EXIT_FAILURE;
+        }
+        std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)> property{
+            xcb_get_property_reply(c, xcb_get_property(c, false, screen->root, names, utf8, 0, 256), nullptr), &std::free};
+        constexpr char expected[] = "1\0" "2\0" "3\0" "4\0" "5\0" "6\0" "7\0" "8\0" "9\0" "10\0";
+        if (!property || property->type != utf8 || property->format != 8 ||
+            xcb_get_property_value_length(property.get()) != sizeof(expected) - 1 ||
+            std::memcmp(xcb_get_property_value(property.get()), expected, sizeof(expected) - 1) != 0) {
+            std::fprintf(stderr, "bar-workspaces: invalid _NET_DESKTOP_NAMES (type=%u format=%u length=%d)\n",
+                         property ? property->type : 0, property ? property->format : 0,
+                         property ? xcb_get_property_value_length(property.get()) : -1);
+            return EXIT_FAILURE;
+        }
+        property.reset(xcb_get_property_reply(c, xcb_get_property(c, false, screen->root, supported, XCB_ATOM_ATOM, 0, 256), nullptr));
+        if (!property || property->type != XCB_ATOM_ATOM || property->format != 32) {
+            std::fprintf(stderr, "bar-workspaces: invalid _NET_SUPPORTED\n");
+            return EXIT_FAILURE;
+        }
+        auto *atoms = static_cast<xcb_atom_t *>(xcb_get_property_value(property.get()));
+        bool advertised = false;
+        for (int i = 0; i < xcb_get_property_value_length(property.get()) / 4; ++i) advertised |= atoms[i] == names;
+        if (!advertised) {
+            std::fprintf(stderr, "bar-workspaces: _NET_DESKTOP_NAMES not advertised\n");
+            return EXIT_FAILURE;
+        }
+        int x = 8;
+        for (int workspace = 1; workspace < 10; ++workspace) {
+            bool changed = false;
+            for (; x < screen->width_in_pixels && !changed; ++x) {
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, x, 12, 0);
+            xcb_test_fake_input(c, XCB_BUTTON_PRESS, 1, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            xcb_test_fake_input(c, XCB_BUTTON_RELEASE, 1, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            xcb_flush(c);
+            for (int i = 0; i < 5; ++i) {
+                property.reset(xcb_get_property_reply(c, xcb_get_property(c, false, screen->root, current, XCB_ATOM_CARDINAL, 0, 1), nullptr));
+                if (property && property->type == XCB_ATOM_CARDINAL && property->format == 32 &&
+                    xcb_get_property_value_length(property.get()) == 4 &&
+                    *static_cast<uint32_t *>(xcb_get_property_value(property.get())) == static_cast<uint32_t>(workspace)) {
+                    changed = true;
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            }
+            if (!changed) {
+                std::fprintf(stderr, "bar-workspaces: desktop %d not reached after clicks through x=%d\n", workspace, x - 1);
+                return EXIT_FAILURE;
+            }
+        }
+        return EXIT_SUCCESS;
     }
     if (argc == 2) {
         auto mode = argv[1];
@@ -107,7 +254,7 @@ int main(int argc, char **argv) {
             using Attributes = std::unique_ptr<xcb_get_window_attributes_reply_t, decltype(&std::free)>;
             Attributes attributes{xcb_get_window_attributes_reply(c, xcb_get_window_attributes(c, window), nullptr), &std::free};
             if (!attributes || attributes->map_state != XCB_MAP_STATE_VIEWABLE) return EXIT_FAILURE;
-            for (const char *name : {"_NET_SUPPORTED", "_NET_NUMBER_OF_DESKTOPS", "_NET_CURRENT_DESKTOP", "_NET_SUPPORTING_WM_CHECK"}) {
+            for (const char *name : {"_NET_SUPPORTED", "_NET_NUMBER_OF_DESKTOPS", "_NET_CURRENT_DESKTOP", "_NET_DESKTOP_NAMES", "_NET_SUPPORTING_WM_CHECK"}) {
                 std::unique_ptr<xcb_intern_atom_reply_t, decltype(&std::free)> atom{
                     xcb_intern_atom_reply(c, xcb_intern_atom(c, false, static_cast<uint16_t>(std::strlen(name)), name), nullptr), &std::free};
                 if (!atom) return EXIT_FAILURE;

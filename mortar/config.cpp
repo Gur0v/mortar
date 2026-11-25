@@ -18,6 +18,8 @@ struct ConfigRuntime {
     std::vector<Config::Binding> bindings;
     std::vector<SCM> callbacks;
     std::vector<std::string> bar_status;
+    Config::Border border;
+    std::vector<Config::WindowRule> window_rules;
     const char *path;
     SCM callback;
     SCM previous_module;
@@ -259,6 +261,39 @@ struct ConfigRuntime {
         return SCM_UNSPECIFIED;
     }
 
+    static SCM window_rule(SCM name, SCM workspace, SCM floating) {
+        if (!active || !active->path) scm_misc_error("window-rule", "only allowed while loading", SCM_EOL);
+        if (!scm_is_string(name)) scm_wrong_type_arg_msg("window-rule", 1, name, "string");
+        if (!scm_is_false(workspace)) digit(workspace);
+        if (!scm_is_false(floating) && !scm_is_eq(floating, scm_from_utf8_symbol("floating")) &&
+            !scm_is_eq(floating, scm_from_utf8_symbol("tiled")))
+            scm_wrong_type_arg_msg("window-rule", 3, floating, "#f, floating or tiled");
+        if (scm_is_false(workspace) && scm_is_false(floating))
+            scm_misc_error("window-rule", "expected an assignment", SCM_EOL);
+        size_t length = 0;
+        char *text = scm_to_utf8_stringn(name, &length);
+        bool failed = !length || std::memchr(text, 0, length);
+        try {
+            if (!failed) active->window_rules.push_back({std::string(text, length),
+                scm_is_false(workspace) ? std::nullopt : std::optional<unsigned>(digit(workspace)),
+                scm_is_false(floating) ? std::nullopt :
+                    std::optional<bool>(scm_is_eq(floating, scm_from_utf8_symbol("floating")))});
+        } catch (...) { failed = true; }
+        std::free(text);
+        if (failed) scm_misc_error("window-rule", "invalid class or allocation failure", SCM_EOL);
+        return SCM_UNSPECIFIED;
+    }
+
+    static SCM set_border(SCM width, SCM focused, SCM unfocused) {
+        if (!active || !active->path) scm_misc_error("border", "only allowed while loading", SCM_EOL);
+        if (!scm_is_unsigned_integer(width, 0, UINT16_MAX)) scm_out_of_range("border", width);
+        if (!scm_is_unsigned_integer(focused, 0, 0xffffff)) scm_out_of_range("border", focused);
+        if (!scm_is_unsigned_integer(unfocused, 0, 0xffffff)) scm_out_of_range("border", unfocused);
+        active->border = {static_cast<std::uint16_t>(scm_to_uint(width)),
+                          scm_to_uint32(focused), scm_to_uint32(unfocused)};
+        return SCM_UNSPECIFIED;
+    }
+
     static SCM load_body(void *data) {
         auto *runtime = static_cast<ConfigRuntime *>(data);
         SCM module = scm_c_eval_string("(make-fresh-user-module)");
@@ -277,6 +312,8 @@ struct ConfigRuntime {
         scm_c_define_gsubr("focus", 1, 0, 0, reinterpret_cast<scm_t_subr>(focus_action));
         scm_c_define_gsubr("close", 0, 0, 0, reinterpret_cast<scm_t_subr>(close_action));
         scm_c_define_gsubr("bar-status", 0, 0, 1, reinterpret_cast<scm_t_subr>(bar_status_action));
+        scm_c_define_gsubr("window-rule", 3, 0, 0, reinterpret_cast<scm_t_subr>(window_rule));
+        scm_c_define_gsubr("border", 3, 0, 0, reinterpret_cast<scm_t_subr>(set_border));
         scm_c_define_gsubr("spawn", 0, 0, 1, reinterpret_cast<scm_t_subr>(spawn_action));
         return scm_c_primitive_load(runtime->path);
     }
@@ -411,6 +448,10 @@ const std::vector<Config::Binding> &Config::staged_bindings() const noexcept {
     return staged_ ? staged_->bindings : bindings_;
 }
 
+const Config::Border &Config::staged_border() const noexcept {
+    return staged_ ? staged_->border : border_;
+}
+
 void Config::commit() noexcept {
     if (!staged_) return;
     std::swap(module_, staged_->module);
@@ -419,6 +460,8 @@ void Config::commit() noexcept {
     bindings_.swap(staged_->bindings);
     callbacks_.swap(staged_->callbacks);
     bar_status_.swap(staged_->bar_status);
+    std::swap(border_, staged_->border);
+    window_rules_.swap(staged_->window_rules);
     discard();
 }
 

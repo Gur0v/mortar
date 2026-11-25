@@ -224,6 +224,10 @@ int main() {
         return EXIT_FAILURE;
     }
     const auto net_supported = atom("_NET_SUPPORTED", 14);
+    const auto net_clients = atom("_NET_CLIENT_LIST", 16);
+    const auto net_stacking = atom("_NET_CLIENT_LIST_STACKING", 25);
+    const auto net_active = atom("_NET_ACTIVE_WINDOW", 18);
+    const auto net_names = atom("_NET_DESKTOP_NAMES", 18);
     const auto net_number = atom("_NET_NUMBER_OF_DESKTOPS", 23);
     const auto net_current = atom("_NET_CURRENT_DESKTOP", 20);
     const auto net_desktop = atom("_NET_WM_DESKTOP", 15);
@@ -237,7 +241,7 @@ int main() {
     const auto strut_partial = atom("_NET_WM_STRUT_PARTIAL", 21);
     const auto net_state = atom("_NET_WM_STATE", 13);
     const auto fullscreen_atom = atom("_NET_WM_STATE_FULLSCREEN", 24);
-    if (!net_supported || !net_number || !net_current || !net_desktop || !net_check || !net_name || !utf8 || !window_type || !dialog_type || !dock_type || !strut || !strut_partial || !net_state || !fullscreen_atom) return EXIT_FAILURE;
+    if (!net_clients || !net_stacking || !net_active || !net_names || !net_supported || !net_number || !net_current || !net_desktop || !net_check || !net_name || !utf8 || !window_type || !dialog_type || !dock_type || !strut || !strut_partial || !net_state || !fullscreen_atom) return EXIT_FAILURE;
     using Property = std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)>;
     auto cardinal = [&](xcb_window_t window, xcb_atom_t property, uint32_t fallback) {
         Property reply{xcb_get_property_reply(c, xcb_get_property(c, false, window, property,
@@ -309,6 +313,63 @@ int main() {
         std::fputs("mortar: cannot initialize focus atoms\n", stderr);
         return EXIT_FAILURE;
     }
+    struct BorderColors {
+        xcb_connection_t *connection;
+        std::vector<std::tuple<xcb_window_t, xcb_colormap_t, uint32_t, uint32_t>> colors;
+        void remove(xcb_window_t window) {
+            auto found = std::find_if(colors.begin(), colors.end(), [&](const auto &entry) {
+                return std::get<0>(entry) == window;
+            });
+            if (found == colors.end()) return;
+            auto [ignored, colormap, rgb, pixel] = *found;
+            (void)ignored;
+            (void)rgb;
+            const uint32_t zero = 0;
+            xcb_configure_window(connection, window, XCB_CONFIG_WINDOW_BORDER_WIDTH, &zero);
+            xcb_free_colors(connection, colormap, 0, 1, &pixel);
+            colors.erase(found);
+        }
+        ~BorderColors() {
+            while (!colors.empty()) remove(std::get<0>(colors.back()));
+        }
+        void apply(xcb_window_t window, uint32_t rgb) {
+            std::unique_ptr<xcb_get_window_attributes_reply_t, decltype(&std::free)> attributes{
+                xcb_get_window_attributes_reply(connection, xcb_get_window_attributes(connection, window), nullptr), &std::free};
+            if (!attributes || attributes->colormap == XCB_NONE) return;
+            auto colormap = attributes->colormap;
+            auto found = std::find_if(colors.begin(), colors.end(), [&](const auto &entry) {
+                return std::get<0>(entry) == window;
+            });
+            if (found != colors.end() && std::get<1>(*found) == colormap && std::get<2>(*found) == rgb) return;
+            {
+                xcb_generic_error_t *raw_error = nullptr;
+                std::unique_ptr<xcb_alloc_color_reply_t, decltype(&std::free)> reply{
+                    xcb_alloc_color_reply(connection, xcb_alloc_color(connection, colormap,
+                        ((rgb >> 16) & 255) * 257, ((rgb >> 8) & 255) * 257, (rgb & 255) * 257), &raw_error), &std::free};
+                std::unique_ptr<xcb_generic_error_t, decltype(&std::free)> error{raw_error, &std::free};
+                if (!reply) {
+                    std::fprintf(stderr, "mortar: cannot allocate border color (X error %u)\n", error ? error->error_code : 0);
+                    return;
+                }
+                const auto pixel = reply->pixel;
+                std::unique_ptr<xcb_generic_error_t, decltype(&std::free)> change_error{
+                    xcb_request_check(connection, xcb_change_window_attributes_checked(connection, window,
+                        XCB_CW_BORDER_PIXEL, &pixel)), &std::free};
+                if (change_error) {
+                    std::fprintf(stderr, "mortar: cannot set border color (X error %u)\n", change_error->error_code);
+                    xcb_free_colors(connection, colormap, 0, 1, &pixel);
+                    return;
+                }
+                if (found != colors.end()) {
+                    const auto old_colormap = std::get<1>(*found);
+                    const auto old_pixel = std::get<3>(*found);
+                    xcb_free_colors(connection, old_colormap, 0, 1, &old_pixel);
+                    *found = {window, colormap, rgb, pixel};
+                } else colors.emplace_back(window, colormap, rgb, pixel);
+            }
+        }
+    } border_colors{c, {}};
+    std::function<void(std::string_view, xcb_window_t)> window_event = [](std::string_view, xcb_window_t) {};
     std::vector<xcb_window_t> pending_focus;
     uint16_t focus_sequence = 0;
     auto focus = [&](xcb_window_t window, xcb_timestamp_t time) {
@@ -352,6 +413,10 @@ int main() {
             }
         }
         if (accepts_focus) {
+            for (const auto &output : outputs.outputs())
+                for (auto managed : workspaces[output.workspace].windows)
+                    border_colors.apply(managed, output.workspace == current && managed == window
+                        ? config.border().focused : config.border().unfocused);
             workspaces[current].focused = window;
             workspaces[current].layout.focus(window);
             if (!workspaces[current].layout.contains(window) || is_fullscreen(window) != fullscreen.end()) {
@@ -392,20 +457,40 @@ int main() {
     auto tile = [&] {
         for (const auto &output : outputs.outputs()) {
         const auto workspace = output.workspace;
+        for (auto window : workspaces[workspace].windows) {
+            const uint32_t color = workspace == current && window == workspaces[workspace].focused
+                ? config.border().focused : config.border().unfocused;
+            border_colors.apply(window, color);
+        }
+        for (auto window : workspaces[workspace].floating) {
+            if (is_fullscreen(window) != fullscreen.end()) continue;
+            std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
+            if (!geometry) continue;
+            const uint32_t outer_width = geometry->width + 2u * geometry->border_width;
+            const uint32_t outer_height = geometry->height + 2u * geometry->border_width;
+            const uint32_t border = std::min<uint32_t>(config.border().width,
+                (std::min(outer_width, outer_height) - 1) / 2);
+            const uint32_t values[] = {outer_width - 2 * border, outer_height - 2 * border, border};
+            xcb_configure_window(c, window, XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
+                XCB_CONFIG_WINDOW_BORDER_WIDTH, values);
+        }
         for (const auto &placement : workspaces[workspace].layout.geometry(usable(output.bounds))) {
             if (is_fullscreen(placement.window) != fullscreen.end()) continue;
             using Property = std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)>;
             Property hints{xcb_get_property_reply(c, xcb_get_property(c, false, placement.window,
                 XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 0, 18), nullptr), &std::free};
-            uint32_t tile_width = std::max(1, placement.bounds.width);
-            uint32_t tile_height = std::max(1, placement.bounds.height);
+            const uint32_t border = std::min<uint32_t>(config.border().width,
+                (std::min(placement.bounds.width, placement.bounds.height) - 1) / 2);
+            uint32_t tile_width = std::max(1, placement.bounds.width - static_cast<int>(2 * border));
+            uint32_t tile_height = std::max(1, placement.bounds.height - static_cast<int>(2 * border));
             if (hints && hints->type == XCB_ATOM_WM_SIZE_HINTS && hints->format == 32) {
                 std::tie(tile_width, tile_height) = hinted_size(tile_width, tile_height,
                     static_cast<const uint32_t *>(xcb_get_property_value(hints.get())),
                     xcb_get_property_value_length(hints.get()) / 4);
             }
             const uint32_t values[] = {static_cast<uint32_t>(placement.bounds.x),
-                                       static_cast<uint32_t>(placement.bounds.y), tile_width, tile_height, 0};
+                                       static_cast<uint32_t>(placement.bounds.y), tile_width, tile_height, border};
             xcb_configure_window(c, placement.window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
                                  XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
                                  XCB_CONFIG_WINDOW_BORDER_WIDTH, values);
@@ -592,6 +677,7 @@ int main() {
                 pending_floating_origins.emplace_back(window, *from_bounds);
             }
             set_desktop(window, to);
+            window_event("move", window);
             if (visible(from) && !visible(to)) unmap(window);
             if (!visible(from) && visible(to)) xcb_map_window(c, window);
             tile();
@@ -639,7 +725,10 @@ int main() {
     };
     actions.move_direction = [&](mortar::Direction direction) {
         auto &ws = workspaces[current];
-        if (is_fullscreen(ws.focused) == fullscreen.end() && ws.layout.move(ws.focused, direction)) tile();
+        if (is_fullscreen(ws.focused) == fullscreen.end() && ws.layout.move(ws.focused, direction)) {
+            window_event("move", ws.focused);
+            tile();
+        }
     };
     actions.resize = [&](mortar::Direction direction, int pixels) {
         auto &ws = workspaces[current];
@@ -657,6 +746,7 @@ int main() {
         if (error) std::fprintf(stderr, "mortar: spawn failed: %s\n", std::strerror(error));
         else children.push_back(child);
     };
+    std::vector<xcb_window_t> clients;
     auto manage = [&](xcb_window_t window, bool existing) {
         if (std::find(docks.begin(), docks.end(), window) != docks.end()) { if (!existing) xcb_map_window(c, window); return; }
         if (window == support || (scratchpad.get(window) && owner(window) < 0)) return;
@@ -685,6 +775,7 @@ int main() {
                 xcb_get_property_value_length(state.get()) >= 4 &&
                 static_cast<const uint32_t *>(xcb_get_property_value(state.get()))[0] == 3) {
                 iconic.push_back(window);
+                if (std::find(clients.begin(), clients.end(), window) == clients.end()) clients.push_back(window);
             }
             if (!state || state->type != wm_state || state->format != 32 ||
                 xcb_get_property_value_length(state.get()) < 4 ||
@@ -698,6 +789,7 @@ int main() {
                 auto *values = static_cast<const uint32_t *>(xcb_get_property_value(hints.get()));
                 if ((values[0] & 2) && values[2] == 3) {
                     iconic.push_back(window);
+                    if (std::find(clients.begin(), clients.end(), window) == clients.end()) clients.push_back(window);
                     set_desktop(window, desktop);
                     set_state(window, 3);
                     xcb_flush(c);
@@ -716,6 +808,7 @@ int main() {
                 const uint32_t mask = XCB_EVENT_MASK_PROPERTY_CHANGE;
                 xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &mask);
                 docks.push_back(window);
+                if (std::find(clients.begin(), clients.end(), window) == clients.end()) clients.push_back(window);
                 if (!existing) xcb_map_window(c, window);
                 tile();
                 return;
@@ -729,7 +822,28 @@ int main() {
             auto count = xcb_get_property_value_length(types.get()) / 4;
             floating = floating || std::find(values, values + count, dialog_type) != values + count;
         }
-        const uint32_t event_mask = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_PROPERTY_CHANGE;
+        Property window_class{xcb_get_property_reply(c, xcb_get_property(c, false, window, XCB_ATOM_WM_CLASS,
+            XCB_ATOM_STRING, 0, 1024), nullptr), &std::free};
+        if (window_class && window_class->type == XCB_ATOM_STRING && window_class->format == 8 &&
+            !window_class->bytes_after) {
+            auto *value = static_cast<const char *>(xcb_get_property_value(window_class.get()));
+            auto length = static_cast<size_t>(xcb_get_property_value_length(window_class.get()));
+            auto *instance_end = static_cast<const char *>(std::memchr(value, 0, length));
+            if (instance_end && instance_end + 1 < value + length) {
+                auto *class_start = instance_end + 1;
+                auto *class_end = static_cast<const char *>(std::memchr(class_start, 0, value + length - class_start));
+                if (class_end && class_end + 1 == value + length) {
+                    std::string_view name(class_start, class_end - class_start);
+                    for (const auto &rule : config.window_rules()) {
+                        if (name != rule.window_class) continue;
+                        if (rule.workspace) desktop = (*rule.workspace + 9) % 10;
+                        if (rule.floating) floating = *rule.floating;
+                    }
+                }
+            }
+        }
+        const uint32_t event_mask = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_PROPERTY_CHANGE |
+                                    XCB_EVENT_MASK_COLOR_MAP_CHANGE;
         xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &event_mask);
         std::erase(iconic, window);
         if (floating) {
@@ -738,9 +852,11 @@ int main() {
             if (!workspaces[desktop].layout.insert_after(workspaces[desktop].tiled_focus(), mortar::Layout::leaf(window))) return;
             workspaces[desktop].windows.push_back(window);
         }
+        if (std::find(clients.begin(), clients.end(), window) == clients.end()) clients.push_back(window);
         if (desktop != current || !workspaces[desktop].focused) workspaces[desktop].focused = window;
         set_desktop(window, desktop);
         set_state(window, 1);
+        window_event("new", window);
         Property initial_state{xcb_get_property_reply(c, xcb_get_property(c, false, window, net_state,
             XCB_ATOM_ATOM, 0, 1024), nullptr), &std::free};
         if (initial_state && !initial_state->bytes_after && initial_state->type == XCB_ATOM_ATOM && initial_state->format == 32) {
@@ -761,6 +877,34 @@ int main() {
         }
         xcb_flush(c);
     };
+    std::vector<xcb_window_t> published_clients, published_stack;
+    xcb_window_t published_active = XCB_NONE;
+    bool published = false;
+    auto publish = [&] {
+        std::unique_ptr<xcb_query_tree_reply_t, decltype(&std::free)> reply{
+            xcb_query_tree_reply(c, xcb_query_tree(c, root), nullptr), &std::free};
+        if (!reply) return;
+        std::vector<xcb_window_t> stack;
+        auto *children = xcb_query_tree_children(reply.get());
+        for (int i = 0; i < xcb_query_tree_children_length(reply.get()); ++i)
+            if (std::find(clients.begin(), clients.end(), children[i]) != clients.end()) stack.push_back(children[i]);
+        auto active = workspaces[current].focused;
+        if (!published || clients != published_clients) {
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_clients, XCB_ATOM_WINDOW, 32, clients.size(), clients.data());
+            published_clients = clients;
+        }
+        if (!published || stack != published_stack) {
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_stacking, XCB_ATOM_WINDOW, 32, stack.size(), stack.data());
+            published_stack = std::move(stack);
+        }
+        if (!published || active != published_active) {
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_active, XCB_ATOM_WINDOW, 32, 1, &active);
+            if (published && active) window_event("focus", active);
+            published_active = active;
+        }
+        published = true;
+        xcb_flush(c);
+    };
     auto tree_cookie = xcb_query_tree(c, root);
     std::unique_ptr<xcb_query_tree_reply_t, decltype(&std::free)> tree{
         xcb_query_tree_reply(c, tree_cookie, nullptr), &std::free};
@@ -773,11 +917,13 @@ int main() {
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_check, XCB_ATOM_WINDOW, 32, 1, &support);
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, support, net_check, XCB_ATOM_WINDOW, 32, 1, &support);
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, support, net_name, utf8, 8, 6, "mortar");
-    const xcb_atom_t supported_atoms[] = {net_number, net_current, net_desktop, net_check, net_name, net_state, fullscreen_atom, window_type, dock_type, strut, strut_partial};
+    const xcb_atom_t supported_atoms[] = {net_clients, net_stacking, net_active, net_names, net_number, net_current, net_desktop, net_check, net_name, net_state, fullscreen_atom, window_type, dock_type, strut, strut_partial};
     const uint32_t desktop_count = workspaces.size();
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_supported, XCB_ATOM_ATOM, 32, std::size(supported_atoms), supported_atoms);
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_number, XCB_ATOM_CARDINAL, 32, 1, &desktop_count);
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_current, XCB_ATOM_CARDINAL, 32, 1, &current);
+    const char names[] = "1\0" "2\0" "3\0" "4\0" "5\0" "6\0" "7\0" "8\0" "9\0" "10";
+    xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_names, utf8, 8, sizeof(names), names);
     try {
     auto *children = xcb_query_tree_children(tree.get());
     for (int i = 0; i < xcb_query_tree_children_length(tree.get()); ++i) {
@@ -797,6 +943,10 @@ int main() {
     }
     } catch (...) {
         xcb_delete_property(c, root, net_check);
+        xcb_delete_property(c, root, net_clients);
+        xcb_delete_property(c, root, net_stacking);
+        xcb_delete_property(c, root, net_active);
+        xcb_delete_property(c, root, net_names);
         xcb_delete_property(c, root, net_supported);
         xcb_delete_property(c, root, net_number);
         xcb_delete_property(c, root, focus_time);
@@ -810,6 +960,7 @@ int main() {
         std::fputs("mortar: startup window management failed\n", stderr);
         return EXIT_FAILURE;
     }
+    publish();
     xcb_ungrab_server(c);
     starting = false;
     xcb_flush(c);
@@ -829,29 +980,60 @@ int main() {
     } catch (const std::exception &error) {
         std::fprintf(stderr, "mortar: IPC unavailable: %s\n", error.what());
     }
-    std::vector<int> subscribers;
-    if (ipc) ipc->on_close = [&](int client) { std::erase(subscribers, client); };
+    std::vector<int> subscribers, window_subscribers;
+    if (ipc) ipc->on_close = [&](int client) {
+        std::erase(subscribers, client);
+        std::erase(window_subscribers, client);
+    };
+    window_event = [&](std::string_view change, xcb_window_t window) {
+        if (!ipc) return;
+        auto targets = window_subscribers;
+        for (int client : targets)
+            ipc->send(client, "event window " + std::string(change) + " " + std::to_string(window));
+    };
     workspace_event = [&](uint32_t workspace) {
         if (!ipc) return;
         auto targets = subscribers;
         for (int client : targets) ipc->send(client, "event workspace " + std::to_string(workspace));
     };
     pid_t bar = -1;
-    posix_spawn_file_actions_t bar_actions;
-    int bar_error = posix_spawn_file_actions_init(&bar_actions);
-    if (!bar_error) {
-        bar_error = posix_spawn_file_actions_addopen(&bar_actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
-        if (!bar_error) bar_error = posix_spawn_file_actions_addopen(&bar_actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+    auto start_bar = [&] {
+        posix_spawn_file_actions_t bar_actions;
+        int bar_error = posix_spawn_file_actions_init(&bar_actions);
         if (!bar_error) {
-            char name[] = "mortarbar";
-            std::vector<char *> args{name};
-            for (const auto &arg : config.bar_status()) args.push_back(const_cast<char *>(arg.c_str()));
-            args.push_back(nullptr);
-            bar_error = posix_spawnp(&bar, name, &bar_actions, nullptr, args.data(), environ);
+            bar_error = posix_spawn_file_actions_addopen(&bar_actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+            if (!bar_error) bar_error = posix_spawn_file_actions_addopen(&bar_actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+            if (!bar_error) {
+                char name[] = "mortarbar";
+                std::vector<char *> args{name};
+                for (const auto &arg : config.bar_status()) args.push_back(const_cast<char *>(arg.c_str()));
+                args.push_back(nullptr);
+                bar_error = posix_spawnp(&bar, name, &bar_actions, nullptr, args.data(), environ);
+            }
+            posix_spawn_file_actions_destroy(&bar_actions);
         }
-        posix_spawn_file_actions_destroy(&bar_actions);
-    }
-    if (bar_error) std::fprintf(stderr, "mortar: cannot start mortarbar: %s\n", std::strerror(bar_error));
+        if (bar_error) std::fprintf(stderr, "mortar: cannot start mortarbar: %s\n", std::strerror(bar_error));
+    };
+    auto stop_bar = [&] {
+        if (bar <= 0) return true;
+        for (int signal : {SIGTERM, SIGKILL}) {
+            if (kill(bar, signal) < 0 && errno != ESRCH)
+                std::fprintf(stderr, "mortar: cannot signal mortarbar: %s\n", std::strerror(errno));
+            for (int i = 0; i < 20; ++i) {
+                bool reaped = false;
+                int error = mortar::reap_child(bar, reaped);
+                if (reaped || error == ECHILD) { bar = -1; return true; }
+                if (error) {
+                    std::fprintf(stderr, "mortar: cannot reap mortarbar: %s\n", std::strerror(error));
+                    return false;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+        std::fputs("mortar: mortarbar did not exit; cannot restart it\n", stderr);
+        return false;
+    };
+    start_bar();
     while (!stopping) {
         if (bar > 0) {
             bool reaped = false;
@@ -877,13 +1059,18 @@ int main() {
             std::free(event);
             break;
         }
-        if (ipc && ready > 0) {
+        bool ipc_dispatched = ipc && ready > 0;
+        if (ipc_dispatched) {
             fds.pop_back();
             try {
                 ipc->dispatch(fds, [&](int client, std::string_view frame) {
                     if (frame == "subscribe workspace") {
                         if (std::find(subscribers.begin(), subscribers.end(), client) == subscribers.end())
                             subscribers.push_back(client);
+                        ipc->send(client, "ok subscribed");
+                    } else if (frame == "subscribe window") {
+                        if (std::find(window_subscribers.begin(), window_subscribers.end(), client) == window_subscribers.end())
+                            window_subscribers.push_back(client);
                         ipc->send(client, "ok subscribed");
                     } else if (frame.starts_with("eval ")) {
                         actions.time = XCB_CURRENT_TIME;
@@ -896,7 +1083,7 @@ int main() {
                 ipc.reset();
             }
         }
-        if (!event) continue;
+        if (!event) { if (ipc_dispatched) publish(); continue; }
         try {
             if ((event->response_type & 0x7f) == XCB_KEY_PRESS)
                 actions.time = reinterpret_cast<xcb_key_press_event_t *>(event)->time;
@@ -918,7 +1105,10 @@ int main() {
                         try {
                             keyboard->replace_bindings(prepare_bindings(config.staged_bindings()));
                             xcb_flush(c);
+                            auto old_status = config.bar_status();
                             config.commit();
+                            tile();
+                            if (old_status != config.bar_status() && stop_bar()) start_bar();
                         } catch (const std::exception &error) {
                             config.discard();
                             std::fprintf(stderr, "mortar: failed to reload keybindings: %s; keeping current configuration\n", error.what());
@@ -1093,6 +1283,14 @@ int main() {
             }
         }
         switch (type) {
+        case XCB_COLORMAP_NOTIFY: {
+            auto *notify = reinterpret_cast<xcb_colormap_notify_event_t *>(event);
+            int workspace = owner(notify->window);
+            if (notify->_new && workspace >= 0)
+                border_colors.apply(notify->window, static_cast<uint32_t>(workspace) == current &&
+                    workspaces[workspace].focused == notify->window ? config.border().focused : config.border().unfocused);
+            break;
+        }
         case XCB_ENTER_NOTIFY: {
             auto *enter = reinterpret_cast<xcb_enter_notify_event_t *>(event);
             int entered_workspace = owner(enter->event);
@@ -1130,6 +1328,12 @@ int main() {
             if (message->format == 32 && message->type == net_current && message->window == root &&
                 message->data.data32[0] < workspaces.size() && message->data.data32[0] != current) {
                 switch_workspace(message->data.data32[0]);
+            } else if (message->format == 32 && message->type == net_active && owner(message->window) >= 0 &&
+                       (message->data.data32[0] == 2 || visible(owner(message->window)))) {
+                switch_workspace(static_cast<uint32_t>(owner(message->window)));
+                std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
+                pending_focus.push_back(message->window);
+                focus_sequence = static_cast<uint16_t>(xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, focus_time, XCB_ATOM_WINDOW, 32, 0, nullptr).sequence);
             } else if (message->format == 32 && message->type == net_desktop &&
                        message->data.data32[0] < workspaces.size()) {
                 move_window(message->window, message->data.data32[0]);
@@ -1172,7 +1376,7 @@ int main() {
                     break;
                 }
             }
-            if (std::erase(docks, window)) { tile(); break; }
+            if (std::erase(docks, window)) { std::erase(clients, window); tile(); break; }
             int workspace = owner(window);
             bool scratch_removed = scratchpad.remove(window);
             if (scratch_removed) std::erase(scratch_windows, window);
@@ -1190,6 +1394,11 @@ int main() {
                 xcb_delete_property(c, window, net_desktop);
             }
             auto removed = static_cast<size_t>(was_tiled || scratch_removed) + std::erase(iconic, window);
+            if (removed) {
+                window_event("close", window);
+                std::erase(clients, window);
+                border_colors.remove(window);
+            }
             if (removed) std::erase_if(pending_floating_origins, [&](const auto &entry) { return entry.first == window; });
             if (removed) std::erase_if(floating_geometry, [&](const auto &entry) { return entry.first == window; });
             if (type == XCB_DESTROY_NOTIFY) std::erase_if(pending_unmaps, [&](auto entry) { return entry.first == window; });
@@ -1233,7 +1442,7 @@ int main() {
             if (request->value_mask & XCB_CONFIG_WINDOW_Y) values[n++] = request->y;
             if (request->value_mask & XCB_CONFIG_WINDOW_WIDTH) values[n++] = request->width;
             if (request->value_mask & XCB_CONFIG_WINDOW_HEIGHT) values[n++] = request->height;
-            if (request->value_mask & XCB_CONFIG_WINDOW_BORDER_WIDTH) values[n++] = request->border_width;
+            if (request->value_mask & XCB_CONFIG_WINDOW_BORDER_WIDTH) values[n++] = workspace >= 0 ? config.border().width : request->border_width;
             if (request->value_mask & XCB_CONFIG_WINDOW_SIBLING) values[n++] = request->sibling;
             if (request->value_mask & XCB_CONFIG_WINDOW_STACK_MODE) values[n++] = request->stack_mode;
             xcb_configure_window(c, request->window, request->value_mask, values);
@@ -1247,21 +1456,15 @@ int main() {
             break;
         }
         }
+        if (ipc_dispatched || type == XCB_KEY_PRESS || type == XCB_ENTER_NOTIFY ||
+            type == XCB_MAP_REQUEST || type == XCB_UNMAP_NOTIFY || type == XCB_DESTROY_NOTIFY ||
+            type == XCB_CLIENT_MESSAGE || type == XCB_CONFIGURE_REQUEST || type == XCB_CONFIGURE_NOTIFY ||
+            (type == XCB_PROPERTY_NOTIFY && reinterpret_cast<xcb_property_notify_event_t *>(event)->atom == focus_time) ||
+            (randr && randr->present && (type == randr->first_event + XCB_RANDR_SCREEN_CHANGE_NOTIFY ||
+             type == randr->first_event + XCB_RANDR_NOTIFY))) publish();
         std::free(event);
     }
-    if (bar > 0) {
-        if (kill(bar, SIGTERM) < 0 && errno != ESRCH) std::fprintf(stderr, "mortar: cannot stop mortarbar: %s\n", std::strerror(errno));
-        bool reaped = false;
-        for (int i = 0; i < 20 && !reaped; ++i) {
-            int error = mortar::reap_child(bar, reaped);
-            if (error) { reaped = true; break; }
-            if (!reaped) std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        if (!reaped) {
-            if (kill(bar, SIGKILL) < 0 && errno != ESRCH) std::fprintf(stderr, "mortar: cannot kill mortarbar: %s\n", std::strerror(errno));
-            while (waitpid(bar, nullptr, 0) < 0 && errno == EINTR) {}
-        }
-    }
+    stop_bar();
     if (!xcb_connection_has_error(c)) {
         xcb_grab_server(c);
         Property check{xcb_get_property_reply(c, xcb_get_property(c, false, root, net_check,
@@ -1270,7 +1473,11 @@ int main() {
             xcb_get_property_value_length(check.get()) == 4 && check->bytes_after == 0 &&
             *static_cast<const xcb_window_t *>(xcb_get_property_value(check.get())) == support) {
             xcb_delete_property(c, root, net_check);
-            xcb_delete_property(c, root, net_supported);
+            xcb_delete_property(c, root, net_clients);
+        xcb_delete_property(c, root, net_stacking);
+        xcb_delete_property(c, root, net_active);
+        xcb_delete_property(c, root, net_names);
+        xcb_delete_property(c, root, net_supported);
             xcb_delete_property(c, root, net_number);
             xcb_delete_property(c, root, focus_time);
         }

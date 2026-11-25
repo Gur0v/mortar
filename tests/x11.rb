@@ -61,6 +61,7 @@ Dir.mktmpdir('mortar-test-') do |dir|
     File.symlink(File.expand_path(ARGV.fetch(2)), File.join(dir, 'mortarbar'))
     wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: File::NULL, in: File::NULL)
     abort 'Automatic mortarbar did not reserve space' unless system(env, ARGV.fetch(1), 'bar-reservation')
+    abort 'Workspace names or bar clicks failed' unless system(env, ARGV.fetch(1), 'bar-workspaces')
     Process.kill('TERM', wm)
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
     wm = nil
@@ -198,6 +199,13 @@ Dir.mktmpdir('mortar-test-') do |dir|
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
     wm = nil
     abort 'Window manager shutdown failed' unless status.success?
+    File.write(config, "(border 3 #x123456 #x654321)\n")
+    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: error_path)
+    abort 'Border checks failed' unless system(env, ARGV.fetch(1), 'borders')
+    Process.kill('TERM', wm)
+    _, status = Timeout.timeout(10) { Process.wait2(wm) }
+    wm = nil
+    abort 'Window manager shutdown failed after border checks' unless status.success?
     File.write(config, <<~SCHEME)
       (bind-key 98 8 (lambda () (split 'vertical)))
       (bind-key 99 8 (lambda () (focus 'up)))

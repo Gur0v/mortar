@@ -59,6 +59,20 @@ int main() {
     using Result = mortar::Config::Result;
     check(config.bar_status().empty());
     check(!config.evaluate("1").success);
+    write("(window-rule \"Editor\" 2 (quote floating))");
+    check(config.load(path));
+    check(config.window_rules().size() == 1 && config.window_rules()[0].workspace == 2 &&
+          config.window_rules()[0].floating == true);
+    write("(window-rule \"Other\" #f (quote tiled)) (error \"bad\")");
+    check(!config.load(path) && config.window_rules().size() == 1 &&
+          config.window_rules()[0].window_class == "Editor");
+    write("(window-rule \"Other\" #f (quote tiled))");
+    check(config.stage(path) && config.window_rules()[0].window_class == "Editor");
+    config.commit();
+    check(config.window_rules().size() == 1 && !config.window_rules()[0].workspace &&
+          config.window_rules()[0].floating == false);
+    write("(window-rule \"Bad\" #f #f)");
+    check(!config.load(path) && config.window_rules()[0].window_class == "Other");
     check(config.run_workspace(1) == Result::absent);
     check(config.run_workspace(10) == Result::failure);
     write("(bind-workspace 1 (lambda () (workspace 4)))\n"
@@ -181,5 +195,31 @@ int main() {
     check(!config.evaluate("(bar-status \"bad\")").success);
     write("#t");
     check(config.load(path) && config.bar_status().empty());
+    check(config.border().width == 0 && config.border().focused == 0x4c7899 &&
+          config.border().unfocused == 0x333333);
+    write("(border 0 #x123456 #xabcdef) (bar-status \"kept\")");
+    check(config.stage(path));
+    check(config.staged_border().width == 0 && config.staged_border().focused == 0x123456 &&
+          config.staged_border().unfocused == 0xabcdef && config.border().width == 0);
+    config.discard();
+    check(config.border().width == 0 && config.staged_border().width == 0);
+    check(config.load(path));
+    check(config.border().width == 0 && config.bar_status()[0] == "kept");
+    write("(border 65535 0 #xffffff) (error \"bad\")");
+    check(!config.load(path) && config.border().focused == 0x123456 && config.bar_status()[0] == "kept");
+    write("(border 65535 0 #xffffff)");
+    check(config.stage(path) && config.staged_border().width == 65535);
+    config.commit();
+    check(config.border().width == 65535 && config.border().focused == 0 &&
+          config.border().unfocused == 0xffffff);
+    for (const char *invalid : {"(border -1 0 0)", "(border 65536 0 0)",
+                                "(border 1 -1 0)", "(border 1 0 #x1000000)",
+                                "(border 1 0 #f)"}) {
+        write(invalid);
+        check(!config.load(path) && config.border().width == 65535);
+    }
+    check(!config.evaluate("(border 1 0 0)").success);
+    write("#t");
+    check(config.load(path) && config.border().width == 0);
     std::remove(path);
 }

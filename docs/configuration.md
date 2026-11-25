@@ -34,8 +34,10 @@ If loading fails, Mortar reports the error and starts with built-in defaults. If
 
 Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(focus 'left)`, `(focus 'right)`, `(focus 'up)`, `(focus 'down)`, and `(close)` for the focused window. `(spawn executable argument ...)` launches an executable with separate string arguments, without a shell. Invoke a shell explicitly if needed. These actions, like workspace actions, are only available in callbacks, not while loading configuration.
 
+## Window rules
+
+`(window-rule "Class" workspace floating)` matches the class component of `WM_CLASS` exactly. `workspace` is a desktop index from 0 to 9 or `#f` to leave it unchanged. `floating` is `'floating`, `'tiled`, or `#f` to leave the classification unchanged. Later matching rules override fields set by earlier rules. Rules apply when a window is managed and are replaced on successful configuration reload; existing windows are not reassigned automatically.
+
 ## Bar status
 
-`(bar-status "program" "argument" ...)` selects a status producer. Mortarbar starts it directly, without a shell, and reads its stdout as an i3bar status stream. Click events go to its stdin. No producer runs by default. Arguments are separate strings; the program must be nonempty. The last registration wins.
-
-Reload stages this setting with the rest of the configuration, but an already running bar keeps its existing producer. The new setting takes effect on the next Mortar startup.
+`(bar-status "program" "argument" ...)` selects a status producer. Mortarbar starts it directly, without a shell, and reads its stdout as an i3bar status stream. Click events go to its stdin. No producer runs by default. Arguments are separate strings; the program must be nonempty. The last registration wins. After a successful reload, a changed status command restarts mortarbar. Mortar stops the old bar before starting its replacement, escalating to SIGKILL if needed. Restart failures are reported; the committed configuration remains active.
