@@ -14,7 +14,7 @@ Dir.mktmpdir('mortar-test-') do |dir|
     display = Timeout.timeout(10) { reader.gets }
     reader.close
     abort 'Xvfb failed to start' unless display
-    env = { 'DISPLAY' => ":#{Integer(display)}" }
+    env = { 'DISPLAY' => ":#{Integer(display)}", 'XDG_CONFIG_HOME' => dir, 'HOME' => dir }
     client_input, client_writer = IO.pipe
     client_reader, client_output = IO.pipe
     client = Process.spawn(env, ARGV.fetch(1), 'grab-conflict', in: client_input, out: client_output)
@@ -42,7 +42,8 @@ Dir.mktmpdir('mortar-test-') do |dir|
     client_output.close
     abort 'Client failed to create existing window' unless
       Timeout.timeout(10) { client_reader.gets } == "existing window ready\n"
-    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: File::NULL)
+    wm_error_path = File.join(dir, 'wm.log')
+    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: wm_error_path)
     client_writer.puts
     abort 'Window manager failed to manage existing window' unless
       Timeout.timeout(10) { client_reader.gets } == "window manager ready\n"
@@ -56,11 +57,11 @@ Dir.mktmpdir('mortar-test-') do |dir|
     Process.kill('TERM', wm)
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
     wm = nil
-    abort 'Window manager shutdown failed' unless status.success?
+    abort "Window manager shutdown failed:\n#{File.read(wm_error_path)}" unless status.success?
     client_writer.puts
     abort 'Client failed shutdown checks' unless
       Timeout.timeout(20) { client_reader.gets } == "shutdown checked\n"
-    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: File::NULL)
+    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: wm_error_path)
     client_writer.puts
     client_writer.close
     client_reader.close
@@ -74,15 +75,41 @@ Dir.mktmpdir('mortar-test-') do |dir|
     Process.kill('TERM', wm)
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
     wm = nil
-    abort 'Window manager shutdown failed' unless status.success?
+    abort "Window manager shutdown failed:\n#{File.read(wm_error_path)}" unless status.success?
     abort 'French keyboard setup failed' unless system(env, 'setxkbmap', '-layout', 'fr', out: File::NULL)
-    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: File::NULL)
+    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: wm_error_path)
     %w[switch move].each do |mode|
       abort "French keyboard check failed: #{mode}" unless system(env, ARGV.fetch(1), mode, out: File::NULL)
     end
     abort 'Keyboard group setup failed' unless
       system(env, 'setxkbmap', '-layout', 'us,fr', '-option', 'grp:alt_shift_toggle', out: File::NULL)
     abort 'Keyboard group check failed' unless system(env, ARGV.fetch(1), 'group', out: File::NULL)
+    Process.kill('TERM', wm)
+    _, status = Timeout.timeout(10) { Process.wait2(wm) }
+    wm = nil
+    abort "Window manager shutdown failed:\n#{File.read(wm_error_path)}" unless status.success?
+    abort 'Keyboard reset failed' unless system(env, 'setxkbmap', '-layout', 'us', out: File::NULL)
+    config_dir = File.join(dir, 'mortar')
+    Dir.mkdir(config_dir)
+    config = File.join(config_dir, 'config.scm')
+    File.write(config, "(bind-workspace 2 (lambda () (workspace 3)))\n(error \"broken configuration\")\n")
+    error_path = File.join(dir, 'config.log')
+    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: error_path)
+    abort 'Broken configuration did not fall back to defaults' unless
+      system(env, ARGV.fetch(1), 'switch', out: File::NULL)
+    abort 'Broken configuration was not reported' if File.empty?(error_path)
+    Process.kill('TERM', wm)
+    _, status = Timeout.timeout(10) { Process.wait2(wm) }
+    wm = nil
+    abort "Window manager shutdown failed:\n#{File.read(error_path)}" unless status.success?
+    File.write(config, "(bind-workspace 1 (lambda () (error \"callback failure\")))\n" \
+                       "(bind-workspace 2 (lambda () (workspace 3)))\n")
+    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: error_path)
+    abort 'Configuration callback checks failed' unless system(env, ARGV.fetch(1), 'config', out: File::NULL)
+    Process.kill('TERM', wm)
+    _, status = Timeout.timeout(10) { Process.wait2(wm) }
+    wm = nil
+    abort "Window manager shutdown failed after callback error:\n#{File.read(error_path)}" unless status.success?
   ensure
     [client, wm, xvfb].compact.each do |pid|
       begin

@@ -125,6 +125,11 @@ int main(int argc, char **argv) {
                 xcb_query_pointer_reply(c, xcb_query_pointer(c, screen->root), nullptr), &std::free};
             if (!pointer || ((pointer->mask >> 13) & 3) != 1) return EXIT_FAILURE;
         }
+        if (std::strcmp(mode, "config") == 0) {
+            press(alt, true); tap(one); press(alt, false); xcb_flush(c);
+            press(alt, true); tap(two); press(alt, false); xcb_flush(c);
+            return wait_property(screen->root, current, 2) ? EXIT_SUCCESS : EXIT_FAILURE;
+        }
         bool move = std::strncmp(mode, "move", 4) == 0;
         bool caps_lock = std::strstr(mode, "caps") || std::strstr(mode, "both");
         bool num_lock = std::strstr(mode, "num") || std::strstr(mode, "both");

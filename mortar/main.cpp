@@ -1,3 +1,4 @@
+#include "config.hpp"
 #include "workspaces.hpp"
 #include "keyboard.hpp"
 
@@ -9,6 +10,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <csignal>
+#include <filesystem>
+#include <functional>
+#include <system_error>
 #include <poll.h>
 #include <unistd.h>
 #include <memory>
@@ -59,6 +63,30 @@ static std::pair<uint32_t, uint32_t> hinted_size(uint32_t width, uint32_t height
 }
 
 int main() {
+    struct Actions {
+        std::function<void(unsigned)> workspace;
+        std::function<void(unsigned)> move;
+    } actions;
+    mortar::Config config(&actions,
+        [](void *host, unsigned digit) { static_cast<Actions *>(host)->workspace(digit); },
+        [](void *host, unsigned digit) { static_cast<Actions *>(host)->move(digit); });
+    const char *xdg = std::getenv("XDG_CONFIG_HOME");
+    const char *home = std::getenv("HOME");
+    std::filesystem::path config_dir;
+    if (xdg && *xdg && std::filesystem::path(xdg).is_absolute()) config_dir = xdg;
+    else if (home && *home && std::filesystem::path(home).is_absolute()) config_dir = std::filesystem::path(home) / ".config";
+    if (!config_dir.empty()) {
+        auto path = config_dir / "mortar/config.scm";
+        std::error_code error;
+        auto status = std::filesystem::status(path, error);
+        if (error && error != std::errc::no_such_file_or_directory) {
+            std::fprintf(stderr, "mortar: cannot inspect configuration %s: %s\n", path.c_str(), error.message().c_str());
+        } else if (std::filesystem::exists(status) && !config.load(path.c_str())) {
+            std::fprintf(stderr, "mortar: failed to load configuration %s; using defaults\n", path.c_str());
+        }
+    } else {
+        std::fputs("mortar: cannot locate configuration: HOME is not an absolute path\n", stderr);
+    }
     int screen_number = 0;
     using Connection = std::unique_ptr<xcb_connection_t, decltype(&xcb_disconnect)>;
     Connection connection{xcb_connect(nullptr, &screen_number), &xcb_disconnect};
@@ -277,6 +305,8 @@ int main() {
             xcb_flush(c);
         }
     };
+    actions.workspace = [&](unsigned digit) { switch_workspace((digit + 9) % 10); };
+    actions.move = [&](unsigned digit) { move_window(workspaces[current].focused, (digit + 9) % 10); };
     auto manage = [&](xcb_window_t window, bool existing) {
         if (window == support) return;
         if (owner(window) >= 0) {
@@ -385,8 +415,14 @@ int main() {
         }
         try {
             if (auto action = keyboard->process(*event)) {
-                if (action->move) move_window(workspaces[current].focused, action->workspace);
-                else switch_workspace(action->workspace);
+                unsigned digit = (action->workspace + 1) % 10;
+                auto result = action->move ? config.run_move_workspace(digit) : config.run_workspace(digit);
+                if (result == mortar::Config::Result::absent) {
+                    if (action->move) move_window(workspaces[current].focused, action->workspace);
+                    else switch_workspace(action->workspace);
+                } else if (result == mortar::Config::Result::failure) {
+                    std::fprintf(stderr, "mortar: %sworkspace binding %u failed\n", action->move ? "move-" : "", digit);
+                }
             }
         } catch (const std::exception &error) {
             std::fprintf(stderr, "mortar: keyboard update failed: %s\n", error.what());
