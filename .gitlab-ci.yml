@@ -16,7 +16,7 @@ build:
       - CXX: [g++, clang++]
         BUILD_TYPE: [debug, release]
   before_script:
-    - apt-get update && apt-get install -y g++ clang meson ninja-build pkg-config guile-3.0-dev libxcb1-dev libxcb-randr0-dev libxcb-xkb-dev libxkbcommon-x11-dev libxcb-xtest0-dev libjq-dev libpango1.0-dev ruby xvfb x11-xkb-utils xkb-data
+    - apt-get update && apt-get install -y g++ clang meson ninja-build pkg-config guile-3.0-dev libxcb1-dev libxcb-randr0-dev libxcb-xkb-dev libxkbcommon-x11-dev libxcb-xtest0-dev libxtst-dev libjq-dev libpango1.0-dev ruby xvfb x11-xkb-utils xkb-data
   script:
     - meson setup build --buildtype=$BUILD_TYPE -Db_ndebug=if-release -Dwerror=true
     - meson compile -C build
@@ -26,7 +26,7 @@ sanitizers:
   stage: test
   image: debian:trixie
   before_script:
-    - apt-get update && apt-get install -y g++ meson ninja-build pkg-config guile-3.0-dev libxcb1-dev libxcb-randr0-dev libxcb-xkb-dev libxkbcommon-x11-dev libxcb-xtest0-dev libjq-dev libpango1.0-dev ruby xvfb x11-xkb-utils xkb-data
+    - apt-get update && apt-get install -y g++ meson ninja-build pkg-config guile-3.0-dev libxcb1-dev libxcb-randr0-dev libxcb-xkb-dev libxkbcommon-x11-dev libxcb-xtest0-dev libxtst-dev libjq-dev libpango1.0-dev ruby xvfb x11-xkb-utils xkb-data
   script:
     - meson setup build -Dwerror=true -Db_sanitize=address,undefined
     - meson compile -C build
