@@ -5,8 +5,10 @@ xcb_randr = dependency('xcb-randr')
 mortar = executable('mortar', 'mortar/main.cpp', 'mortar/layout.cpp', dependencies: [xcb, xcb_randr], install: true)
 
 if get_option('tests')
+  size_hints_test = executable('test-size-hints', 'tests/size-hints.cpp', 'mortar/layout.cpp', dependencies: [xcb, xcb_randr])
+  test('size-hints', size_hints_test)
   layout_test = executable('test-layout', 'tests/layout.cpp', 'mortar/layout.cpp')
   test('layout', layout_test)
   client = executable('test-client', 'tests/client.cpp', dependencies: xcb)
-  test('x11', find_program('ruby'), args: [files('tests/x11.rb'), mortar, client], timeout: 30)
+  test('x11', find_program('ruby'), args: [files('tests/x11.rb'), mortar, client], timeout: 180)
 endif

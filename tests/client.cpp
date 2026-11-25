@@ -37,6 +37,8 @@ int main() {
     using Attributes = std::unique_ptr<xcb_get_window_attributes_reply_t, decltype(&std::free)>;
     Attributes mapped{xcb_get_window_attributes_reply(c, xcb_get_window_attributes(c, first), nullptr), &std::free};
     if (!mapped || mapped->map_state != XCB_MAP_STATE_VIEWABLE) return EXIT_FAILURE;
+    xcb_warp_pointer(c, XCB_NONE, first, 0, 0, 0, 0, 10, 10);
+    xcb_flush(c);
     std::puts("existing window ready");
     std::fflush(stdout);
     if (std::getchar() == EOF) return EXIT_FAILURE;
@@ -53,6 +55,15 @@ int main() {
         return false;
     };
     if (!tiled(first, 0, 800)) return EXIT_FAILURE;
+    bool startup_focused = false;
+    for (int i = 0; i < 250; ++i) {
+        std::unique_ptr<xcb_get_input_focus_reply_t, decltype(&std::free)> reply{
+            xcb_get_input_focus_reply(c, xcb_get_input_focus(c), nullptr), &std::free};
+        if (!reply) return EXIT_FAILURE;
+        if (reply->focus == first) { startup_focused = true; break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    if (!startup_focused) return EXIT_FAILURE;
     using Geometry = std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)>;
     Geometry override_geometry{xcb_get_geometry_reply(c, xcb_get_geometry(c, override_window), nullptr), &std::free};
     if (!override_geometry || override_geometry->x != 30 || override_geometry->y != 30 ||
@@ -130,6 +141,22 @@ int main() {
         return false;
     };
     if (!state_is(first, 1) || !state_is(second, 1)) return EXIT_FAILURE;
+    auto initially_iconic = xcb_generate_id(c);
+    xcb_create_window(c, XCB_COPY_FROM_PARENT, initially_iconic, screen->root,
+                      0, 0, 100, 100, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+                      screen->root_visual, 0, nullptr);
+    const uint32_t iconic_hints[] = {2, 0, 3};
+    xcb_change_property(c, XCB_PROP_MODE_REPLACE, initially_iconic, XCB_ATOM_WM_HINTS,
+                        XCB_ATOM_WM_HINTS, 32, 3, iconic_hints);
+    xcb_map_window(c, initially_iconic);
+    xcb_flush(c);
+    if (!state_is(initially_iconic, 3) || !tiled(first, 0, 266)) return EXIT_FAILURE;
+    xcb_map_window(c, initially_iconic);
+    xcb_flush(c);
+    if (!state_is(initially_iconic, 1)) return EXIT_FAILURE;
+    xcb_destroy_window(c, initially_iconic);
+    xcb_flush(c);
+    if (!tiled(first, 0, 266) || !tiled(second, 266, 267)) return EXIT_FAILURE;
     xcb_client_message_event_t message{};
     message.response_type = XCB_CLIENT_MESSAGE;
     message.format = 32;
@@ -155,5 +182,48 @@ int main() {
     xcb_destroy_window(c, first);
     xcb_flush(c);
     if (!tiled(fourth, 0, 800)) return EXIT_FAILURE;
+    auto protocols = intern("WM_PROTOCOLS", 12);
+    auto take_focus = intern("WM_TAKE_FOCUS", 13);
+    for (int model = 0; model < 4; ++model) {
+        auto window = xcb_generate_id(c);
+        xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root,
+                          0, 0, 100, 100, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+                          screen->root_visual, 0, nullptr);
+        const uint32_t hints[] = {1, static_cast<uint32_t>(model & 1)};
+        xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_HINTS,
+                            XCB_ATOM_WM_HINTS, 32, 2, hints);
+        if (model & 2) xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, protocols,
+                                           XCB_ATOM_ATOM, 32, 1, &take_focus);
+        xcb_set_input_focus(c, XCB_INPUT_FOCUS_POINTER_ROOT, fourth, XCB_CURRENT_TIME);
+        xcb_map_window(c, window);
+        xcb_flush(c);
+        if (!tiled(window, 400, 400)) return EXIT_FAILURE;
+        bool message_received = false;
+        bool correct_focus = false;
+        for (int i = 0; i < 250; ++i) {
+            while (auto *event = xcb_poll_for_event(c)) {
+                if ((event->response_type & 0x7f) == XCB_CLIENT_MESSAGE) {
+                    auto *message = reinterpret_cast<xcb_client_message_event_t *>(event);
+                    if (message->window == window && message->type == protocols &&
+                        message->format == 32 && message->data.data32[0] == take_focus &&
+                        message->data.data32[1] != XCB_CURRENT_TIME) message_received = true;
+                }
+                std::free(event);
+            }
+            using Focus = std::unique_ptr<xcb_get_input_focus_reply_t, decltype(&std::free)>;
+            Focus reply{xcb_get_input_focus_reply(c, xcb_get_input_focus(c), nullptr), &std::free};
+            if (!reply) return EXIT_FAILURE;
+            correct_focus = reply->focus == ((model & 1) ? window : fourth);
+            if (correct_focus && (!(model & 2) || message_received) && i >= 10) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        if (!correct_focus || message_received != static_cast<bool>(model & 2)) {
+            std::fprintf(stderr, "focus model %d failed: focus=%d message=%d\n", model, correct_focus, message_received);
+            return EXIT_FAILURE;
+        }
+        xcb_destroy_window(c, window);
+        xcb_flush(c);
+        if (!tiled(fourth, 0, 800)) return EXIT_FAILURE;
+    }
     return EXIT_SUCCESS;
 }

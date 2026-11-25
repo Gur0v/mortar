@@ -7,7 +7,47 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <tuple>
 #include <vector>
+
+static std::pair<uint32_t, uint32_t> hinted_size(uint32_t width, uint32_t height, const uint32_t *h, size_t count) {
+    if (count < 15) return {width, height};
+    const auto positive = [](uint32_t value) { return value > 0 && value <= INT32_MAX; };
+    const uint32_t flags = h[0];
+    uint32_t minw = (flags & 16) && positive(h[5]) ? h[5] : 1;
+    uint32_t minh = (flags & 16) && positive(h[6]) ? h[6] : 1;
+    uint32_t maxw = (flags & 32) && positive(h[7]) ? std::min(width, h[7]) : width;
+    uint32_t maxh = (flags & 32) && positive(h[8]) ? std::min(height, h[8]) : height;
+    minw = std::min(minw, maxw);
+    minh = std::min(minh, maxh);
+    uint32_t basew = count >= 17 && (flags & 256) && h[15] <= INT32_MAX ? h[15] : ((flags & 16) && positive(h[5]) ? h[5] : 0);
+    uint32_t baseh = count >= 17 && (flags & 256) && h[16] <= INT32_MAX ? h[16] : ((flags & 16) && positive(h[6]) ? h[6] : 0);
+    uint32_t incw = (flags & 64) && positive(h[9]) ? h[9] : 1;
+    uint32_t inch = (flags & 64) && positive(h[10]) ? h[10] : 1;
+    auto align = [](uint32_t low, uint32_t high, uint32_t base, uint32_t inc) {
+        if (base > high) return high;
+        uint32_t result = high - (high - base) % inc;
+        return result >= low ? result : high;
+    };
+    maxw = align(minw, maxw, basew, incw);
+    maxh = align(minh, maxh, baseh, inch);
+    if (!(flags & 128) || !positive(h[11]) || !positive(h[12]) || !positive(h[13]) || !positive(h[14]) ||
+        uint64_t{h[11]} * h[14] > uint64_t{h[13]} * h[12]) return {maxw, maxh};
+    uint32_t bestw = 0, besth = 0;
+    for (uint32_t w = maxw; w >= minw; --w) {
+        if (w != maxw && (w < basew || (w - basew) % incw)) continue;
+        uint64_t upper = uint64_t{w} * h[12] / h[11];
+        uint64_t lower = (uint64_t{w} * h[14] + h[13] - 1) / h[13];
+        if (upper < minh || lower > maxh) continue;
+        uint32_t candidate = align(minh, static_cast<uint32_t>(std::min<uint64_t>(maxh, upper)), baseh, inch);
+        if (candidate < lower || (candidate != maxh && (candidate < baseh || (candidate - baseh) % inch))) continue;
+        if (uint64_t{w} * candidate > uint64_t{bestw} * besth) {
+            bestw = w;
+            besth = candidate;
+        }
+    }
+    return bestw ? std::pair{bestw, besth} : std::pair{maxw, maxh};
+}
 
 int main() {
     int screen_number = 0;
@@ -105,10 +145,18 @@ int main() {
     };
     auto tile = [&] {
         for (const auto &placement : layout.geometry({0, 0, static_cast<int>(width), static_cast<int>(height)})) {
+            using Property = std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)>;
+            Property hints{xcb_get_property_reply(c, xcb_get_property(c, false, placement.window,
+                XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 0, 18), nullptr), &std::free};
+            uint32_t tile_width = std::max(1, placement.bounds.width);
+            uint32_t tile_height = std::max(1, placement.bounds.height);
+            if (hints && hints->type == XCB_ATOM_WM_SIZE_HINTS && hints->format == 32) {
+                std::tie(tile_width, tile_height) = hinted_size(tile_width, tile_height,
+                    static_cast<const uint32_t *>(xcb_get_property_value(hints.get())),
+                    xcb_get_property_value_length(hints.get()) / 4);
+            }
             const uint32_t values[] = {static_cast<uint32_t>(placement.bounds.x),
-                                       static_cast<uint32_t>(placement.bounds.y),
-                                       static_cast<uint32_t>(std::max(1, placement.bounds.width)),
-                                       static_cast<uint32_t>(std::max(1, placement.bounds.height)), 0};
+                                       static_cast<uint32_t>(placement.bounds.y), tile_width, tile_height, 0};
             xcb_configure_window(c, placement.window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
                                  XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
                                  XCB_CONFIG_WINDOW_BORDER_WIDTH, values);
@@ -132,8 +180,32 @@ int main() {
             if (!existing) xcb_map_window(c, window);
             return;
         }
-        if (existing && attributes->map_state != XCB_MAP_STATE_VIEWABLE) return;
-        const uint32_t event_mask = XCB_EVENT_MASK_ENTER_WINDOW;
+        using Property = std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)>;
+        if (existing && attributes->map_state != XCB_MAP_STATE_VIEWABLE) {
+            Property state{xcb_get_property_reply(c, xcb_get_property(c, false, window, wm_state,
+                                                                      wm_state, 0, 2), nullptr), &std::free};
+            if (state && state->type == wm_state && state->format == 32 &&
+                xcb_get_property_value_length(state.get()) >= 4 &&
+                static_cast<const uint32_t *>(xcb_get_property_value(state.get()))[0] == 3) {
+                iconic.push_back(window);
+            }
+            return;
+        }
+        if (!existing && std::find(iconic.begin(), iconic.end(), window) == iconic.end()) {
+            Property hints{xcb_get_property_reply(c, xcb_get_property(c, false, window, XCB_ATOM_WM_HINTS,
+                                                                      XCB_ATOM_WM_HINTS, 0, 3), nullptr), &std::free};
+            if (hints && hints->type == XCB_ATOM_WM_HINTS && hints->format == 32 &&
+                xcb_get_property_value_length(hints.get()) >= 12) {
+                auto *values = static_cast<const uint32_t *>(xcb_get_property_value(hints.get()));
+                if ((values[0] & 2) && values[2] == 3) {
+                    iconic.push_back(window);
+                    set_state(window, 3);
+                    xcb_flush(c);
+                    return;
+                }
+            }
+        }
+        const uint32_t event_mask = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_PROPERTY_CHANGE;
         xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &event_mask);
         std::erase(iconic, window);
         if (!layout.insert(mortar::Layout::leaf(window))) return;
@@ -158,6 +230,12 @@ int main() {
         manage(children[i], true);
     }
 
+    std::unique_ptr<xcb_query_pointer_reply_t, decltype(&std::free)> pointer{
+        xcb_query_pointer_reply(c, xcb_query_pointer(c, root), nullptr), &std::free};
+    if (pointer && layout.contains(pointer->child)) {
+        pending_focus.push_back(pointer->child);
+        xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, focus_time, XCB_ATOM_WINDOW, 32, 0, nullptr);
+    }
     xcb_ungrab_server(c);
     xcb_flush(c);
 
@@ -180,6 +258,8 @@ int main() {
         }
         case XCB_PROPERTY_NOTIFY: {
             auto *property = reinterpret_cast<xcb_property_notify_event_t *>(event);
+            if (!(event->response_type & 0x80) && property->atom == XCB_ATOM_WM_NORMAL_HINTS &&
+                layout.contains(property->window)) tile();
             if (!(event->response_type & 0x80) && property->window == root && property->atom == focus_time &&
                 property->state == XCB_PROPERTY_NEW_VALUE && !pending_focus.empty()) {
                 auto window = pending_focus.front();
