@@ -71,10 +71,12 @@ int main(int argc, char **argv) {
     auto names = atom(c, "_NET_DESKTOP_NAMES");
     auto current = atom(c, "_NET_CURRENT_DESKTOP");
     auto utf8 = atom(c, "UTF8_STRING");
+    auto clients = atom(c, "_NET_CLIENT_LIST");
+    auto desktop = atom(c, "_NET_WM_DESKTOP");
     auto type = atom(c, "_NET_WM_WINDOW_TYPE");
     auto dock = atom(c, "_NET_WM_WINDOW_TYPE_DOCK");
     auto strut = atom(c, "_NET_WM_STRUT_PARTIAL");
-    if (!names || !current || !utf8 || !type || !dock || !strut) {
+    if (!names || !current || !utf8 || !clients || !desktop || !type || !dock || !strut) {
         std::cerr << "mortarbar: cannot intern X11 atoms\n";
         xcb_disconnect(c);
         return 1;
@@ -198,6 +200,21 @@ int main(int argc, char **argv) {
     if (flags >= 0 && fcntl(output_fd, F_SETFL, flags | O_NONBLOCK) == 0) output_open = true;
     bool input_open = input_fd >= 0;
     std::uint32_t selected = 0;
+    std::vector<xcb_window_t> watched_clients;
+    auto watch_clients = [&] {
+        auto raw = property(c, screen->root, clients, XCB_ATOM_WINDOW, 32);
+        std::vector<xcb_window_t> next(raw.size() / sizeof(xcb_window_t));
+        if (!next.empty()) std::memcpy(next.data(), raw.data(), next.size() * sizeof(xcb_window_t));
+        std::uint32_t none = 0, mask = XCB_EVENT_MASK_PROPERTY_CHANGE;
+        for (auto window : watched_clients)
+            if (std::find(next.begin(), next.end(), window) == next.end())
+                xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &none);
+        for (auto window : next)
+            if (std::find(watched_clients.begin(), watched_clients.end(), window) == watched_clients.end())
+                xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &mask);
+        watched_clients = std::move(next);
+    };
+    watch_clients();
     auto draw = [&](Bar& bar) {
     auto* cr = bar.cr;
     auto* layout = bar.layout;
@@ -247,6 +264,15 @@ int main(int argc, char **argv) {
         cairo_paint(cr);
         auto raw = property(c, screen->root, names, utf8, 8);
         auto active = property(c, screen->root, current, XCB_ATOM_CARDINAL, 32);
+        std::vector<std::uint32_t> occupied;
+        for (auto window : watched_clients) {
+            auto value = property(c, window, desktop, XCB_ATOM_CARDINAL, 32);
+            if (value.size() == sizeof(std::uint32_t)) {
+                std::uint32_t workspace;
+                std::memcpy(&workspace, value.data(), sizeof(workspace));
+                occupied.push_back(workspace);
+            }
+        }
         selected = 0;
         workspace_bounds.clear();
         if (active.size() == sizeof(selected)) std::copy(active.begin(), active.end(), reinterpret_cast<std::uint8_t*>(&selected));
@@ -291,6 +317,11 @@ int main(int argc, char **argv) {
             label.append(reinterpret_cast<const char*>(raw.data() + start), i - start);
             label += index == selected ? "] " : "  ";
             auto [width, text_height] = measure(label);
+            if (index == selected || std::find(occupied.begin(), occupied.end(), index) != occupied.end()) {
+                set_color({}, index == selected ? "#285577" : "#333333");
+                cairo_rectangle(cr, workspace_right, 0, width, height);
+                cairo_fill(cr);
+            }
             set_color({}, "#ffffff");
             cairo_move_to(cr, workspace_right, (height - text_height) / 2);
             pango_cairo_show_layout(cr, layout);
@@ -368,7 +399,11 @@ int main(int argc, char **argv) {
             }
             if (event_type == XCB_PROPERTY_NOTIFY) {
                 auto* changed = reinterpret_cast<xcb_property_notify_event_t*>(event);
-                if (changed->window == screen->root && (changed->atom == names || changed->atom == current)) draw_all();
+                if (changed->window == screen->root && changed->atom == clients) {
+                    watch_clients();
+                    draw_all();
+                } else if ((changed->window == screen->root && (changed->atom == names || changed->atom == current)) ||
+                           (changed->atom == desktop && std::find(watched_clients.begin(), watched_clients.end(), changed->window) != watched_clients.end())) draw_all();
             }
             if (event_type == XCB_BUTTON_PRESS) {
                 auto* button = reinterpret_cast<xcb_button_press_event_t*>(event);
