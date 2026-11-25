@@ -126,6 +126,7 @@ int main(int argc, char **argv) {
     auto names = atom(c, "_NET_DESKTOP_NAMES");
     auto current = atom(c, "_NET_CURRENT_DESKTOP");
     auto output_workspaces = atom(c, "_MORTAR_OUTPUT_WORKSPACES");
+    auto urgent_workspaces = atom(c, "_MORTAR_URGENT_WORKSPACES");
     auto utf8 = atom(c, "UTF8_STRING");
     auto clients = atom(c, "_NET_CLIENT_LIST");
     auto desktop = atom(c, "_NET_WM_DESKTOP");
@@ -133,7 +134,7 @@ int main(int argc, char **argv) {
     auto dock = atom(c, "_NET_WM_WINDOW_TYPE_DOCK");
     auto strut = atom(c, "_NET_WM_STRUT_PARTIAL");
     auto local_bar = atom(c, "_MORTAR_BAR_OUTPUT");
-    if (!output_workspaces || !names || !current || !utf8 || !clients || !desktop || !type || !dock || !strut || !local_bar) {
+    if (!urgent_workspaces || !output_workspaces || !names || !current || !utf8 || !clients || !desktop || !type || !dock || !strut || !local_bar) {
         std::cerr << "mortarbar: cannot intern X11 atoms\n";
         xcb_disconnect(c);
         return 1;
@@ -365,6 +366,9 @@ int main(int argc, char **argv) {
         cairo_paint(cr);
         auto raw = property(c, screen->root, names, utf8, 8);
         auto active = property(c, screen->root, current, XCB_ATOM_CARDINAL, 32);
+        auto urgent_bytes = property(c, screen->root, urgent_workspaces, XCB_ATOM_CARDINAL, 32);
+        std::vector<std::uint32_t> urgent(urgent_bytes.size() / 4);
+        if (!urgent.empty()) std::memcpy(urgent.data(), urgent_bytes.data(), urgent_bytes.size());
         std::vector<std::uint32_t> occupied;
         for (auto window : watched_clients) {
             auto value = property(c, window, desktop, XCB_ATOM_CARDINAL, 32);
@@ -464,8 +468,9 @@ int main(int argc, char **argv) {
             label.append(reinterpret_cast<const char*>(raw.data() + start), i - start);
             label += index == selected ? "] " : "  ";
             auto [width, text_height] = measure(label);
-            if (index == selected || std::find(occupied.begin(), occupied.end(), index) != occupied.end()) {
-                set_color({}, color_names[index == selected && (!valid || bar_focused) ? 2 : 3].c_str());
+            bool is_urgent = std::find(urgent.begin(), urgent.end(), index) != urgent.end();
+            if (is_urgent || index == selected || std::find(occupied.begin(), occupied.end(), index) != occupied.end()) {
+                set_color({}, is_urgent ? "#900000" : color_names[index == selected && (!valid || bar_focused) ? 2 : 3].c_str());
                 cairo_rectangle(cr, workspace_right, 0, width, height);
                 cairo_fill(cr);
             }
@@ -561,7 +566,7 @@ int main(int argc, char **argv) {
                 if (changed->window == screen->root && changed->atom == clients) {
                     watch_clients();
                     draw_all();
-                } else if ((changed->window == screen->root && (changed->atom == names || changed->atom == current || changed->atom == output_workspaces)) ||
+                } else if ((changed->window == screen->root && (changed->atom == names || changed->atom == current || changed->atom == output_workspaces || changed->atom == urgent_workspaces)) ||
                            (changed->atom == desktop && std::find(watched_clients.begin(), watched_clients.end(), changed->window) != watched_clients.end())) draw_all();
             }
             if (event_type == XCB_BUTTON_PRESS) {

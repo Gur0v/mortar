@@ -25,3 +25,7 @@ This matrix describes implemented features, not full ICCCM, EWMH, RandR, or XKB 
 Mortar publishes the private root property `_MORTAR_OUTPUT_WORKSPACES` as 32-bit CARDINALs. Version 1 contains the version and output count, followed for each output by x, y, width, height, visible workspace, focused flag, workspace indices, and a `0xffffffff` terminator. Coordinates use two's-complement encoding. The workspace list includes the visible workspace and occupied workspaces owned by that output. Mortarbar validates the property and falls back to EWMH metadata when it is absent, invalid, or does not match its output. This private property is not an EWMH interface.
 
 The integration harness uses Xvfb and XTEST. Its scenarios cover a subset of behavior, not interoperability with every X server, client, keyboard map, or protocol feature. Source: `mortar/main.cpp` and `mortar/keyboard.cpp`; tests: `tests/x11.rb`, `tests/client.cpp`, `tests/keyboard.cpp`, and `tests/size-hints.cpp`.
+
+## Urgency
+
+Mortar marks hidden windows urgent for application activation requests, and recognizes `WM_HINTS` urgency and `_NET_WM_STATE_DEMANDS_ATTENTION` requests. Focusing a window clears its urgency. The bar highlights workspaces containing urgent windows in red. Pager activation may switch workspaces.

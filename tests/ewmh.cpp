@@ -98,6 +98,28 @@ int main() {
     xcb_flush(c);
     if (!wait([&] { return property(active) == std::vector<xcb_window_t>{first}; },
               "activation request did not focus window")) return EXIT_FAILURE;
+    auto urgent = atom("_MORTAR_URGENT_WORKSPACES");
+    auto urgent_property = [&] {
+        std::vector<uint32_t> result;
+        std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)> reply{
+            xcb_get_property_reply(c, xcb_get_property(c, false, screen->root, urgent, XCB_ATOM_CARDINAL, 0, 10), nullptr), &std::free};
+        if (reply && reply->type == XCB_ATOM_CARDINAL && reply->format == 32 && !reply->bytes_after) {
+            auto *values = static_cast<uint32_t *>(xcb_get_property_value(reply.get()));
+            auto count = xcb_get_property_value_length(reply.get()) / 4;
+            if (count) result.assign(values, values + count);
+        }
+        return result;
+    };
+    const uint32_t hints[] = {1u << 8, 0, 0, 0, 0, 0, 0, 0, 0};
+    xcb_change_property(c, XCB_PROP_MODE_REPLACE, second, XCB_ATOM_WM_HINTS, XCB_ATOM_WM_HINTS, 32, 9, hints);
+    xcb_flush(c);
+    if (!wait([&] { return urgent_property() == std::vector<uint32_t>{0}; }, "urgency hint not published")) return EXIT_FAILURE;
+    request.window = second;
+    xcb_send_event(c, false, screen->root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                   reinterpret_cast<const char *>(&request));
+    xcb_flush(c);
+    if (!wait([&] { return property(active) == std::vector<xcb_window_t>{second} && urgent_property().empty(); },
+              "focus did not clear urgency")) return EXIT_FAILURE;
     xcb_destroy_window(c, first);
     xcb_flush(c);
     if (!wait([&] { return property(clients) == std::vector<xcb_window_t>{second} &&

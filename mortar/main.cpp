@@ -279,7 +279,9 @@ int main() {
     const auto local_bar = atom("_MORTAR_BAR_OUTPUT", 18);
     const auto net_state = atom("_NET_WM_STATE", 13);
     const auto fullscreen_atom = atom("_NET_WM_STATE_FULLSCREEN", 24);
-    if (!output_workspaces || !net_clients || !net_stacking || !net_active || !net_names || !net_supported || !net_number || !net_current || !net_desktop || !net_check || !net_name || !utf8 || !window_type || !dialog_type || !dock_type || !strut || !strut_partial || !local_bar || !net_state || !fullscreen_atom) return EXIT_FAILURE;
+    const auto attention_atom = atom("_NET_WM_STATE_DEMANDS_ATTENTION", 31);
+    const auto urgent_workspaces = atom("_MORTAR_URGENT_WORKSPACES", 25);
+    if (!output_workspaces || !net_clients || !net_stacking || !net_active || !net_names || !net_supported || !net_number || !net_current || !net_desktop || !net_check || !net_name || !utf8 || !window_type || !dialog_type || !dock_type || !strut || !strut_partial || !local_bar || !net_state || !fullscreen_atom || !attention_atom || !urgent_workspaces) return EXIT_FAILURE;
     using Property = std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)>;
     auto cardinal = [&](xcb_window_t window, xcb_atom_t property, uint32_t fallback) {
         Property reply{xcb_get_property_reply(c, xcb_get_property(c, false, window, property,
@@ -408,6 +410,21 @@ int main() {
         }
     } border_colors{c, {}};
     std::function<void(std::string_view, xcb_window_t)> window_event = [](std::string_view, xcb_window_t) {};
+    std::vector<xcb_window_t> urgent;
+    auto set_urgent = [&](xcb_window_t window, bool value) {
+        if (owner(window) < 0) return;
+        if (owner(window) == static_cast<int>(current) && workspaces[current].focused == window) value = false;
+        bool old = std::find(urgent.begin(), urgent.end(), window) != urgent.end();
+        if (old == value) return;
+        if (value) urgent.push_back(window); else std::erase(urgent, window);
+    };
+    auto hints_urgent = [&](xcb_window_t window) {
+        Property hints{xcb_get_property_reply(c, xcb_get_property(c, false, window, XCB_ATOM_WM_HINTS,
+            XCB_ATOM_WM_HINTS, 0, 1), nullptr), &std::free};
+        return hints && hints->type == XCB_ATOM_WM_HINTS && hints->format == 32 &&
+            xcb_get_property_value_length(hints.get()) == 4 &&
+            (*static_cast<const uint32_t *>(xcb_get_property_value(hints.get())) & (1u << 8));
+    };
     std::vector<xcb_window_t> pending_focus;
     uint16_t focus_sequence = 0;
     auto focus = [&](xcb_window_t window, xcb_timestamp_t time) {
@@ -451,6 +468,7 @@ int main() {
             }
         }
         if (accepts_focus) {
+            std::erase(urgent, window);
             for (const auto &output : outputs.outputs())
                 for (auto managed : workspaces[output.workspace].windows)
                     border_colors.apply(managed, output.workspace == current && managed == window
@@ -950,11 +968,14 @@ int main() {
         if (desktop != current || !workspaces[desktop].focused) workspaces[desktop].focused = window;
         set_desktop(window, desktop);
         set_state(window, 1);
+        set_urgent(window, hints_urgent(window));
         window_event("new", window);
         Property initial_state{xcb_get_property_reply(c, xcb_get_property(c, false, window, net_state,
             XCB_ATOM_ATOM, 0, 1024), nullptr), &std::free};
         if (initial_state && !initial_state->bytes_after && initial_state->type == XCB_ATOM_ATOM && initial_state->format == 32) {
             auto *values = static_cast<const xcb_atom_t *>(xcb_get_property_value(initial_state.get()));
+            if (std::find(values, values + xcb_get_property_value_length(initial_state.get()) / 4, attention_atom) !=
+                values + xcb_get_property_value_length(initial_state.get()) / 4) set_urgent(window, true);
             if (std::find(values, values + xcb_get_property_value_length(initial_state.get()) / 4, fullscreen_atom) !=
                 values + xcb_get_property_value_length(initial_state.get()) / 4) set_fullscreen(window, true);
         }
@@ -974,8 +995,15 @@ int main() {
     std::vector<xcb_window_t> published_clients, published_stack;
     xcb_window_t published_active = XCB_NONE;
     bool published = false;
-    std::vector<uint32_t> published_outputs;
+    std::vector<uint32_t> published_outputs, published_urgent;
     auto publish = [&] {
+        std::vector<uint32_t> urgent_ids;
+        for (uint32_t i = 0; i < workspaces.size(); ++i)
+            if (std::any_of(urgent.begin(), urgent.end(), [&](auto window) { return owner(window) == static_cast<int>(i); })) urgent_ids.push_back(i);
+        if (!published || urgent_ids != published_urgent) {
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, urgent_workspaces, XCB_ATOM_CARDINAL, 32, urgent_ids.size(), urgent_ids.data());
+            published_urgent = std::move(urgent_ids);
+        }
         std::vector<uint32_t> metadata{1, static_cast<uint32_t>(outputs.outputs().size())};
         for (const auto &output : outputs.outputs()) {
             metadata.insert(metadata.end(), {static_cast<uint32_t>(output.bounds.x), static_cast<uint32_t>(output.bounds.y),
@@ -1027,7 +1055,7 @@ int main() {
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_check, XCB_ATOM_WINDOW, 32, 1, &support);
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, support, net_check, XCB_ATOM_WINDOW, 32, 1, &support);
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, support, net_name, utf8, 8, 6, "mortar");
-    const xcb_atom_t supported_atoms[] = {net_clients, net_stacking, net_active, net_names, net_number, net_current, net_desktop, net_check, net_name, net_state, fullscreen_atom, window_type, dock_type, strut, strut_partial};
+    const xcb_atom_t supported_atoms[] = {net_clients, net_stacking, net_active, net_names, net_number, net_current, net_desktop, net_check, net_name, net_state, fullscreen_atom, attention_atom, window_type, dock_type, strut, strut_partial};
     const uint32_t desktop_count = workspaces.size();
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_supported, XCB_ATOM_ATOM, 32, std::size(supported_atoms), supported_atoms);
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_number, XCB_ATOM_CARDINAL, 32, 1, &desktop_count);
@@ -1058,6 +1086,7 @@ int main() {
         xcb_delete_property(c, root, net_active);
         xcb_delete_property(c, root, net_names);
         xcb_delete_property(c, root, output_workspaces);
+        xcb_delete_property(c, root, urgent_workspaces);
         xcb_delete_property(c, root, net_supported);
         xcb_delete_property(c, root, net_number);
         xcb_delete_property(c, root, focus_time);
@@ -1448,6 +1477,8 @@ int main() {
             auto *property = reinterpret_cast<xcb_property_notify_event_t *>(event);
             if (!(event->response_type & 0x80) && (property->atom == strut || property->atom == strut_partial || property->atom == local_bar) &&
                 std::find(docks.begin(), docks.end(), property->window) != docks.end()) tile();
+            if (!(event->response_type & 0x80) && property->atom == XCB_ATOM_WM_HINTS && owner(property->window) >= 0)
+                set_urgent(property->window, hints_urgent(property->window));
             if (!(event->response_type & 0x80) && property->atom == XCB_ATOM_WM_NORMAL_HINTS &&
                 owner(property->window) >= 0 && visible(owner(property->window))) tile();
             if (!(event->response_type & 0x80) && property->window == root && property->atom == focus_time &&
@@ -1473,13 +1504,20 @@ int main() {
                 std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
                 pending_focus.push_back(message->window);
                 focus_sequence = static_cast<uint16_t>(xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, focus_time, XCB_ATOM_WINDOW, 32, 0, nullptr).sequence);
+            } else if (message->format == 32 && message->type == net_active && owner(message->window) >= 0) {
+                set_urgent(message->window, true);
             } else if (message->format == 32 && message->type == net_desktop &&
                        message->data.data32[0] < workspaces.size()) {
                 move_window(message->window, message->data.data32[0]);
-            } else if (message->format == 32 && message->type == net_state && message->data.data32[0] <= 2 &&
-                       (message->data.data32[1] == fullscreen_atom || message->data.data32[2] == fullscreen_atom)) {
-                bool active = is_fullscreen(message->window) != fullscreen.end();
-                set_fullscreen(message->window, message->data.data32[0] == 2 ? !active : message->data.data32[0] == 1);
+            } else if (message->format == 32 && message->type == net_state && message->data.data32[0] <= 2) {
+                if (message->data.data32[1] == fullscreen_atom || message->data.data32[2] == fullscreen_atom) {
+                    bool active = is_fullscreen(message->window) != fullscreen.end();
+                    set_fullscreen(message->window, message->data.data32[0] == 2 ? !active : message->data.data32[0] == 1);
+                }
+                if (message->data.data32[1] == attention_atom || message->data.data32[2] == attention_atom) {
+                    bool active = std::find(urgent.begin(), urgent.end(), message->window) != urgent.end();
+                    set_urgent(message->window, message->data.data32[0] == 2 ? !active : message->data.data32[0] == 1);
+                }
             } else if (message->type == wm_change_state && message->format == 32 && message->data.data32[0] == 3 &&
                 owner(message->window) >= 0 && visible(owner(message->window))) {
                 auto workspace = static_cast<uint32_t>(owner(message->window));
@@ -1534,6 +1572,7 @@ int main() {
             }
             auto removed = static_cast<size_t>(was_tiled || scratch_removed) + std::erase(iconic, window);
             if (removed) {
+                std::erase(urgent, window);
                 window_event("close", window);
                 std::erase(clients, window);
                 border_colors.remove(window);
@@ -1598,7 +1637,7 @@ int main() {
         if (ipc_dispatched || type == XCB_KEY_PRESS || type == XCB_ENTER_NOTIFY ||
             type == XCB_MAP_REQUEST || type == XCB_UNMAP_NOTIFY || type == XCB_DESTROY_NOTIFY ||
             type == XCB_CLIENT_MESSAGE || type == XCB_CONFIGURE_REQUEST || type == XCB_CONFIGURE_NOTIFY ||
-            (type == XCB_PROPERTY_NOTIFY && reinterpret_cast<xcb_property_notify_event_t *>(event)->atom == focus_time) ||
+            (type == XCB_PROPERTY_NOTIFY && (reinterpret_cast<xcb_property_notify_event_t *>(event)->atom == focus_time || reinterpret_cast<xcb_property_notify_event_t *>(event)->atom == XCB_ATOM_WM_HINTS)) ||
             (randr && randr->present && (type == randr->first_event + XCB_RANDR_SCREEN_CHANGE_NOTIFY ||
              type == randr->first_event + XCB_RANDR_NOTIFY))) publish();
         std::free(event);
@@ -1617,6 +1656,7 @@ int main() {
         xcb_delete_property(c, root, net_active);
         xcb_delete_property(c, root, net_names);
         xcb_delete_property(c, root, output_workspaces);
+        xcb_delete_property(c, root, urgent_workspaces);
         xcb_delete_property(c, root, net_supported);
             xcb_delete_property(c, root, net_number);
             xcb_delete_property(c, root, focus_time);
