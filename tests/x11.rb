@@ -60,9 +60,11 @@ Dir.mktmpdir('mortar-test-') do |dir|
     env = { 'DISPLAY' => ":#{Integer(display)}", 'XDG_CONFIG_HOME' => dir, 'HOME' => dir,
             'PATH' => "#{dir}:#{ENV.fetch('PATH')}", 'MORTAR_TEST_LAUNCH' => launch_log }
     File.symlink(File.expand_path(ARGV.fetch(2)), File.join(dir, 'mortarbar'))
+    File.write(config, "(bar-height 24)\n")
     wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: File::NULL, in: File::NULL)
     abort 'Automatic mortarbar did not reserve space' unless system(env, ARGV.fetch(1), 'bar-reservation')
     abort 'Workspace names or bar clicks failed' unless system(env, ARGV.fetch(1), 'bar-workspaces')
+    File.delete(config)
     Process.kill('TERM', wm)
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
     wm = nil

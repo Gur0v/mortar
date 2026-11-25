@@ -31,6 +31,10 @@ Bindings can only be registered while loading configuration. Workspace actions c
 
 If loading fails, Mortar reports the error and starts with built-in defaults. If a callback fails, Mortar reports the error and does not run that shortcut's default action for that invocation. Effects already performed by Scheme are not rolled back.
 
+## Mouse controls
+
+Hold Alt and drag with the left mouse button to move a floating window. Hold Alt and drag with the right mouse button to resize a floating or tiled window from the clicked corner. Tiled windows resize live when neighboring split boundaries are available.
+
 ## Arbitrary bindings and actions
 
 `(bind-key keysym modifiers procedure)` registers a zero-argument callback for an X keysym and X modifier bitmask, both integers. For example, `(bind-key 65475 8 (lambda () (split 'vertical)))` binds Alt+F6. Repeated registrations replace the previous callback; a matching arbitrary binding takes precedence over a built-in shortcut, including workspace shortcuts.

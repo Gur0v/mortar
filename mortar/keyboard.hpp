@@ -34,6 +34,7 @@ public:
     void replace_bindings(std::vector<KeyboardBinding> bindings);
     std::optional<std::uint32_t> callback() const noexcept { return callback_; }
     std::uint16_t alt_modifier() const noexcept { return alt_; }
+    std::uint16_t lock_modifiers() const noexcept { return locks_; }
 
 private:
     void ungrab() noexcept;

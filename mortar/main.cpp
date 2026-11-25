@@ -245,6 +245,40 @@ int main() {
             return EXIT_FAILURE;
         }
     }
+    struct PointerDrag {
+        xcb_window_t window;
+        uint32_t workspace;
+        int x, y;
+        bool left, top, floating;
+        uint8_t button;
+    };
+    std::optional<PointerDrag> drag;
+    std::vector<std::pair<uint8_t, uint16_t>> mouse_grabs;
+    auto grab_mouse = [&] {
+        std::vector<std::pair<uint8_t, uint16_t>> next, added;
+        for (uint16_t locks = 0; locks < 256; ++locks) {
+            if (locks & ~keyboard->lock_modifiers()) continue;
+            for (uint8_t button : {uint8_t{1}, uint8_t{3}}) {
+                auto grab = std::pair{button, static_cast<uint16_t>(keyboard->alt_modifier() | locks)};
+                if (std::find(next.begin(), next.end(), grab) != next.end()) continue;
+                next.push_back(grab);
+                if (std::find(mouse_grabs.begin(), mouse_grabs.end(), grab) != mouse_grabs.end()) continue;
+                auto cookie = xcb_grab_button_checked(c, false, root, XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |
+                    XCB_EVENT_MASK_POINTER_MOTION, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC,
+                    XCB_NONE, XCB_NONE, grab.first, grab.second);
+                std::unique_ptr<xcb_generic_error_t, decltype(&std::free)> error{xcb_request_check(c, cookie), &std::free};
+                if (error) {
+                    for (auto [button, modifiers] : added) xcb_ungrab_button(c, button, root, modifiers);
+                    throw std::runtime_error("cannot grab mouse button");
+                }
+                added.push_back(grab);
+            }
+        }
+        for (auto grab : mouse_grabs)
+            if (std::find(next.begin(), next.end(), grab) == next.end()) xcb_ungrab_button(c, grab.first, root, grab.second);
+        mouse_grabs = std::move(next);
+    };
+    grab_mouse();
     std::vector<pid_t> children;
     mortar::Workspaces workspace_state;
     mortar::Scratchpad scratchpad;
@@ -847,21 +881,21 @@ int main() {
             tile();
         }
     };
-    actions.resize = [&](mortar::Direction direction, int pixels) {
+    auto resize_window = [&](xcb_window_t target, mortar::Direction direction, int pixels) {
         auto &ws = workspaces[current];
-        if (is_fullscreen(ws.focused) != fullscreen.end()) return;
-        if (ws.layout.contains(ws.focused)) {
-            if (ws.layout.resize(ws.focused, direction, pixels, bounds())) tile();
-        } else if (std::find(ws.floating.begin(), ws.floating.end(), ws.focused) != ws.floating.end()) {
+        if (is_fullscreen(target) != fullscreen.end()) return;
+        if (ws.layout.contains(target)) {
+            if (ws.layout.resize(target, direction, pixels, bounds())) tile();
+        } else if (std::find(ws.floating.begin(), ws.floating.end(), target) != ws.floating.end()) {
             std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
-                xcb_get_geometry_reply(c, xcb_get_geometry(c, ws.focused), nullptr), &std::free};
+                xcb_get_geometry_reply(c, xcb_get_geometry(c, target), nullptr), &std::free};
             if (!geometry) return;
             bool horizontal = direction == mortar::Direction::left || direction == mortar::Direction::right;
             bool previous = direction == mortar::Direction::left || direction == mortar::Direction::up;
             int size = (horizontal ? geometry->width : geometry->height) + pixels;
             if (size < 1 || size > UINT16_MAX) return;
             std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)> hints{
-                xcb_get_property_reply(c, xcb_get_property(c, false, ws.focused, XCB_ATOM_WM_NORMAL_HINTS,
+                xcb_get_property_reply(c, xcb_get_property(c, false, target, XCB_ATOM_WM_NORMAL_HINTS,
                     XCB_ATOM_WM_SIZE_HINTS, 0, 18), nullptr), &std::free};
             uint32_t width = horizontal ? static_cast<uint32_t>(size) : geometry->width;
             uint32_t height = horizontal ? geometry->height : static_cast<uint32_t>(size);
@@ -875,9 +909,12 @@ int main() {
             if (previous && !horizontal) y += geometry->height - static_cast<int>(height);
             if (x < INT16_MIN || x > INT16_MAX || y < INT16_MIN || y > INT16_MAX) return;
             uint32_t values[] = {static_cast<uint32_t>(x), static_cast<uint32_t>(y), width, height};
-            xcb_configure_window(c, ws.focused, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+            xcb_configure_window(c, target, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
                                  XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, values);
         }
+    };
+    actions.resize = [&](mortar::Direction direction, int pixels) {
+        resize_window(workspaces[current].focused, direction, pixels);
     };
     actions.close = [&] {
         auto window = workspaces[current].focused;
@@ -1397,7 +1434,11 @@ int main() {
         try {
             if ((event->response_type & 0x7f) == XCB_KEY_PRESS)
                 actions.time = reinterpret_cast<xcb_key_press_event_t *>(event)->time;
-            if (auto action = keyboard->process(*event)) {
+            auto old_alt = keyboard->alt_modifier();
+            auto old_locks = keyboard->lock_modifiers();
+            auto action = keyboard->process(*event);
+            if (old_alt != keyboard->alt_modifier() || old_locks != keyboard->lock_modifiers()) grab_mouse();
+            if (action) {
                 unsigned digit = (action->workspace + 1) % 10;
                 auto result = action->move ? config.run_move_workspace(digit) : config.run_workspace(digit);
                 if (result == mortar::Config::Result::absent) {
@@ -1501,6 +1542,76 @@ int main() {
             }
         }
         switch (type) {
+        case XCB_BUTTON_PRESS: {
+            auto *press = reinterpret_cast<xcb_button_press_event_t *>(event);
+            int workspace = owner(press->child);
+            if (workspace < 0 || !visible(workspace) || is_fullscreen(press->child) != fullscreen.end()) break;
+            auto &ws = workspaces[workspace];
+            bool floating = std::find(ws.floating.begin(), ws.floating.end(), press->child) != ws.floating.end();
+            if ((!floating && !ws.layout.contains(press->child)) || (press->detail == 1 && !floating)) break;
+            std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                xcb_get_geometry_reply(c, xcb_get_geometry(c, press->child), nullptr), &std::free};
+            if (!geometry) break;
+            if (static_cast<uint32_t>(workspace) != current) switch_workspace(workspace);
+            focus(press->child, press->time);
+            drag = PointerDrag{press->child, static_cast<uint32_t>(workspace), press->root_x, press->root_y,
+                press->root_x <= geometry->x + geometry->width / 2,
+                press->root_y <= geometry->y + geometry->height / 2, floating, press->detail};
+            break;
+        }
+        case XCB_MOTION_NOTIFY: {
+            if (!drag) break;
+            auto &ws = workspaces[drag->workspace];
+            bool floating = std::find(ws.floating.begin(), ws.floating.end(), drag->window) != ws.floating.end();
+            if (owner(drag->window) != static_cast<int>(drag->workspace) || current != drag->workspace ||
+                is_fullscreen(drag->window) != fullscreen.end() || floating != drag->floating ||
+                (!floating && !ws.layout.contains(drag->window))) {
+                drag.reset();
+                xcb_ungrab_pointer(c, XCB_CURRENT_TIME);
+                break;
+            }
+            auto *motion = reinterpret_cast<xcb_motion_notify_event_t *>(event);
+            int dx = motion->root_x - drag->x, dy = motion->root_y - drag->y;
+            if (drag->floating) {
+                std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                    xcb_get_geometry_reply(c, xcb_get_geometry(c, drag->window), nullptr), &std::free};
+                if (!geometry) break;
+                if (drag->button == 1) {
+                    int x = std::clamp(int(geometry->x) + dx, int(INT16_MIN), int(INT16_MAX));
+                    int y = std::clamp(int(geometry->y) + dy, int(INT16_MIN), int(INT16_MAX));
+                    uint32_t values[] = {static_cast<uint32_t>(x), static_cast<uint32_t>(y)};
+                    xcb_configure_window(c, drag->window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, values);
+                } else {
+                    resize_window(drag->window, drag->left ? mortar::Direction::left : mortar::Direction::right, drag->left ? -dx : dx);
+                    resize_window(drag->window, drag->top ? mortar::Direction::up : mortar::Direction::down, drag->top ? -dy : dy);
+                    std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> updated{
+                        xcb_get_geometry_reply(c, xcb_get_geometry(c, drag->window), nullptr), &std::free};
+                    if (updated) {
+                        drag->x += (int(updated->width) - geometry->width) * (drag->left ? -1 : 1);
+                        drag->y += (int(updated->height) - geometry->height) * (drag->top ? -1 : 1);
+                    }
+                    break;
+                }
+            } else {
+                auto &layout = workspaces[drag->workspace].layout;
+                bool horizontal = layout.resize(drag->window, drag->left ? mortar::Direction::left : mortar::Direction::right,
+                                                drag->left ? -dx : dx, bounds());
+                bool vertical = layout.resize(drag->window, drag->top ? mortar::Direction::up : mortar::Direction::down,
+                                              drag->top ? -dy : dy, bounds());
+                if (horizontal) drag->x = motion->root_x;
+                if (vertical) drag->y = motion->root_y;
+                if (horizontal || vertical) tile();
+                break;
+            }
+            drag->x = motion->root_x;
+            drag->y = motion->root_y;
+            break;
+        }
+        case XCB_BUTTON_RELEASE: {
+            auto *release = reinterpret_cast<xcb_button_release_event_t *>(event);
+            if (drag && drag->button == release->detail) drag.reset();
+            break;
+        }
         case XCB_COLORMAP_NOTIFY: {
             auto *notify = reinterpret_cast<xcb_colormap_notify_event_t *>(event);
             int workspace = owner(notify->window);
@@ -1605,6 +1716,10 @@ int main() {
             }
             if (std::erase(docks, window)) { std::erase(clients, window); tile(); break; }
             int workspace = owner(window);
+            if (drag && drag->window == window) {
+                drag.reset();
+                xcb_ungrab_pointer(c, XCB_CURRENT_TIME);
+            }
             bool scratch_removed = scratchpad.remove(window);
             if (scratch_removed) std::erase(scratch_windows, window);
             if (type == XCB_UNMAP_NOTIFY && workspace >= 0) set_fullscreen(window, false);

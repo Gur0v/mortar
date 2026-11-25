@@ -384,6 +384,22 @@ int main(int argc, char **argv) {
                               XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
             xcb_map_window(c, other); xcb_flush(c);
             if (!wait([&] { return focus(other); }, "second window focus")) return EXIT_FAILURE;
+            press(alt, true); tap(key('v')); press(alt, false); xcb_flush(c);
+            auto third = xcb_generate_id(c);
+            xcb_create_window(c, XCB_COPY_FROM_PARENT, third, screen->root, 0, 0, 100, 100, 0,
+                              XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+            xcb_map_window(c, third); xcb_flush(c);
+            if (!wait([&] { return geometry(third, 400, 300, 400, 300); }, "nested tile geometry")) return EXIT_FAILURE;
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 410, 310, 0);
+            press(alt, true);
+            xcb_test_fake_input(c, XCB_BUTTON_PRESS, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 450, 340, 0);
+            xcb_flush(c);
+            if (!wait([&] { return geometry(third, 440, 330, 360, 270); }, "live diagonal tiled mouse resize")) return EXIT_FAILURE;
+            xcb_test_fake_input(c, XCB_BUTTON_RELEASE, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            press(alt, false);
+            xcb_destroy_window(c, third); xcb_flush(c);
+            if (!wait([&] { return focus(other); }, "restore second window focus")) return EXIT_FAILURE;
             shortcut(true);
             if (!wait([&] { return mapped(other, XCB_MAP_STATE_UNMAPPED) && focus(window) &&
                                   geometry(window, 0, 0, 800, 600); }, "send tiled window")) return EXIT_FAILURE;
