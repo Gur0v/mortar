@@ -19,12 +19,23 @@ int main() {
     std::unique_ptr<xcb_intern_atom_reply_t, decltype(&std::free)> atom{
         xcb_intern_atom_reply(c, xcb_intern_atom(c, false, sizeof(name) - 1, name), nullptr), &std::free};
     if (!atom) return EXIT_FAILURE;
+    const char net_name[] = "_NET_WM_NAME";
+    const char utf8_name[] = "UTF8_STRING";
+    std::unique_ptr<xcb_intern_atom_reply_t, decltype(&std::free)> title_atom{
+        xcb_intern_atom_reply(c, xcb_intern_atom(c, false, sizeof(net_name) - 1, net_name), nullptr), &std::free};
+    std::unique_ptr<xcb_intern_atom_reply_t, decltype(&std::free)> utf8{
+        xcb_intern_atom_reply(c, xcb_intern_atom(c, false, sizeof(utf8_name) - 1, utf8_name), nullptr), &std::free};
+    if (!title_atom || !utf8) return EXIT_FAILURE;
     auto check = [&](const char *label, const char *value, uint32_t length, xcb_atom_t type,
-                     uint32_t desktop, bool floating) {
+                     uint32_t desktop, bool floating, const char *title = nullptr, bool modern = true) {
         auto window = xcb_generate_id(c);
         xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, 20, 30, 120, 80, 0,
                           XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
         xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_CLASS, type, 8, length, value);
+        if (title) xcb_change_property(c, XCB_PROP_MODE_REPLACE, window,
+            modern ? title_atom->atom : xcb_atom_t{XCB_ATOM_WM_NAME},
+            modern ? utf8->atom : xcb_atom_t{XCB_ATOM_STRING},
+            8, std::strlen(title), title);
         xcb_map_window(c, window);
         xcb_flush(c);
         bool ok = false;
@@ -53,12 +64,19 @@ int main() {
     const char instance_only[] = "Float\0Other";
     const char missing_nul[] = "instance\0Float";
     const char trailing[] = "instance\0Float\0extra";
+    const char special[] = "special\0Other";
+    const char combined[] = "special\0Combined";
     return check("floating", floating, sizeof(floating), XCB_ATOM_STRING, 0, true) &&
            check("workspace", workspace, sizeof(workspace), XCB_ATOM_STRING, 1, false) &&
            check("override", overridden, sizeof(overridden), XCB_ATOM_STRING, 0, false) &&
            check("instance", instance_only, sizeof(instance_only), XCB_ATOM_STRING, 0, false) &&
            check("unterminated", missing_nul, sizeof(missing_nul) - 1, XCB_ATOM_STRING, 0, false) &&
            check("trailing", trailing, sizeof(trailing), XCB_ATOM_STRING, 0, false) &&
-           check("wrong type", floating, sizeof(floating), XCB_ATOM_ATOM, 0, false)
+           check("wrong type", floating, sizeof(floating), XCB_ATOM_ATOM, 0, false) &&
+           check("instance match", special, sizeof(special), XCB_ATOM_STRING, 0, true) &&
+           check("title match", instance_only, sizeof(instance_only), XCB_ATOM_STRING, 1, false, "Target") &&
+           check("legacy title", instance_only, sizeof(instance_only), XCB_ATOM_STRING, 1, false, "Target", false) &&
+           check("combined mismatch", combined, sizeof(combined), XCB_ATOM_STRING, 0, true, "Other") &&
+           check("combined match", combined, sizeof(combined), XCB_ATOM_STRING, 2, false, "Target")
         ? EXIT_SUCCESS : EXIT_FAILURE;
 }

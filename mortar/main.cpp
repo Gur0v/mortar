@@ -968,6 +968,7 @@ int main() {
         }
         Property window_class{xcb_get_property_reply(c, xcb_get_property(c, false, window, XCB_ATOM_WM_CLASS,
             XCB_ATOM_STRING, 0, 1024), nullptr), &std::free};
+        std::optional<std::string_view> class_name, instance_name, title;
         if (window_class && window_class->type == XCB_ATOM_STRING && window_class->format == 8 &&
             !window_class->bytes_after) {
             auto *value = static_cast<const char *>(xcb_get_property_value(window_class.get()));
@@ -977,14 +978,26 @@ int main() {
                 auto *class_start = instance_end + 1;
                 auto *class_end = static_cast<const char *>(std::memchr(class_start, 0, value + length - class_start));
                 if (class_end && class_end + 1 == value + length) {
-                    std::string_view name(class_start, class_end - class_start);
-                    for (const auto &rule : config.window_rules()) {
-                        if (name != rule.window_class) continue;
-                        if (rule.workspace) desktop = (*rule.workspace + 9) % 10;
-                        if (rule.floating) floating = *rule.floating;
-                    }
+                    instance_name = std::string_view(value, instance_end - value);
+                    class_name = std::string_view(class_start, class_end - class_start);
                 }
             }
+        }
+        Property window_title{xcb_get_property_reply(c, xcb_get_property(c, false, window, net_name,
+            utf8, 0, 1024), nullptr), &std::free};
+        if (!window_title || window_title->type != utf8 || window_title->format != 8 || window_title->bytes_after)
+            window_title = Property{xcb_get_property_reply(c, xcb_get_property(c, false, window, XCB_ATOM_WM_NAME,
+                XCB_ATOM_STRING, 0, 1024), nullptr), &std::free};
+        if (window_title && (window_title->type == utf8 || window_title->type == XCB_ATOM_STRING) &&
+            window_title->format == 8 && !window_title->bytes_after)
+            title = std::string_view(static_cast<const char *>(xcb_get_property_value(window_title.get())),
+                                     xcb_get_property_value_length(window_title.get()));
+        for (const auto &rule : config.window_rules()) {
+            if ((rule.window_class && (!class_name || *class_name != *rule.window_class)) ||
+                (rule.instance && (!instance_name || *instance_name != *rule.instance)) ||
+                (rule.title && (!title || *title != *rule.title))) continue;
+            if (rule.workspace) desktop = (*rule.workspace + 9) % 10;
+            if (rule.floating) floating = *rule.floating;
         }
         const uint32_t event_mask = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_PROPERTY_CHANGE |
                                     XCB_EVENT_MASK_COLOR_MAP_CHANGE;
@@ -1178,7 +1191,8 @@ int main() {
                 std::vector<std::string> options{"--mortar-settings", settings.bottom ? "bottom" : "top", settings.font,
                     std::to_string(settings.background), std::to_string(settings.foreground),
                     std::to_string(settings.focused), std::to_string(settings.unfocused)};
-                options.insert(options.end(), {"--height", std::to_string(settings.height), "--status-padding", std::to_string(settings.status_padding), "--status-edge-padding", std::to_string(settings.status_edge_padding)});
+                if (settings.height) options.insert(options.end(), {"--height", std::to_string(settings.height)});
+                options.insert(options.end(), {"--status-padding", std::to_string(settings.status_padding), "--status-edge-padding", std::to_string(settings.status_edge_padding)});
                 if (settings.hidden) options.emplace_back("--hidden");
                 if (!settings.workspace_buttons) options.emplace_back("--no-workspace-buttons");
                 if (settings.wrap_scroll) options.emplace_back("--wrap-scroll");

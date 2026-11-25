@@ -298,26 +298,57 @@ struct ConfigRuntime {
         return SCM_UNSPECIFIED;
     }
 
-    static SCM window_rule(SCM name, SCM workspace, SCM floating) {
+    static SCM collect_rule(void *data) {
+        auto *state = static_cast<SpawnArguments *>(data);
+        for (SCM rest = state->values; scm_is_pair(rest); rest = scm_cdr(rest)) {
+            SCM value = scm_car(rest);
+            if (scm_is_false(value)) {
+                try { state->arguments.emplace_back(); } catch (...) { state->failed = true; }
+            } else {
+                size_t length = 0;
+                char *text = scm_to_utf8_stringn(value, &length);
+                if (!length || std::memchr(text, 0, length)) state->failed = true;
+                else try { state->arguments.emplace_back(text, length); } catch (...) { state->failed = true; }
+                std::free(text);
+            }
+            if (state->failed) return SCM_UNSPECIFIED;
+        }
+        return SCM_UNSPECIFIED;
+    }
+
+    static SCM window_rule(SCM name, SCM workspace, SCM floating, SCM instance, SCM title) {
         if (!active || !active->path) scm_misc_error("window-rule", "only allowed while loading", SCM_EOL);
-        if (!scm_is_string(name)) scm_wrong_type_arg_msg("window-rule", 1, name, "string");
+        if (SCM_UNBNDP(instance)) instance = SCM_BOOL_F;
+        if (SCM_UNBNDP(title)) title = SCM_BOOL_F;
+        for (SCM criterion : {name, instance, title})
+            if (!scm_is_false(criterion) && !scm_is_string(criterion))
+                scm_wrong_type_arg_msg("window-rule", 0, criterion, "string or #f");
+        if (scm_is_false(name) && scm_is_false(instance) && scm_is_false(title))
+            scm_misc_error("window-rule", "expected a criterion", SCM_EOL);
         if (!scm_is_false(workspace)) digit(workspace);
         if (!scm_is_false(floating) && !scm_is_eq(floating, scm_from_utf8_symbol("floating")) &&
             !scm_is_eq(floating, scm_from_utf8_symbol("tiled")))
             scm_wrong_type_arg_msg("window-rule", 3, floating, "#f, floating or tiled");
         if (scm_is_false(workspace) && scm_is_false(floating))
             scm_misc_error("window-rule", "expected an assignment", SCM_EOL);
-        size_t length = 0;
-        char *text = scm_to_utf8_stringn(name, &length);
-        bool failed = !length || std::memchr(text, 0, length);
-        try {
-            if (!failed) active->window_rules.push_back({std::string(text, length),
-                scm_is_false(workspace) ? std::nullopt : std::optional<unsigned>(digit(workspace)),
-                scm_is_false(floating) ? std::nullopt :
-                    std::optional<bool>(scm_is_eq(floating, scm_from_utf8_symbol("floating")))});
-        } catch (...) { failed = true; }
-        std::free(text);
-        if (failed) scm_misc_error("window-rule", "invalid class or allocation failure", SCM_EOL);
+        bool failed = false;
+        {
+            SpawnArguments state{scm_list_3(name, instance, title), {}, false};
+            scm_c_catch(SCM_BOOL_T, collect_rule, &state, spawn_error, &state, nullptr, nullptr);
+            if (!state.failed) {
+                try {
+                    auto criterion = [&](size_t i) -> std::optional<std::string> {
+                        return state.arguments[i].empty() ? std::nullopt : std::optional<std::string>(state.arguments[i]);
+                    };
+                    active->window_rules.push_back({criterion(0),
+                        scm_is_false(workspace) ? std::nullopt : std::optional<unsigned>(digit(workspace)),
+                        scm_is_false(floating) ? std::nullopt :
+                            std::optional<bool>(scm_is_eq(floating, scm_from_utf8_symbol("floating"))),
+                        criterion(1), criterion(2)});
+                } catch (...) { failed = true; }
+            } else failed = true;
+        }
+        if (failed) scm_misc_error("window-rule", "invalid criterion or allocation failure", SCM_EOL);
         return SCM_UNSPECIFIED;
     }
 
@@ -461,7 +492,7 @@ struct ConfigRuntime {
         scm_c_define_gsubr("bar-font", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_font));
         scm_c_define_gsubr("bar-output", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_output));
         scm_c_define_gsubr("bar-colors", 4, 0, 0, reinterpret_cast<scm_t_subr>(bar_colors));
-        scm_c_define_gsubr("window-rule", 3, 0, 0, reinterpret_cast<scm_t_subr>(window_rule));
+        scm_c_define_gsubr("window-rule", 3, 2, 0, reinterpret_cast<scm_t_subr>(window_rule));
         scm_c_define_gsubr("border", 3, 0, 0, reinterpret_cast<scm_t_subr>(set_border));
         scm_c_define_gsubr("spawn", 0, 0, 1, reinterpret_cast<scm_t_subr>(spawn_action));
         return scm_c_primitive_load(runtime->path);

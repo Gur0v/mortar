@@ -43,7 +43,7 @@ Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(focus 'left)`
 
 ## Window rules
 
-`(window-rule "Class" workspace floating)` matches the class component of `WM_CLASS` exactly. `workspace` is a desktop index from 0 to 9 or `#f` to leave it unchanged. `floating` is `'floating`, `'tiled`, or `#f` to leave the classification unchanged. Later matching rules override fields set by earlier rules. Rules apply when a window is managed and are replaced on successful configuration reload; existing windows are not reassigned automatically.
+`(window-rule class workspace floating [instance [title]])` matches the specified class and instance components of `WM_CLASS` and window title exactly. Each criterion is a nonempty string or `#f`; omitted criteria default to `#f`. At least one criterion is required, and all specified criteria must match. The title uses `_NET_WM_NAME` when valid, otherwise `WM_NAME`. Existing `(window-rule "Class" workspace floating)` rules remain valid. `workspace` is a desktop index from 0 to 9 or `#f` to leave it unchanged. `floating` is `'floating`, `'tiled`, or `#f` to leave the classification unchanged. Later matching rules override fields set by earlier rules. Rules apply when a window is managed and are replaced on successful configuration reload; existing windows are not reassigned automatically.
 
 ## Bar appearance
 
@@ -57,7 +57,7 @@ Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(focus 'left)`
 
 `(bar-workspace-buttons #f)` hides workspace buttons and disables workspace scrolling. The default is `#t`. `(bar-wrap-scroll #t)` wraps scrolling between the first and last displayed workspaces; the default is `#f`. Both accept only booleans. Status block scrolling remains unaffected.
 
-`(bar-height 40)` sets bar height in pixels, from 1 to 65535; the default is 24. `(bar-status-padding 4)` sets vertical padding around status block backgrounds and borders, from 0 to 32767; the default is 0. Padding is clamped to half the bar height. `(bar-status-edge-padding 12)` sets the space between status blocks and the right edge, from 0 to 65535; the default is 8. Text remains vertically centered.
+`(bar-height 40)` overrides bar height in pixels, from 1 to 65535. By default, height is the configured font's line height plus 6 pixels, with a minimum of 24 and a maximum of 65535. `(bar-status-padding 4)` sets vertical padding around status block backgrounds and borders, from 0 to 32767; the default is 0. Padding is clamped to half the bar height. `(bar-status-edge-padding 12)` sets the space between status blocks and the right edge, from 0 to 65535; the default is 8. Text remains vertically centered.
 
 These settings are accepted only while loading. A successful reload restarts mortarbar if any changed, with the same failure behavior as a status-command change.
 

@@ -26,9 +26,11 @@ public:
     };
 
     struct WindowRule {
-        std::string window_class;
+        std::optional<std::string> window_class;
         std::optional<unsigned> workspace;
         std::optional<bool> floating;
+        std::optional<std::string> instance;
+        std::optional<std::string> title;
     };
 
     struct Border {
@@ -38,7 +40,7 @@ public:
     };
 
     struct Bar {
-        std::uint16_t height = 24;
+        std::uint16_t height = 0;
         std::uint16_t status_padding = 0;
         std::uint16_t status_edge_padding = 8;
         bool bottom = false;

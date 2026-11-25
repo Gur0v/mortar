@@ -69,12 +69,16 @@ begin
   X11.XFree(values)
   reservation
   end
+  geometry = Array.new(6) { Fiddle::Pointer.malloc(Fiddle::SIZEOF_INT) }
+  abort 'cannot get bar geometry' if X11.XGetGeometry(connection, window, root_return, *geometry) == 0
+  bar_height = geometry[3][0, Fiddle::SIZEOF_INT].unpack1('I')
+  abort 'default bar too short' unless bar_height >= 24
   spans = reservations.map { |reservation| [reservation[2], reservation[8], reservation[9]] }.sort
-  abort 'bar strut incorrect' unless spans == (multi ? [[24, 0, 399], [24, 400, 799]] : [[24, 0, 799]])
+  abort 'bar strut incorrect' unless spans == (multi ? [[bar_height, 0, 399], [bar_height, 400, 799]] : [[bar_height, 0, 799]])
   if multi
     geometry = Array.new(6) { Fiddle::Pointer.malloc(Fiddle::SIZEOF_INT) }
     abort 'cannot get lower bar geometry' if X11.XGetGeometry(connection, windows[2], root_return, *geometry) == 0
-    abort 'lower bar geometry incorrect' unless geometry.first(4).map { |v| v[0, Fiddle::SIZEOF_INT].unpack1('i') } == [0, 300, 800, 24]
+    abort 'lower bar geometry incorrect' unless geometry.first(4).map { |v| v[0, Fiddle::SIZEOF_INT].unpack1('i') } == [0, 300, 800, bar_height]
     local = X11.XInternAtom(connection, '_MORTAR_BAR_OUTPUT', 0)
     result = X11.XGetWindowProperty(connection, windows[2], local, 0, 4, 0, 6, actual_type, actual_format, items, remaining, data)
     abort 'local bar property missing' unless result == 0 && items[0, Fiddle::SIZEOF_LONG].unpack1('L!') == 4
@@ -157,7 +161,29 @@ begin
   Process.wait(pid)
 
   unless multi
-    pid = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, bar, '--mortar-settings', 'bottom', 'monospace 10',
+    pid = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, bar, '--mortar-settings', 'bottom', 'monospace 30',
+                        '2236962', '16777215', '2643319', '3355443', '--')
+    sleep 0.3
+    connection = X11.XOpenDisplay(":#{Integer(display)}")
+    root = X11.XDefaultRootWindow(connection)
+    X11.XQueryTree(connection, root, root_return, parent, children, count)
+    abort 'large font bar missing' unless count[0, Fiddle::SIZEOF_INT].unpack1('I') == 1
+    list = Fiddle::Pointer.new(children[0, Fiddle::SIZEOF_VOIDP].unpack1('J'))
+    large = list[0, Fiddle::SIZEOF_LONG].unpack1('L!')
+    X11.XFree(list)
+    geometry = Array.new(6) { Fiddle::Pointer.malloc(Fiddle::SIZEOF_INT) }
+    X11.XGetGeometry(connection, large, root_return, *geometry)
+    y, height = [geometry[1], geometry[3]].map { |v| v[0, Fiddle::SIZEOF_INT].unpack1('i') }
+    abort 'large font height incorrect' unless height > 24 && y == 600 - height
+    X11.XGetWindowProperty(connection, large, strut, 0, 12, 0, 6, actual_type, actual_format, items, remaining, data)
+    values = Fiddle::Pointer.new(data[0, Fiddle::SIZEOF_VOIDP].unpack1('J'))
+    abort 'large font strut incorrect' unless values[0, 12 * Fiddle::SIZEOF_LONG].unpack('L!*')[3] == height
+    X11.XFree(values)
+    X11.XCloseDisplay(connection)
+    Process.kill('TERM', pid)
+    Process.wait(pid)
+
+    pid = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, bar, '--mortar-settings', 'bottom', 'monospace 30',
                         '2236962', '16777215', '2643319', '3355443', '--height', '40', '--status-padding', '4',
                         '--status-edge-padding', '20', '--', RbConfig.ruby, '-e', code, 'a b', err: File::NULL)
     sleep 0.3

@@ -16,6 +16,9 @@ Dir.mktmpdir('mortar-rules-') do |dir|
       (window-rule "Remote" 2 #f)
       (window-rule "Override" 2 'floating)
       (window-rule "Override" 1 'tiled)
+      (window-rule #f #f 'floating "special")
+      (window-rule #f 2 #f #f "Target")
+      (window-rule "Combined" 3 #f "special" "Target")
     SCHEME
     env = { 'DISPLAY' => ":#{Integer(display)}", 'XDG_CONFIG_HOME' => dir, 'HOME' => dir,
             'PATH' => '/nonexistent' }

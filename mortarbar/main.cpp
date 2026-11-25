@@ -68,7 +68,7 @@ std::vector<std::uint8_t> property(xcb_connection_t* c, xcb_window_t window, xcb
 }
 
 int main(int argc, char **argv) {
-    std::uint16_t height = 24;
+    std::uint16_t height = 0;
     int status_padding = 0;
     int status_edge_padding = 8;
     bool bottom = false;
@@ -197,6 +197,24 @@ int main(int argc, char **argv) {
         for (auto visuals = xcb_depth_visuals_iterator(depths.data); visuals.rem; xcb_visualtype_next(&visuals))
             if (visuals.data->visual_id == screen->root_visual) visual = visuals.data;
     if (!visual) { std::cerr << "mortarbar: cannot find root visual\n"; xcb_disconnect(c); return 1; }
+    if (!height) {
+        auto* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+        auto* cr = cairo_create(surface);
+        if (cairo_status(cr) != CAIRO_STATUS_SUCCESS || cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+            std::cerr << "mortarbar: cannot measure font\n";
+            cairo_destroy(cr); cairo_surface_destroy(surface); xcb_disconnect(c); return 1;
+        }
+        auto* layout = pango_cairo_create_layout(cr);
+        auto* font = pango_font_description_from_string(font_name.c_str());
+        pango_layout_set_font_description(layout, font);
+        int text_height = 0;
+        pango_layout_get_pixel_size(layout, nullptr, &text_height);
+        height = static_cast<std::uint16_t>(std::clamp(static_cast<std::int64_t>(text_height) + 6, std::int64_t{24}, std::int64_t{65535}));
+        pango_font_description_free(font);
+        g_object_unref(layout);
+        cairo_destroy(cr);
+        cairo_surface_destroy(surface);
+    }
     struct Bar {
         xcb_window_t window;
         int width;

@@ -77,13 +77,13 @@ int main() {
           config.bar().background == 0x222222 && config.bar().foreground == 0xffffff &&
           config.bar().focused == 0x285577 && config.bar().unfocused == 0x333333);
     check(config.bar().workspace_buttons && !config.bar().wrap_scroll);
-    check(config.bar().height == 24 && config.bar().status_padding == 0 && config.bar().status_edge_padding == 8);
+    check(config.bar().height == 0 && config.bar().status_padding == 0 && config.bar().status_edge_padding == 8);
     write("(bar-height 40) (bar-status-padding 4) (bar-status-edge-padding 12) (bar-workspace-buttons #f) (bar-wrap-scroll #t) (bar-mode 'hide) (bar-position 'bottom) (bar-font \"sans 12\") (bar-colors 1 2 3 4) (bar-output \"left\") (bar-output \"right\")");
     check(config.stage(path) && config.staged_bar().hidden && !config.bar().hidden && config.staged_bar().bottom && config.staged_bar().font == "sans 12" &&
           config.staged_bar().background == 1 && config.staged_bar().foreground == 2 &&
           config.staged_bar().focused == 3 && config.staged_bar().unfocused == 4 && !config.bar().bottom);
     check(config.staged_bar().outputs == std::vector<std::string>({"left", "right"}) && config.bar().outputs.empty());
-    check(config.staged_bar().height == 40 && config.staged_bar().status_padding == 4 && config.staged_bar().status_edge_padding == 12 && config.bar().height == 24);
+    check(config.staged_bar().height == 40 && config.staged_bar().status_padding == 4 && config.staged_bar().status_edge_padding == 12 && config.bar().height == 0);
     check(!config.staged_bar().workspace_buttons && config.staged_bar().wrap_scroll && config.bar().workspace_buttons);
     config.discard();
     check(!config.bar().bottom && !config.staged_bar().bottom && config.bar().outputs.empty());
@@ -115,6 +115,19 @@ int main() {
           config.window_rules()[0].floating == false);
     write("(window-rule \"Bad\" #f #f)");
     check(!config.load(path) && config.window_rules()[0].window_class == "Other");
+    write("(window-rule #f 3 'floating \"instance\" \"title\")");
+    check(config.stage(path) && config.window_rules()[0].window_class == "Other");
+    config.discard();
+    check(config.window_rules()[0].window_class == "Other");
+    check(config.load(path) && config.window_rules().size() == 1 &&
+          !config.window_rules()[0].window_class && config.window_rules()[0].instance == "instance" &&
+          config.window_rules()[0].title == "title");
+    for (const char *invalid : {"(window-rule #f 1 #f)", "(window-rule #f 1 #f #f #f)",
+                                "(window-rule #f 1 #f 1)", "(window-rule #f 1 #f \"\")",
+                                "(window-rule #f 1 #f #f (string #\\nul))"}) {
+        write(invalid);
+        check(!config.load(path) && config.window_rules()[0].title == "title");
+    }
     check(config.run_workspace(1) == Result::absent);
     check(config.run_workspace(10) == Result::failure);
     write("(bind-workspace 1 (lambda () (workspace 4)))\n"
