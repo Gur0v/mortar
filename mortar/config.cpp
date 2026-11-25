@@ -133,6 +133,21 @@ struct ConfigRuntime {
         if (!active || active->path) scm_misc_error(name, "action is only allowed in a binding", SCM_EOL);
     }
 
+    static SCM workspace_navigation(const char *name, Config::WorkspaceNavigation action) {
+        require_action(name);
+        bool failed = false;
+        try {
+            if (active->config->workspace_navigation_) active->config->workspace_navigation_(active->config->host_, action);
+            else failed = true;
+        } catch (...) { failed = true; }
+        if (failed) scm_misc_error(name, "native action failed", SCM_EOL);
+        return SCM_UNSPECIFIED;
+    }
+
+    static SCM workspace_next() { return workspace_navigation("workspace-next", Config::WorkspaceNavigation::next); }
+    static SCM workspace_previous() { return workspace_navigation("workspace-previous", Config::WorkspaceNavigation::previous); }
+    static SCM workspace_back_and_forth() { return workspace_navigation("workspace-back-and-forth", Config::WorkspaceNavigation::back_and_forth); }
+
     static SCM split_action(SCM value) {
         require_action("split");
         Split direction;
@@ -377,6 +392,9 @@ struct ConfigRuntime {
         scm_c_define_gsubr("bind-workspace", 2, 0, 0, reinterpret_cast<scm_t_subr>(bind_workspace));
         scm_c_define_gsubr("bind-move-workspace", 2, 0, 0, reinterpret_cast<scm_t_subr>(bind_move));
         scm_c_define_gsubr("workspace", 1, 0, 0, reinterpret_cast<scm_t_subr>(workspace_action));
+        scm_c_define_gsubr("workspace-next", 0, 0, 0, reinterpret_cast<scm_t_subr>(workspace_next));
+        scm_c_define_gsubr("workspace-previous", 0, 0, 0, reinterpret_cast<scm_t_subr>(workspace_previous));
+        scm_c_define_gsubr("workspace-back-and-forth", 0, 0, 0, reinterpret_cast<scm_t_subr>(workspace_back_and_forth));
         scm_c_define_gsubr("move-to-workspace", 1, 0, 0, reinterpret_cast<scm_t_subr>(move_action));
         scm_c_define_gsubr("split", 1, 0, 0, reinterpret_cast<scm_t_subr>(split_action));
         scm_c_define_gsubr("move", 1, 0, 0, reinterpret_cast<scm_t_subr>(move_direction_action));
@@ -479,9 +497,10 @@ thread_local ConfigRuntime *ConfigRuntime::active = nullptr;
 
 Config::Config(void *host, Action workspace, Action move_workspace, SplitAction split,
                FocusAction focus, CloseAction close, SpawnAction spawn, FocusAction move, ResizeAction resize,
-               WindowActionCallback window_action)
+               WindowActionCallback window_action, WorkspaceNavigationCallback workspace_navigation)
     : host_(host), workspace_(workspace), move_workspace_(move_workspace), split_(split),
-      focus_(focus), move_(move), resize_(resize), close_(close), spawn_(spawn), window_action_(window_action) {
+      focus_(focus), move_(move), resize_(resize), close_(close), spawn_(spawn), window_action_(window_action),
+      workspace_navigation_(workspace_navigation) {
     scm_init_guile();
     workspace_bindings_.fill(SCM_BOOL_F);
     move_bindings_.fill(SCM_BOOL_F);

@@ -39,11 +39,20 @@ Dir.mktmpdir('mortar-ipc') do |dir|
     raise 'output subscription failed' unless read_frame.call == 'ok subscribed'
     send_frame.call('subscribe output')
     raise 'repeat output subscription failed' unless read_frame.call == 'ok subscribed'
+    send_frame.call('eval (workspace-back-and-forth)')
+    raise 'initial back-and-forth changed workspace' unless read_frame.call.start_with?('ok ')
     send_frame.call('eval (workspace 2)')
     frames = 3.times.map { read_frame.call }
     raise "workspace or output event missing: #{frames.inspect}" unless frames.include?('event workspace 1') && frames.include?('event output unspecified') && frames.any? { |f| f.start_with?('ok ') }
     send_frame.call('eval (workspace 2)')
     raise 'unexpected event for unchanged workspace' unless read_frame.call.start_with?('ok ')
+    ['workspace-back-and-forth', 'workspace-back-and-forth'].zip([0, 1]).each do |action, workspace|
+      send_frame.call("eval (#{action})")
+      frames = 3.times.map { read_frame.call }
+      raise "navigation failed: #{frames.inspect}" unless frames.include?("event workspace #{workspace}") && frames.include?('event output unspecified') && frames.any? { |f| f.start_with?('ok ') }
+    end
+    send_frame.call('eval (workspace-next)')
+    raise 'empty workspace should not be visited' unless read_frame.call.start_with?('ok ')
     send_frame.call('subscribe window')
     raise 'window subscription failed' unless read_frame.call == 'ok subscribed'
     client_reader, client_output = IO.pipe

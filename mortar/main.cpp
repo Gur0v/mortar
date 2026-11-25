@@ -133,6 +133,7 @@ int main() {
     }
     struct Actions {
         std::function<void(unsigned)> workspace;
+        std::function<void(mortar::Config::WorkspaceNavigation)> workspace_navigation;
         std::function<void(unsigned)> move;
         std::function<void(mortar::Split)> split;
         std::function<void(mortar::Direction)> focus;
@@ -160,6 +161,9 @@ int main() {
             case mortar::Config::WindowAction::scratch_show: actions.scratch_toggle(); break;
             case mortar::Config::WindowAction::fullscreen: actions.toggle_fullscreen(); break;
             }
+        },
+        [](void *host, mortar::Config::WorkspaceNavigation action) {
+            static_cast<Actions *>(host)->workspace_navigation(action);
         });
     if (!config.load("/dev/null")) {
         std::fputs("mortar: cannot initialize default configuration\n", stderr);
@@ -744,6 +748,16 @@ int main() {
             set_desktop(window, to);
             xcb_flush(c);
         }
+    };
+    actions.workspace_navigation = [&](mortar::Config::WorkspaceNavigation action) {
+        using Navigation = mortar::Config::WorkspaceNavigation;
+        if (action == Navigation::back_and_forth) {
+            if (workspace_state.previous) switch_workspace(*workspace_state.previous);
+            return;
+        }
+        std::array<bool, 10> visible_workspaces{};
+        for (const auto &output : outputs.outputs()) visible_workspaces[output.workspace] = true;
+        switch_workspace(workspace_state.adjacent(action == Navigation::next, visible_workspaces));
     };
     actions.workspace = [&](unsigned digit) { switch_workspace((digit + 9) % 10); };
     actions.move = [&](unsigned digit) { move_window(workspaces[current].focused, (digit + 9) % 10); };

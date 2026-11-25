@@ -47,8 +47,17 @@ int Workspaces::owner(std::uint32_t window) const {
     return -1;
 }
 
+std::uint32_t Workspaces::adjacent(bool forward, const std::array<bool, 10> &visible) const {
+    for (std::size_t step = 1; step < workspaces.size(); ++step) {
+        auto index = (current + (forward ? step : workspaces.size() - step)) % workspaces.size();
+        if (visible[index] || !workspaces[index].windows.empty()) return static_cast<std::uint32_t>(index);
+    }
+    return current;
+}
+
 bool Workspaces::switch_to(std::uint32_t destination) {
     if (destination >= workspaces.size() || destination == current) return false;
+    previous = current;
     current = destination;
     return true;
 }

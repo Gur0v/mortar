@@ -49,6 +49,8 @@ public:
         bool operator==(const Bar &) const = default;
     };
 
+    enum class WorkspaceNavigation { next, previous, back_and_forth };
+    using WorkspaceNavigationCallback = void (*)(void *, WorkspaceNavigation);
     enum class WindowAction { floating, scratch_move, scratch_show, fullscreen };
     using WindowActionCallback = void (*)(void *, WindowAction);
     using SplitAction = void (*)(void *, Split);
@@ -59,7 +61,8 @@ public:
 
     Config(void *host, Action workspace, Action move_workspace, SplitAction split = nullptr,
            FocusAction focus = nullptr, CloseAction close = nullptr, SpawnAction spawn = nullptr,
-           FocusAction move = nullptr, ResizeAction resize = nullptr, WindowActionCallback window_action = nullptr);
+           FocusAction move = nullptr, ResizeAction resize = nullptr, WindowActionCallback window_action = nullptr,
+           WorkspaceNavigationCallback workspace_navigation = nullptr);
     ~Config();
     Config(const Config &) = delete;
     Config &operator=(const Config &) = delete;
@@ -99,6 +102,7 @@ private:
     CloseAction close_;
     SpawnAction spawn_;
     WindowActionCallback window_action_;
+    WorkspaceNavigationCallback workspace_navigation_;
     std::array<SCM, 10> workspace_bindings_;
     std::array<SCM, 10> move_bindings_;
     std::vector<Binding> bindings_;

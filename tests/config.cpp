@@ -21,6 +21,7 @@ struct Host {
     mortar::Direction direction = mortar::Direction::left;
     bool closed = false;
     std::vector<mortar::Config::WindowAction> window_actions;
+    std::vector<mortar::Config::WorkspaceNavigation> navigation;
     std::vector<std::string> arguments;
 };
 
@@ -53,6 +54,12 @@ void window_action(void *data, mortar::Config::WindowAction action) {
     host.window_actions.push_back(action);
 }
 
+void navigate(void *data, mortar::Config::WorkspaceNavigation action) {
+    auto &host = *static_cast<Host *>(data);
+    if (host.fail) throw std::runtime_error("failure");
+    host.navigation.push_back(action);
+}
+
 int main() {
     char path[] = "/tmp/mortar-config-XXXXXX";
     int fd = mkstemp(path);
@@ -60,7 +67,7 @@ int main() {
     close(fd);
     auto write = [&](const char *text) { std::ofstream file(path); file << text; check(file.good()); };
     Host host;
-    mortar::Config config(&host, workspace, move, split, focus, close_action, spawn, nullptr, nullptr, window_action);
+    mortar::Config config(&host, workspace, move, split, focus, close_action, spawn, nullptr, nullptr, window_action, navigate);
     host.config = &config;
     host.path = path;
     using Result = mortar::Config::Result;
@@ -260,6 +267,16 @@ int main() {
         check(!config.load(path));
         check(config.evaluate(action).success);
     }
+    for (const char *action : {"(workspace-next)", "(workspace-previous)", "(workspace-back-and-forth)"}) {
+        write(action);
+        check(!config.load(path));
+        check(config.evaluate(action).success);
+    }
+    using Navigation = mortar::Config::WorkspaceNavigation;
+    check(host.navigation == std::vector<Navigation>({Navigation::next, Navigation::previous, Navigation::back_and_forth}));
+    host.fail = true;
+    check(!config.evaluate("(workspace-next)").success);
+    host.fail = false;
     write("#t");
     check(config.load(path) && config.border().width == 0);
     std::remove(path);

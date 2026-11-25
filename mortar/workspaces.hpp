@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace mortar {
@@ -23,7 +24,9 @@ struct Workspace {
 struct Workspaces {
     std::array<Workspace, 10> workspaces;
     std::uint32_t current = 0;
+    std::optional<std::uint32_t> previous;
 
+    std::uint32_t adjacent(bool forward, const std::array<bool, 10> &visible) const;
     int owner(std::uint32_t window) const;
     bool switch_to(std::uint32_t destination);
     bool move(std::uint32_t window, std::uint32_t destination);

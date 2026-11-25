@@ -33,6 +33,21 @@ int main() {
     check(state.switch_to(0));
     check(first.focused == 2 && second.focused == 1);
 
+    mortar::Workspaces navigation;
+    std::array<bool, 10> visible{};
+    visible[0] = true;
+    check(!navigation.previous && navigation.adjacent(true, visible) == 0);
+    check(!navigation.switch_to(0) && !navigation.previous);
+    visible[4] = true;
+    navigation.workspaces[7].windows.push_back(99);
+    check(navigation.adjacent(true, visible) == 4 && navigation.adjacent(false, visible) == 7);
+    check(navigation.switch_to(4) && navigation.previous == 0);
+    check(navigation.adjacent(true, visible) == 7 && navigation.adjacent(false, visible) == 0);
+    check(navigation.switch_to(7) && navigation.previous == 4);
+    check(navigation.adjacent(true, visible) == 0 && navigation.adjacent(false, visible) == 4);
+    check(navigation.switch_to(*navigation.previous) && navigation.previous == 7);
+    check(!navigation.switch_to(10) && navigation.previous == 7);
+
     mortar::Workspaces nested;
     auto &source = nested.workspaces[0];
     auto &target = nested.workspaces[1];

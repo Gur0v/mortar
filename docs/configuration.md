@@ -22,6 +22,8 @@ Here Alt+1 switches to workspace 2, and Alt+Shift+0 moves the focused window to 
 - `(bind-workspace digit procedure)` replaces the switch callback for that digit.
 - `(bind-move-workspace digit procedure)` replaces the move callback for that digit.
 - `(workspace digit)` switches to the specified workspace.
+- `(workspace-next)` and `(workspace-previous)` switch among occupied or visible workspaces in numeric order, wrapping at either end.
+- `(workspace-back-and-forth)` switches to the previously focused workspace, including one that became empty. It does nothing until a workspace change occurs. These actions have no default shortcuts; use `bind-key` to assign them.
 - `(move-to-workspace digit)` moves the focused window to the specified workspace.
 
 Bindings can only be registered while loading configuration. Workspace actions can only be called from a callback, not during configuration loading. Repeated registrations for the same shortcut replace the previous callback.
