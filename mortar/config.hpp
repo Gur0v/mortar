@@ -37,6 +37,8 @@ public:
         std::uint32_t unfocused = 0x333333;
     };
 
+    enum class WindowAction { floating, scratch_move, scratch_show, fullscreen };
+    using WindowActionCallback = void (*)(void *, WindowAction);
     using SplitAction = void (*)(void *, Split);
     using FocusAction = void (*)(void *, Direction);
     using ResizeAction = void (*)(void *, Direction, int);
@@ -45,7 +47,7 @@ public:
 
     Config(void *host, Action workspace, Action move_workspace, SplitAction split = nullptr,
            FocusAction focus = nullptr, CloseAction close = nullptr, SpawnAction spawn = nullptr,
-           FocusAction move = nullptr, ResizeAction resize = nullptr);
+           FocusAction move = nullptr, ResizeAction resize = nullptr, WindowActionCallback window_action = nullptr);
     ~Config();
     Config(const Config &) = delete;
     Config &operator=(const Config &) = delete;
@@ -82,6 +84,7 @@ private:
     ResizeAction resize_;
     CloseAction close_;
     SpawnAction spawn_;
+    WindowActionCallback window_action_;
     std::array<SCM, 10> workspace_bindings_;
     std::array<SCM, 10> move_bindings_;
     std::vector<Binding> bindings_;

@@ -199,6 +199,22 @@ struct ConfigRuntime {
         return SCM_UNSPECIFIED;
     }
 
+    static SCM window_action(const char *name, Config::WindowAction action) {
+        require_action(name);
+        bool failed = false;
+        try {
+            if (active->config->window_action_) active->config->window_action_(active->config->host_, action);
+            else failed = true;
+        } catch (...) { failed = true; }
+        if (failed) scm_misc_error(name, "native action failed", SCM_EOL);
+        return SCM_UNSPECIFIED;
+    }
+
+    static SCM floating_toggle() { return window_action("floating-toggle", Config::WindowAction::floating); }
+    static SCM scratchpad_move() { return window_action("scratchpad-move", Config::WindowAction::scratch_move); }
+    static SCM scratchpad_show() { return window_action("scratchpad-show", Config::WindowAction::scratch_show); }
+    static SCM fullscreen_toggle() { return window_action("fullscreen-toggle", Config::WindowAction::fullscreen); }
+
     struct SpawnArguments {
         SCM values;
         std::vector<std::string> arguments;
@@ -311,6 +327,10 @@ struct ConfigRuntime {
         scm_c_define_gsubr("resize", 2, 0, 0, reinterpret_cast<scm_t_subr>(resize_action));
         scm_c_define_gsubr("focus", 1, 0, 0, reinterpret_cast<scm_t_subr>(focus_action));
         scm_c_define_gsubr("close", 0, 0, 0, reinterpret_cast<scm_t_subr>(close_action));
+        scm_c_define_gsubr("floating-toggle", 0, 0, 0, reinterpret_cast<scm_t_subr>(floating_toggle));
+        scm_c_define_gsubr("scratchpad-move", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_move));
+        scm_c_define_gsubr("scratchpad-show", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_show));
+        scm_c_define_gsubr("fullscreen-toggle", 0, 0, 0, reinterpret_cast<scm_t_subr>(fullscreen_toggle));
         scm_c_define_gsubr("bar-status", 0, 0, 1, reinterpret_cast<scm_t_subr>(bar_status_action));
         scm_c_define_gsubr("window-rule", 3, 0, 0, reinterpret_cast<scm_t_subr>(window_rule));
         scm_c_define_gsubr("border", 3, 0, 0, reinterpret_cast<scm_t_subr>(set_border));
@@ -397,9 +417,10 @@ struct ConfigRuntime {
 thread_local ConfigRuntime *ConfigRuntime::active = nullptr;
 
 Config::Config(void *host, Action workspace, Action move_workspace, SplitAction split,
-               FocusAction focus, CloseAction close, SpawnAction spawn, FocusAction move, ResizeAction resize)
+               FocusAction focus, CloseAction close, SpawnAction spawn, FocusAction move, ResizeAction resize,
+               WindowActionCallback window_action)
     : host_(host), workspace_(workspace), move_workspace_(move_workspace), split_(split),
-      focus_(focus), move_(move), resize_(resize), close_(close), spawn_(spawn) {
+      focus_(focus), move_(move), resize_(resize), close_(close), spawn_(spawn), window_action_(window_action) {
     scm_init_guile();
     workspace_bindings_.fill(SCM_BOOL_F);
     move_bindings_.fill(SCM_BOOL_F);

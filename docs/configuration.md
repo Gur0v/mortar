@@ -34,6 +34,8 @@ If loading fails, Mortar reports the error and starts with built-in defaults. If
 
 Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(focus 'left)`, `(focus 'right)`, `(focus 'up)`, `(focus 'down)`, and `(close)` for the focused window. `(spawn executable argument ...)` launches an executable with separate string arguments, without a shell. Invoke a shell explicitly if needed. These actions, like workspace actions, are only available in callbacks, not while loading configuration.
 
+`(floating-toggle)` and `(fullscreen-toggle)` toggle the focused window. `(scratchpad-move)` moves the focused window to the scratchpad; `(scratchpad-show)` shows, focuses, or hides a scratchpad window. These actions also work in IPC evaluations. They are unavailable while loading configuration.
+
 ## Window rules
 
 `(window-rule "Class" workspace floating)` matches the class component of `WM_CLASS` exactly. `workspace` is a desktop index from 0 to 9 or `#f` to leave it unchanged. `floating` is `'floating`, `'tiled`, or `#f` to leave the classification unchanged. Later matching rules override fields set by earlier rules. Rules apply when a window is managed and are replaced on successful configuration reload; existing windows are not reassigned automatically.

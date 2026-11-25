@@ -20,6 +20,7 @@ struct Host {
     mortar::Split split = mortar::Split::horizontal;
     mortar::Direction direction = mortar::Direction::left;
     bool closed = false;
+    std::vector<mortar::Config::WindowAction> window_actions;
     std::vector<std::string> arguments;
 };
 
@@ -46,6 +47,12 @@ void spawn(void *data, const std::vector<std::string> &args) {
     host.arguments = args;
 }
 
+void window_action(void *data, mortar::Config::WindowAction action) {
+    auto &host = *static_cast<Host *>(data);
+    if (host.fail) throw std::runtime_error("failure");
+    host.window_actions.push_back(action);
+}
+
 int main() {
     char path[] = "/tmp/mortar-config-XXXXXX";
     int fd = mkstemp(path);
@@ -53,7 +60,7 @@ int main() {
     close(fd);
     auto write = [&](const char *text) { std::ofstream file(path); file << text; check(file.good()); };
     Host host;
-    mortar::Config config(&host, workspace, move, split, focus, close_action, spawn);
+    mortar::Config config(&host, workspace, move, split, focus, close_action, spawn, nullptr, nullptr, window_action);
     host.config = &config;
     host.path = path;
     using Result = mortar::Config::Result;
@@ -219,6 +226,19 @@ int main() {
         check(!config.load(path) && config.border().width == 65535);
     }
     check(!config.evaluate("(border 1 0 0)").success);
+    write("(bind-key 1 0 (lambda () (floating-toggle) (scratchpad-move) (scratchpad-show) (fullscreen-toggle)))");
+    check(config.load(path) && config.run_binding(0) == Result::success);
+    check(host.window_actions == std::vector<mortar::Config::WindowAction>({
+        mortar::Config::WindowAction::floating, mortar::Config::WindowAction::scratch_move,
+        mortar::Config::WindowAction::scratch_show, mortar::Config::WindowAction::fullscreen}));
+    host.fail = true;
+    check(config.run_binding(0) == Result::failure);
+    host.fail = false;
+    for (const char *action : {"(floating-toggle)", "(scratchpad-move)", "(scratchpad-show)", "(fullscreen-toggle)"}) {
+        write(action);
+        check(!config.load(path));
+        check(config.evaluate(action).success);
+    }
     write("#t");
     check(config.load(path) && config.border().width == 0);
     std::remove(path);

@@ -117,6 +117,7 @@ int main() {
         std::function<void(mortar::Direction)> move_direction;
         std::function<void(mortar::Direction, int)> resize;
         std::function<void()> close;
+        std::function<void()> scratch_send, scratch_toggle, toggle_fullscreen, toggle_floating;
         std::function<void(const std::vector<std::string> &)> spawn;
         xcb_timestamp_t time = XCB_CURRENT_TIME;
     } actions;
@@ -128,7 +129,16 @@ int main() {
         [](void *host) { static_cast<Actions *>(host)->close(); },
         [](void *host, const std::vector<std::string> &args) { static_cast<Actions *>(host)->spawn(args); },
         [](void *host, mortar::Direction value) { static_cast<Actions *>(host)->move_direction(value); },
-        [](void *host, mortar::Direction value, int pixels) { static_cast<Actions *>(host)->resize(value, pixels); });
+        [](void *host, mortar::Direction value, int pixels) { static_cast<Actions *>(host)->resize(value, pixels); },
+        [](void *host, mortar::Config::WindowAction action) {
+            auto &actions = *static_cast<Actions *>(host);
+            switch (action) {
+            case mortar::Config::WindowAction::floating: actions.toggle_floating(); break;
+            case mortar::Config::WindowAction::scratch_move: actions.scratch_send(); break;
+            case mortar::Config::WindowAction::scratch_show: actions.scratch_toggle(); break;
+            case mortar::Config::WindowAction::fullscreen: actions.toggle_fullscreen(); break;
+            }
+        });
     if (!config.load("/dev/null")) {
         std::fputs("mortar: cannot initialize default configuration\n", stderr);
         return EXIT_FAILURE;
@@ -1034,6 +1044,114 @@ int main() {
         return false;
     };
     start_bar();
+    actions.scratch_send = [&] {
+        auto &ws = workspaces[current];
+        auto window = ws.focused;
+        if (window && !scratchpad.get(window)) {
+            set_fullscreen(window, false);
+            if (is_fullscreen(window) == fullscreen.end()) {
+                std::optional<mortar::Rect> saved;
+                if (!ws.layout.contains(window)) {
+                    std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                        xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
+                    if (!geometry) throw std::runtime_error("cannot query scratchpad geometry");
+                    saved = mortar::Rect{geometry->x, geometry->y, geometry->width, geometry->height};
+                }
+                if (scratchpad.add(window, current, saved)) {
+                    scratch_windows.push_back(window);
+                    if (!ws.remove_floating(window)) {
+                        ws.layout.remove(window);
+                        std::erase(ws.windows, window);
+                    }
+                    if (ws.focused == window) ws.focused = ws.windows.empty() ? XCB_NONE : ws.windows.back();
+                    unmap(window);
+                    tile();
+                    restore_focus();
+                }
+            }
+        } else if (window && scratchpad.get(window)) {
+            set_fullscreen(window, false);
+            auto result = is_fullscreen(window) == fullscreen.end() ? scratchpad.toggle(current, window, window) : std::nullopt;
+            if (result && result->action == mortar::ScratchpadAction::hide) {
+                ws.remove_floating(window);
+                unmap(window);
+                tile();
+                restore_focus();
+            }
+        }
+    };
+    actions.scratch_toggle = [&] {
+        std::unique_ptr<xcb_get_input_focus_reply_t, decltype(&std::free)> actual_focus{
+            xcb_get_input_focus_reply(c, xcb_get_input_focus(c), nullptr), &std::free};
+        auto active = std::find_if(fullscreen.begin(), fullscreen.end(), [&](const auto &entry) {
+            return owner(entry.first) == static_cast<int>(current);
+        });
+        auto result = active == fullscreen.end() ? scratchpad.toggle(current, actual_focus ? actual_focus->focus : workspaces[current].focused) : std::nullopt;
+        if (result) {
+            auto window = result->entry.window;
+            if (result->action == mortar::ScratchpadAction::hide) {
+                std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                    xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
+                if (geometry) scratchpad.update_geometry(window, {geometry->x, geometry->y, geometry->width, geometry->height});
+                auto &ws = workspaces[current];
+                ws.remove_floating(window);
+                unmap(window);
+                tile();
+                restore_focus();
+            } else {
+                if (result->action == mortar::ScratchpadAction::move) {
+                    int from = owner(window);
+                    if (from >= 0) workspaces[from].remove_floating(window);
+                }
+                if (result->action != mortar::ScratchpadAction::focus) {
+                    workspaces[current].add_floating(window);
+                    set_desktop(window, current);
+                    auto area = bounds();
+                    auto rect = result->entry.geometry.value_or(mortar::Rect{area.x + area.width / 4, area.y + area.height / 4, std::max(1, area.width / 2), std::max(1, area.height / 2)});
+                    const uint32_t values[] = {static_cast<uint32_t>(rect.x), static_cast<uint32_t>(rect.y), static_cast<uint32_t>(rect.width), static_cast<uint32_t>(rect.height), 0};
+                    xcb_configure_window(c, window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y | XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT | XCB_CONFIG_WINDOW_BORDER_WIDTH, values);
+                    xcb_map_window(c, window);
+                }
+                std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
+                workspaces[current].focused = window;
+                pending_focus.push_back(window);
+                focus_sequence = static_cast<uint16_t>(xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, focus_time, XCB_ATOM_WINDOW, 32, 0, nullptr).sequence);
+                xcb_flush(c);
+            }
+        }
+    };
+    actions.toggle_fullscreen = [&] {
+        auto window = workspaces[current].focused;
+        set_fullscreen(window, is_fullscreen(window) == fullscreen.end());
+    };
+    actions.toggle_floating = [&] {
+        if (is_fullscreen(workspaces[current].focused) != fullscreen.end()) return;
+        auto &ws = workspaces[current];
+        auto window = ws.focused;
+        if (window && !ws.layout.contains(window)) {
+            std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
+            if (geometry) {
+                std::erase_if(floating_geometry, [&](const auto &entry) { return entry.first == window; });
+                floating_geometry.push_back({window, {static_cast<uint32_t>(geometry->x),
+                    static_cast<uint32_t>(geometry->y), geometry->width, geometry->height, geometry->border_width}});
+            } else throw std::runtime_error("cannot query floating geometry");
+        }
+        if (window && ws.toggle_floating(window)) {
+            if (!ws.layout.contains(window)) {
+                auto saved = std::find_if(floating_geometry.begin(), floating_geometry.end(),
+                    [&](const auto &entry) { return entry.first == window; });
+                auto area = bounds();
+                const std::array<uint32_t, 5> centered{static_cast<uint32_t>(area.x + area.width / 4), static_cast<uint32_t>(area.y + area.height / 4),
+                    static_cast<uint32_t>(std::max(1, area.width / 2)), static_cast<uint32_t>(std::max(1, area.height / 2)), 0};
+                xcb_configure_window(c, window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+                    XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT | XCB_CONFIG_WINDOW_BORDER_WIDTH,
+                    saved != floating_geometry.end() ? saved->second.data() : centered.data());
+            }
+            tile();
+        }
+    };
+
     while (!stopping) {
         if (bar > 0) {
             bool reaped = false;
@@ -1128,107 +1246,13 @@ int main() {
                 } else if (*id == close_focused) {
                     actions.close();
                 } else if (*id == scratch_send) {
-                    auto &ws = workspaces[current];
-                    auto window = ws.focused;
-                    if (window && !scratchpad.get(window)) {
-                        set_fullscreen(window, false);
-                        if (is_fullscreen(window) == fullscreen.end()) {
-                            std::optional<mortar::Rect> saved;
-                            if (!ws.layout.contains(window)) {
-                                std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
-                                    xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
-                                if (!geometry) throw std::runtime_error("cannot query scratchpad geometry");
-                                saved = mortar::Rect{geometry->x, geometry->y, geometry->width, geometry->height};
-                            }
-                            if (scratchpad.add(window, current, saved)) {
-                                scratch_windows.push_back(window);
-                                if (!ws.remove_floating(window)) {
-                                    ws.layout.remove(window);
-                                    std::erase(ws.windows, window);
-                                }
-                                if (ws.focused == window) ws.focused = ws.windows.empty() ? XCB_NONE : ws.windows.back();
-                                unmap(window);
-                                tile();
-                                restore_focus();
-                            }
-                        }
-                    } else if (window && scratchpad.get(window)) {
-                        set_fullscreen(window, false);
-                        auto result = is_fullscreen(window) == fullscreen.end() ? scratchpad.toggle(current, window, window) : std::nullopt;
-                        if (result && result->action == mortar::ScratchpadAction::hide) {
-                            ws.remove_floating(window);
-                            unmap(window);
-                            tile();
-                            restore_focus();
-                        }
-                    }
+                    actions.scratch_send();
                 } else if (*id == scratch_toggle) {
-                    std::unique_ptr<xcb_get_input_focus_reply_t, decltype(&std::free)> actual_focus{
-                        xcb_get_input_focus_reply(c, xcb_get_input_focus(c), nullptr), &std::free};
-                    auto active = std::find_if(fullscreen.begin(), fullscreen.end(), [&](const auto &entry) {
-                        return owner(entry.first) == static_cast<int>(current);
-                    });
-                    auto result = active == fullscreen.end() ? scratchpad.toggle(current, actual_focus ? actual_focus->focus : workspaces[current].focused) : std::nullopt;
-                    if (result) {
-                        auto window = result->entry.window;
-                        if (result->action == mortar::ScratchpadAction::hide) {
-                            std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
-                                xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
-                            if (geometry) scratchpad.update_geometry(window, {geometry->x, geometry->y, geometry->width, geometry->height});
-                            auto &ws = workspaces[current];
-                            ws.remove_floating(window);
-                            unmap(window);
-                            tile();
-                            restore_focus();
-                        } else {
-                            if (result->action == mortar::ScratchpadAction::move) {
-                                int from = owner(window);
-                                if (from >= 0) workspaces[from].remove_floating(window);
-                            }
-                            if (result->action != mortar::ScratchpadAction::focus) {
-                                workspaces[current].add_floating(window);
-                                set_desktop(window, current);
-                                auto area = bounds();
-                                auto rect = result->entry.geometry.value_or(mortar::Rect{area.x + area.width / 4, area.y + area.height / 4, std::max(1, area.width / 2), std::max(1, area.height / 2)});
-                                const uint32_t values[] = {static_cast<uint32_t>(rect.x), static_cast<uint32_t>(rect.y), static_cast<uint32_t>(rect.width), static_cast<uint32_t>(rect.height), 0};
-                                xcb_configure_window(c, window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y | XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT | XCB_CONFIG_WINDOW_BORDER_WIDTH, values);
-                                xcb_map_window(c, window);
-                            }
-                            std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
-                            workspaces[current].focused = window;
-                            pending_focus.push_back(window);
-                            focus_sequence = static_cast<uint16_t>(xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, focus_time, XCB_ATOM_WINDOW, 32, 0, nullptr).sequence);
-                            xcb_flush(c);
-                        }
-                    }
+                    actions.scratch_toggle();
                 } else if (*id == toggle_fullscreen) {
-                    auto window = workspaces[current].focused;
-                    set_fullscreen(window, is_fullscreen(window) == fullscreen.end());
-                } else if (*id == toggle_floating && is_fullscreen(workspaces[current].focused) == fullscreen.end()) {
-                    auto &ws = workspaces[current];
-                    auto window = ws.focused;
-                    if (window && !ws.layout.contains(window)) {
-                        std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
-                            xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
-                        if (geometry) {
-                            std::erase_if(floating_geometry, [&](const auto &entry) { return entry.first == window; });
-                            floating_geometry.push_back({window, {static_cast<uint32_t>(geometry->x),
-                                static_cast<uint32_t>(geometry->y), geometry->width, geometry->height, geometry->border_width}});
-                        } else throw std::runtime_error("cannot query floating geometry");
-                    }
-                    if (window && ws.toggle_floating(window)) {
-                        if (!ws.layout.contains(window)) {
-                            auto saved = std::find_if(floating_geometry.begin(), floating_geometry.end(),
-                                [&](const auto &entry) { return entry.first == window; });
-                            auto area = bounds();
-                            const std::array<uint32_t, 5> centered{static_cast<uint32_t>(area.x + area.width / 4), static_cast<uint32_t>(area.y + area.height / 4),
-                                static_cast<uint32_t>(std::max(1, area.width / 2)), static_cast<uint32_t>(std::max(1, area.height / 2)), 0};
-                            xcb_configure_window(c, window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
-                                XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT | XCB_CONFIG_WINDOW_BORDER_WIDTH,
-                                saved != floating_geometry.end() ? saved->second.data() : centered.data());
-                        }
-                        tile();
-                    }
+                    actions.toggle_fullscreen();
+                } else if (*id == toggle_floating) {
+                    actions.toggle_floating();
                 } else if (*id == terminal || *id == launcher) {
                     actions.spawn({*id == terminal ? "x-terminal-emulator" : "dmenu_run"});
                 } else if (config.run_binding(*id) != mortar::Config::Result::success) {
