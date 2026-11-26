@@ -138,6 +138,16 @@ int main() {
     check(nested.geometry({0, 0, 100, 100}) ==
           (std::vector<Placement>{{42, {0, 0, 100, 60}}, {43, {0, 60, 100, 20}},
                                   {41, {0, 80, 100, 20}}}));
+    for (auto direction : {Direction::left, Direction::right}) {
+        auto outward = Layout::split(Split::horizontal, {
+            Layout::split(Split::vertical, {Layout::leaf(51), Layout::leaf(52)})});
+        check(outward.move(51, direction));
+        auto placements = outward.geometry({0, 0, 100, 100});
+        if (direction == Direction::left)
+            check(placements == (std::vector<Placement>{{51, {0, 0, 50, 100}}, {52, {50, 0, 50, 100}}}));
+        else
+            check(placements == (std::vector<Placement>{{52, {0, 0, 50, 100}}, {51, {50, 0, 50, 100}}}));
+    }
     auto equal = Layout::split(Split::horizontal, {Layout::leaf(61), Layout::leaf(62)});
     check(equal.insert_after(61, Layout::leaf(63)));
     check(equal.geometry({0, 0, 800, 20}) ==

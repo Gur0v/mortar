@@ -25,6 +25,8 @@ struct ScratchpadResult {
 
 class Scratchpad {
 public:
+    std::vector<ScratchpadEntry> snapshot() const;
+    static Scratchpad restore(const std::vector<ScratchpadEntry> &snapshot);
     bool add(std::uint32_t window, std::uint32_t workspace, std::optional<Rect> geometry = std::nullopt);
     bool remove(std::uint32_t window);
     bool update_geometry(std::uint32_t window, Rect geometry);

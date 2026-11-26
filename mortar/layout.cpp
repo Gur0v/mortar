@@ -231,9 +231,15 @@ bool Layout::move(std::uint32_t window, Direction direction) {
             auto &child = node.children_[i];
             if (!child.contains(window)) continue;
             if (self(self, child)) return true;
-            if (node.direction_ != axis || (previous ? i == 0 : i + 1 == node.children_.size()))
-                return false;
-            const auto other = previous ? i - 1 : i + 1;
+            if (node.direction_ != axis) return false;
+            const bool edge = previous ? i == 0 : i + 1 == node.children_.size();
+            if (edge && child.leaf_) return false;
+            const auto other = edge ? i : (previous ? i - 1 : i + 1);
+            if (edge) {
+                std::vector<std::uint32_t> windows;
+                child.identities(windows);
+                if (windows.size() <= 1) return false;
+            }
             if (child.leaf_) {
                 std::swap(node.children_[i], node.children_[other]);
                 std::swap(node.weights_[i], node.weights_[other]);

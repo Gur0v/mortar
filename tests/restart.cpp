@@ -48,4 +48,47 @@ int main() {
         bad = LayoutSnapshot{false, 0, Split::horizontal, {bad}, {0}, {1}, false};
     rejects([&] { encode_layout_snapshot(bad); });
     rejects([&] { decode_layout_snapshot(std::vector<std::uint8_t>(restart_max_bytes + 1)); });
+
+    Workspaces workspaces;
+    workspaces.workspaces[0].layout = Layout::split(Split::vertical, {Layout::leaf(42)});
+    workspaces.workspaces[0].windows = {42, 7};
+    workspaces.workspaces[0].floating = {7};
+    workspaces.workspaces[0].focused = 7;
+    workspaces.current = 1;
+    workspaces.previous = 0;
+    RestartSnapshot state{workspaces.snapshot(), {{7, 2, Rect{-10, 20, 300, 200}, 0}, {9, 3, std::nullopt, std::nullopt}}};
+    auto encoded = encode_restart_snapshot(state);
+    assert(decode_restart_snapshot(encoded) == state);
+    assert(Workspaces::restore(state.workspaces).snapshot() == state.workspaces);
+    assert(Scratchpad::restore(state.scratchpad).snapshot() == state.scratchpad);
+    for (std::size_t i = 0; i < encoded.size(); ++i)
+        rejects([&] { decode_restart_snapshot(std::span(encoded).first(i)); });
+    auto corrupt = encoded;
+    corrupt[4] = 1;
+    rejects([&] { decode_restart_snapshot(corrupt); });
+    corrupt = encoded;
+    corrupt[8] = 10;
+    rejects([&] { decode_restart_snapshot(corrupt); });
+    auto trailing = encoded;
+    trailing.push_back(0);
+    rejects([&] { decode_restart_snapshot(trailing); });
+    auto invalid_state = state;
+    invalid_state.workspaces.current = 10;
+    rejects([&] { encode_restart_snapshot(invalid_state); });
+    invalid_state = state;
+    invalid_state.workspaces.workspaces[0].windows.push_back(42);
+    rejects([&] { encode_restart_snapshot(invalid_state); });
+    invalid_state = state;
+    invalid_state.workspaces.workspaces[0].focused = 9;
+    rejects([&] { encode_restart_snapshot(invalid_state); });
+    invalid_state = state;
+    invalid_state.scratchpad[0].visible_workspace = 1;
+    rejects([&] { encode_restart_snapshot(invalid_state); });
+    invalid_state = state;
+    invalid_state.scratchpad[1].window = 7;
+    rejects([&] { encode_restart_snapshot(invalid_state); });
+    invalid_state = state;
+    invalid_state.scratchpad[0].geometry->width = 0;
+    rejects([&] { encode_restart_snapshot(invalid_state); });
+    rejects([&] { Scratchpad::restore(invalid_state.scratchpad); });
 }

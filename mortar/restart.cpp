@@ -1,5 +1,6 @@
 #include "restart.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <limits>
@@ -89,6 +90,153 @@ struct Codec {
 
 static_assert(sizeof(double) == sizeof(std::uint64_t) && std::numeric_limits<double>::is_iec559);
 
+}
+
+WorkspacesSnapshot Workspaces::snapshot() const {
+    WorkspacesSnapshot result{};
+    result.current = current;
+    result.previous = previous;
+    for (std::size_t i = 0; i < workspaces.size(); ++i) {
+        const auto &workspace = workspaces[i];
+        result.workspaces[i] = {workspace.layout.snapshot(), workspace.windows, workspace.floating, workspace.focused};
+    }
+    return result;
+}
+
+Workspaces Workspaces::restore(const WorkspacesSnapshot &snapshot) {
+    validate_restart_snapshot({snapshot, {}});
+    Workspaces result;
+    result.current = snapshot.current;
+    result.previous = snapshot.previous;
+    for (std::size_t i = 0; i < result.workspaces.size(); ++i) {
+        const auto &source = snapshot.workspaces[i];
+        result.workspaces[i] = {Layout::restore(source.layout), source.windows, source.floating, source.focused};
+    }
+    return result;
+}
+
+std::vector<ScratchpadEntry> Scratchpad::snapshot() const { return entries_; }
+
+Scratchpad Scratchpad::restore(const std::vector<ScratchpadEntry> &snapshot) {
+    if (snapshot.size() > restart_max_nodes) invalid();
+    std::unordered_set<std::uint32_t> windows;
+    for (const auto &entry : snapshot)
+        if (!entry.window || !windows.insert(entry.window).second || entry.workspace >= 10 ||
+            (entry.visible_workspace && *entry.visible_workspace >= 10) ||
+            (entry.geometry && (entry.geometry->width <= 0 || entry.geometry->height <= 0))) invalid();
+    Scratchpad result;
+    result.entries_ = snapshot;
+    return result;
+}
+
+void validate_restart_snapshot(const RestartSnapshot &snapshot) {
+    const auto &state = snapshot.workspaces;
+    if (state.current >= state.workspaces.size() || (state.previous && *state.previous >= state.workspaces.size()) ||
+        snapshot.scratchpad.size() > restart_max_nodes) invalid();
+    Codec codec;
+    std::unordered_set<std::uint32_t> all;
+    for (const auto &workspace : state.workspaces) {
+        auto before = codec.windows;
+        codec.encode(workspace.layout, 0);
+        std::unordered_set<std::uint32_t> members;
+        if (workspace.windows.size() > restart_max_nodes || workspace.floating.size() > restart_max_nodes) invalid();
+        for (auto window : workspace.windows)
+            if (!window || !members.insert(window).second || !all.insert(window).second || all.size() > restart_max_nodes) invalid();
+        std::unordered_set<std::uint32_t> floating;
+        for (auto window : workspace.floating)
+            if (!members.contains(window) || !floating.insert(window).second || codec.windows.contains(window)) invalid();
+        for (auto window : codec.windows)
+            if (!before.contains(window) && (!window || !members.contains(window))) invalid();
+        if (members.size() != codec.windows.size() - before.size() + floating.size() ||
+            (workspace.focused && !members.contains(workspace.focused)) ||
+            (!workspace.focused && !members.empty())) invalid();
+    }
+    std::unordered_set<std::uint32_t> scratch;
+    for (const auto &entry : snapshot.scratchpad) {
+        if (!entry.window || !scratch.insert(entry.window).second || entry.workspace >= state.workspaces.size() ||
+            (entry.visible_workspace && *entry.visible_workspace >= state.workspaces.size()) ||
+            (entry.geometry && (entry.geometry->width <= 0 || entry.geometry->height <= 0))) invalid();
+        if (entry.visible_workspace) {
+            const auto &floating = state.workspaces[*entry.visible_workspace].floating;
+            if (std::find(floating.begin(), floating.end(), entry.window) == floating.end()) invalid();
+        } else if (all.contains(entry.window)) invalid();
+    }
+}
+
+std::vector<std::uint8_t> encode_restart_snapshot(const RestartSnapshot &snapshot) {
+    validate_restart_snapshot(snapshot);
+    Codec codec;
+    codec.put(0x3154524d, 4);
+    codec.put(2, 4);
+    codec.put(snapshot.workspaces.current, 4);
+    codec.put(snapshot.workspaces.previous ? *snapshot.workspaces.previous + 1 : 0, 4);
+    for (const auto &workspace : snapshot.workspaces.workspaces) {
+        codec.encode(workspace.layout, 0);
+        codec.put(workspace.windows.size(), 4);
+        for (auto window : workspace.windows) codec.put(window, 4);
+        codec.put(workspace.floating.size(), 4);
+        for (auto window : workspace.floating) codec.put(window, 4);
+        codec.put(workspace.focused, 4);
+    }
+    codec.put(snapshot.scratchpad.size(), 4);
+    for (const auto &entry : snapshot.scratchpad) {
+        codec.put(entry.window, 4);
+        codec.put(entry.workspace, 4);
+        codec.put(entry.visible_workspace ? *entry.visible_workspace + 1 : 0, 4);
+        codec.put(entry.geometry.has_value(), 1);
+        if (entry.geometry) {
+            codec.put(std::bit_cast<std::uint32_t>(entry.geometry->x), 4);
+            codec.put(std::bit_cast<std::uint32_t>(entry.geometry->y), 4);
+            codec.put(std::bit_cast<std::uint32_t>(entry.geometry->width), 4);
+            codec.put(std::bit_cast<std::uint32_t>(entry.geometry->height), 4);
+        }
+    }
+    return codec.output;
+}
+
+RestartSnapshot decode_restart_snapshot(std::span<const std::uint8_t> bytes) {
+    if (bytes.size() > restart_max_bytes) invalid();
+    Codec codec;
+    codec.input = bytes;
+    if (codec.get(4) != 0x3154524d || codec.get(4) != 2) invalid();
+    RestartSnapshot result{};
+    result.workspaces.current = static_cast<std::uint32_t>(codec.get(4));
+    auto previous = codec.get(4);
+    if (previous) result.workspaces.previous = static_cast<std::uint32_t>(previous - 1);
+    auto read_windows = [&] {
+        auto count = codec.get(4);
+        if (count > restart_max_nodes || count > (bytes.size() - codec.position) / 4) invalid();
+        std::vector<std::uint32_t> windows;
+        windows.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) windows.push_back(static_cast<std::uint32_t>(codec.get(4)));
+        return windows;
+    };
+    for (auto &workspace : result.workspaces.workspaces) {
+        workspace.layout = codec.decode(0);
+        workspace.windows = read_windows();
+        workspace.floating = read_windows();
+        workspace.focused = static_cast<std::uint32_t>(codec.get(4));
+    }
+    auto count = codec.get(4);
+    if (count > restart_max_nodes || count > (bytes.size() - codec.position) / 13) invalid();
+    result.scratchpad.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        ScratchpadEntry entry{};
+        entry.window = static_cast<std::uint32_t>(codec.get(4));
+        entry.workspace = static_cast<std::uint32_t>(codec.get(4));
+        auto visible = codec.get(4);
+        if (visible) entry.visible_workspace = static_cast<std::uint32_t>(visible - 1);
+        auto geometry = codec.get(1);
+        if (geometry > 1) invalid();
+        if (geometry) {
+            auto read_int = [&] { return std::bit_cast<int>(static_cast<std::uint32_t>(codec.get(4))); };
+            entry.geometry = Rect{read_int(), read_int(), read_int(), read_int()};
+        }
+        result.scratchpad.push_back(entry);
+    }
+    if (codec.position != bytes.size()) invalid();
+    validate_restart_snapshot(result);
+    return result;
 }
 
 std::vector<std::uint8_t> encode_layout_snapshot(const LayoutSnapshot &snapshot) {

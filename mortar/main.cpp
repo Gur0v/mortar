@@ -317,6 +317,8 @@ int main() {
     const auto net_names = atom("_NET_DESKTOP_NAMES", 18);
     const auto net_number = atom("_NET_NUMBER_OF_DESKTOPS", 23);
     const auto net_current = atom("_NET_CURRENT_DESKTOP", 20);
+    const auto net_close = atom("_NET_CLOSE_WINDOW", 17);
+    const auto net_workarea = atom("_NET_WORKAREA", 13);
     const auto output_workspaces = atom("_MORTAR_OUTPUT_WORKSPACES", 25);
     const auto net_desktop = atom("_NET_WM_DESKTOP", 15);
     const auto net_check = atom("_NET_SUPPORTING_WM_CHECK", 24);
@@ -332,7 +334,7 @@ int main() {
     const auto fullscreen_atom = atom("_NET_WM_STATE_FULLSCREEN", 24);
     const auto attention_atom = atom("_NET_WM_STATE_DEMANDS_ATTENTION", 31);
     const auto urgent_workspaces = atom("_MORTAR_URGENT_WORKSPACES", 25);
-    if (!output_workspaces || !net_clients || !net_stacking || !net_active || !net_names || !net_supported || !net_number || !net_current || !net_desktop || !net_check || !net_name || !utf8 || !window_type || !dialog_type || !dock_type || !strut || !strut_partial || !local_bar || !net_state || !fullscreen_atom || !attention_atom || !urgent_workspaces) return EXIT_FAILURE;
+    if (!output_workspaces || !net_clients || !net_stacking || !net_active || !net_names || !net_supported || !net_number || !net_current || !net_close || !net_workarea || !net_desktop || !net_check || !net_name || !utf8 || !window_type || !dialog_type || !dock_type || !strut || !strut_partial || !local_bar || !net_state || !fullscreen_atom || !attention_atom || !urgent_workspaces) return EXIT_FAILURE;
     using Property = std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)>;
     auto cardinal = [&](xcb_window_t window, xcb_atom_t property, uint32_t fallback) {
         Property reply{xcb_get_property_reply(c, xcb_get_property(c, false, window, property,
@@ -1100,8 +1102,24 @@ int main() {
     std::vector<xcb_window_t> published_clients, published_stack;
     xcb_window_t published_active = XCB_NONE;
     bool published = false;
-    std::vector<uint32_t> published_outputs, published_urgent;
+    std::vector<uint32_t> published_outputs, published_urgent, published_workareas;
     auto publish = [&] {
+        std::vector<uint32_t> workareas;
+        for (size_t i = 0; i < workspaces.size(); ++i) {
+            auto output = std::find_if(outputs.outputs().begin(), outputs.outputs().end(), [&](const auto &item) {
+                return outputs.owners()[i] && item.name == *outputs.owners()[i];
+            });
+            if (output == outputs.outputs().end())
+                output = std::find_if(outputs.outputs().begin(), outputs.outputs().end(), [&](const auto &item) { return item.workspace == current; });
+            if (output == outputs.outputs().end()) continue;
+            auto area = usable(output->bounds);
+            workareas.insert(workareas.end(), {static_cast<uint32_t>(area.x), static_cast<uint32_t>(area.y),
+                static_cast<uint32_t>(area.width), static_cast<uint32_t>(area.height)});
+        }
+        if (workareas != published_workareas) {
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_workarea, XCB_ATOM_CARDINAL, 32, workareas.size(), workareas.data());
+            published_workareas = std::move(workareas);
+        }
         std::vector<uint32_t> urgent_ids;
         for (uint32_t i = 0; i < workspaces.size(); ++i)
             if (std::any_of(urgent.begin(), urgent.end(), [&](auto window) { return owner(window) == static_cast<int>(i); })) urgent_ids.push_back(i);
@@ -1160,7 +1178,7 @@ int main() {
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_check, XCB_ATOM_WINDOW, 32, 1, &support);
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, support, net_check, XCB_ATOM_WINDOW, 32, 1, &support);
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, support, net_name, utf8, 8, 6, "mortar");
-    const xcb_atom_t supported_atoms[] = {net_clients, net_stacking, net_active, net_names, net_number, net_current, net_desktop, net_check, net_name, net_state, fullscreen_atom, attention_atom, window_type, dock_type, strut, strut_partial};
+    const xcb_atom_t supported_atoms[] = {net_clients, net_stacking, net_active, net_names, net_number, net_current, net_close, net_workarea, net_desktop, net_check, net_name, net_state, fullscreen_atom, attention_atom, window_type, dock_type, strut, strut_partial};
     const uint32_t desktop_count = workspaces.size();
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_supported, XCB_ATOM_ATOM, 32, std::size(supported_atoms), supported_atoms);
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_number, XCB_ATOM_CARDINAL, 32, 1, &desktop_count);
@@ -1735,6 +1753,9 @@ int main() {
                 focus_sequence = static_cast<uint16_t>(xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, focus_time, XCB_ATOM_WINDOW, 32, 0, nullptr).sequence);
             } else if (message->format == 32 && message->type == net_active && owner(message->window) >= 0) {
                 set_urgent(message->window, true);
+            } else if (message->format == 32 && message->type == net_close && owner(message->window) >= 0) {
+                if (mortar::close_window(c, message->window, protocols, delete_window, message->data.data32[0]) != mortar::CloseResult::sent)
+                    std::fprintf(stderr, "mortar: cannot close window %#x\n", message->window);
             } else if (message->format == 32 && message->type == net_desktop &&
                        message->data.data32[0] < workspaces.size()) {
                 move_window(message->window, message->data.data32[0]);

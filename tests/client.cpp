@@ -134,10 +134,22 @@ int main(int argc, char **argv) {
                           XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
         xcb_map_window(c, window);
         xcb_flush(c);
+        std::unique_ptr<xcb_intern_atom_reply_t, decltype(&std::free)> workarea{
+            xcb_intern_atom_reply(c, xcb_intern_atom(c, false, 13, "_NET_WORKAREA"), nullptr), &std::free};
+        if (!workarea) return EXIT_FAILURE;
         for (int i = 0; i < 100; ++i) {
             std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
                 xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
-            if (geometry && geometry->y == 24 && geometry->height == 576 && geometry->width == 800) return EXIT_SUCCESS;
+            std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)> area{
+                xcb_get_property_reply(c, xcb_get_property(c, false, screen->root, workarea->atom, XCB_ATOM_CARDINAL, 0, 40), nullptr), &std::free};
+            bool valid = area && area->type == XCB_ATOM_CARDINAL && area->format == 32 &&
+                         xcb_get_property_value_length(area.get()) == 160 && !area->bytes_after;
+            if (valid) {
+                auto *values = static_cast<const uint32_t *>(xcb_get_property_value(area.get()));
+                for (int j = 0; j < 10; ++j)
+                    valid &= values[j * 4] == 0 && values[j * 4 + 1] == 24 && values[j * 4 + 2] == 800 && values[j * 4 + 3] == 576;
+            }
+            if (valid && geometry && geometry->y == 24 && geometry->height == 576 && geometry->width == 800) return EXIT_SUCCESS;
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         return EXIT_FAILURE;
@@ -798,6 +810,31 @@ int main(int argc, char **argv) {
                 if (!received) std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
             if (!received || !tiled(third, 390, 300, 410, 300)) return EXIT_FAILURE;
+            auto net_close = intern_key("_NET_CLOSE_WINDOW");
+            if (!net_close) return EXIT_FAILURE;
+            xcb_client_message_event_t close{};
+            close.response_type = XCB_CLIENT_MESSAGE;
+            close.format = 32;
+            close.window = second;
+            close.type = net_close;
+            close.data.data32[0] = 42;
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, second, protocols, XCB_ATOM_ATOM, 32, 1, &delete_window);
+            xcb_send_event(c, false, screen->root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                           reinterpret_cast<const char *>(&close));
+            xcb_flush(c);
+            received = false;
+            for (int i = 0; i < 250 && !received; ++i) {
+                while (auto *event = xcb_poll_for_event(c)) {
+                    if ((event->response_type & 0x7f) == XCB_CLIENT_MESSAGE) {
+                        auto *message = reinterpret_cast<xcb_client_message_event_t *>(event);
+                        received |= message->window == second && message->type == protocols && message->format == 32 &&
+                                    message->data.data32[0] == delete_window && message->data.data32[1] == 42;
+                    }
+                    std::free(event);
+                }
+                if (!received) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            if (!received || !tiled(second, 0, 300, 390, 300)) return EXIT_FAILURE;
             auto launch_seen = [&](const char *expected) {
                 const char *path = std::getenv("MORTAR_TEST_LAUNCH");
                 if (!path) return false;
