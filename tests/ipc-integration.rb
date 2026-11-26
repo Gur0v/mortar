@@ -83,16 +83,24 @@ Dir.mktmpdir('mortar-ipc') do |dir|
       X11.XFree(values)
       value
     end
+    wait_for_property = lambda do |name, type, expected|
+      Timeout.timeout(1) do
+        loop do
+          break if property.call(name, type) == expected
+          sleep 0.01
+        end
+      end
+    end
     utf8 = X11.XInternAtom(connection, 'UTF8_STRING', 0)
     names = (1..10).map(&:to_s)
     send_frame.call('eval (rename-workspace 3 "web-é")')
     raise 'rename failed' unless read_frame.call.start_with?('ok ')
     names[2] = 'web-é'
-    raise 'EWMH names not updated' unless property.call('_NET_DESKTOP_NAMES', utf8) == names.join("\0").b + "\0"
+    wait_for_property.call('_NET_DESKTOP_NAMES', utf8, names.join("\0").b + "\0")
     send_frame.call('eval (workspace "web-é")')
     frames = 3.times.map { read_frame.call }
     raise "named switch failed: #{frames.inspect}" unless frames.include?('event workspace 2') && frames.include?('event output unspecified') && frames.any? { |f| f.start_with?('ok ') }
-    raise 'EWMH current desktop not updated' unless property.call('_NET_CURRENT_DESKTOP', 6) == [2]
+    wait_for_property.call('_NET_CURRENT_DESKTOP', 6, [2])
     ['(rename-workspace 4 "web-é")'].each do |expression|
       send_frame.call("eval #{expression}")
       raise "invalid workspace action accepted: #{expression}" unless read_frame.call.start_with?('error ')
@@ -103,9 +111,9 @@ Dir.mktmpdir('mortar-ipc') do |dir|
     frames = 3.times.map { read_frame.call }
     raise "named creation failed: #{frames.inspect}" unless frames.include?('event workspace 10') && frames.include?('event output unspecified') && frames.any? { |f| f.start_with?('ok ') }
     names << 'new-é'
-    raise 'created workspace name missing' unless property.call('_NET_DESKTOP_NAMES', utf8) == names.join("\0").b + "\0"
-    raise 'desktop count not updated' unless property.call('_NET_NUMBER_OF_DESKTOPS', 6) == [11]
-    raise 'created workspace not current' unless property.call('_NET_CURRENT_DESKTOP', 6) == [10]
+    wait_for_property.call('_NET_DESKTOP_NAMES', utf8, names.join("\0").b + "\0")
+    wait_for_property.call('_NET_NUMBER_OF_DESKTOPS', 6, [11])
+    wait_for_property.call('_NET_CURRENT_DESKTOP', 6, [10])
     send_frame.call('eval (workspace 2)')
     frames = 3.times.map { read_frame.call }
     raise "workspace reset failed: #{frames.inspect}" unless frames.include?('event workspace 1') && frames.include?('event output unspecified') && frames.any? { |f| f.start_with?('ok ') }
