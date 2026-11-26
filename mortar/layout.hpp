@@ -45,6 +45,7 @@ public:
     bool set_split(std::uint32_t focused, Split direction);
     bool toggle_split(std::uint32_t focused);
     std::uint32_t neighbor(std::uint32_t focused, Direction direction, bool wrap = true) const;
+    std::uint32_t sibling(std::uint32_t focused, bool previous) const;
     bool focus(std::uint32_t window);
     std::optional<std::vector<std::size_t>> window_path(std::uint32_t window) const;
     std::optional<std::vector<std::size_t>> parent_path(const std::vector<std::size_t> &path) const;

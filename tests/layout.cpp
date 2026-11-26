@@ -98,6 +98,13 @@ int main() {
     check(edge.neighbor(23, Direction::left) == 21);
     check(edge.focus(22));
     check(edge.neighbor(23, Direction::left) == 22);
+    check(edge.sibling(23, true) == 22);
+    check(edge.sibling(23, false) == 0);
+    check(edge.sibling(21, false) == 22);
+    check(edge.sibling(22, false) == 0);
+    check(edge.sibling(21, true) == 0);
+    check(edge.sibling(99, false) == 0);
+    check(Layout::leaf(21).sibling(21, false) == 0);
     check(edge.neighbor(23, Direction::right) == 22);
     check(edge.neighbor(23, Direction::right, false) == 0);
     check(edge.neighbor(23, Direction::left, false) == 22);

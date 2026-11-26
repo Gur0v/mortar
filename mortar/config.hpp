@@ -73,7 +73,7 @@ public:
     enum class WorkspaceNavigation { next, previous, back_and_forth };
     using WorkspaceNavigationCallback = void (*)(void *, WorkspaceNavigation);
     using WorkspaceNameCallback = void (*)(void *, unsigned, const std::string &);
-    enum class WindowAction { toggle_split, focus_mode_toggle, floating, scratch_move, scratch_show, fullscreen, exit, focus_output_next, focus_output_previous, move_output_next, move_output_previous };
+    enum class WindowAction { toggle_split, focus_mode_toggle, focus_sibling_next, focus_sibling_previous, floating, scratch_move, scratch_show, fullscreen, exit, focus_output_next, focus_output_previous, move_output_next, move_output_previous };
     using WindowActionCallback = void (*)(void *, WindowAction, std::uint32_t);
     using SplitAction = void (*)(void *, Split);
     using FocusAction = void (*)(void *, Direction);

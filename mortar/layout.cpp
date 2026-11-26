@@ -231,6 +231,21 @@ std::uint32_t Layout::neighbor(std::uint32_t focused, Direction direction, bool 
     return target ? target->window_ : 0;
 }
 
+std::uint32_t Layout::sibling(std::uint32_t focused, bool previous) const {
+    auto path = window_path(focused);
+    if (!path || path->empty()) return 0;
+    const Layout *parent = this;
+    for (std::size_t i = 0; i + 1 < path->size(); ++i) parent = &parent->children_[(*path)[i]];
+    auto index = path->back();
+    if (previous ? index == 0 : index + 1 == parent->children_.size()) return 0;
+    const Layout *target = &parent->children_[previous ? index - 1 : index + 1];
+    while (!target->leaf_) {
+        if (target->children_.empty()) return 0;
+        target = &target->children_[target->focus_order_.front()];
+    }
+    return target->window_;
+}
+
 bool Layout::remove(std::uint32_t window) {
     for (std::size_t i = 0; i < children_.size(); ++i) {
         auto &child = children_[i];

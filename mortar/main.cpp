@@ -154,6 +154,7 @@ int main() {
         std::function<void(mortar::Config::WindowAction)> output_action;
         std::function<void(mortar::Split)> split;
         std::function<void(mortar::Direction)> focus;
+        std::function<void(bool)> focus_sibling;
         std::function<void(mortar::Direction)> move_direction;
         std::function<void(mortar::Direction, int)> resize;
         std::function<void(xcb_window_t)> close;
@@ -176,6 +177,8 @@ int main() {
             switch (action) {
             case mortar::Config::WindowAction::toggle_split: actions.toggle_split(); break;
             case mortar::Config::WindowAction::focus_mode_toggle: actions.focus_mode_toggle(); break;
+            case mortar::Config::WindowAction::focus_sibling_next: actions.focus_sibling(false); break;
+            case mortar::Config::WindowAction::focus_sibling_previous: actions.focus_sibling(true); break;
             case mortar::Config::WindowAction::floating: actions.toggle_floating(window); break;
             case mortar::Config::WindowAction::scratch_move: actions.scratch_send(); break;
             case mortar::Config::WindowAction::scratch_show: actions.scratch_toggle(); break;
@@ -913,6 +916,14 @@ int main() {
     };
     actions.focus_mode_toggle = [&] {
         auto target = workspaces[current].focus_mode_target();
+        if (target) {
+            std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
+            focus(target, actions.time);
+        }
+    };
+    actions.focus_sibling = [&](bool previous) {
+        auto &ws = workspaces[current];
+        auto target = ws.layout.sibling(ws.focused, previous);
         if (target) {
             std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
             focus(target, actions.time);

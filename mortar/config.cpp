@@ -347,6 +347,8 @@ struct ConfigRuntime {
 
     static SCM toggle_split() { return window_action("toggle-split", Config::WindowAction::toggle_split); }
     static SCM focus_mode_toggle() { return window_action("focus-mode-toggle", Config::WindowAction::focus_mode_toggle); }
+    static SCM focus_sibling_next() { return window_action("focus-sibling-next", Config::WindowAction::focus_sibling_next); }
+    static SCM focus_sibling_previous() { return window_action("focus-sibling-previous", Config::WindowAction::focus_sibling_previous); }
     static SCM floating_toggle(SCM value) { return window_action("floating-toggle", Config::WindowAction::floating, value); }
     static SCM scratchpad_move() { return window_action("scratchpad-move", Config::WindowAction::scratch_move); }
     static SCM scratchpad_show() { return window_action("scratchpad-show", Config::WindowAction::scratch_show); }
@@ -627,6 +629,8 @@ struct ConfigRuntime {
         scm_c_define_gsubr("scratchpad-show", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_show));
         scm_c_define_gsubr("toggle-split", 0, 0, 0, reinterpret_cast<scm_t_subr>(toggle_split));
         scm_c_define_gsubr("focus-mode-toggle", 0, 0, 0, reinterpret_cast<scm_t_subr>(focus_mode_toggle));
+        scm_c_define_gsubr("focus-sibling-next", 0, 0, 0, reinterpret_cast<scm_t_subr>(focus_sibling_next));
+        scm_c_define_gsubr("focus-sibling-previous", 0, 0, 0, reinterpret_cast<scm_t_subr>(focus_sibling_previous));
         scm_c_define_gsubr("fullscreen-toggle", 0, 1, 0, reinterpret_cast<scm_t_subr>(fullscreen_toggle));
         scm_c_define_gsubr("bar-status", 0, 0, 1, reinterpret_cast<scm_t_subr>(bar_status_action));
         scm_c_define_gsubr("bar-height", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_height));
