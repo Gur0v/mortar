@@ -39,7 +39,7 @@ void workspace(void *data, unsigned digit) {
     host.workspace = digit;
 }
 
-void move(void *data, unsigned digit) { static_cast<Host *>(data)->move = digit; }
+void move(void *data, unsigned digit, std::uint32_t target) { auto &host = *static_cast<Host *>(data); host.move = digit; host.target = target; }
 
 void split(void *data, mortar::Split value) { static_cast<Host *>(data)->split = value; }
 void focus(void *data, mortar::Direction value) { static_cast<Host *>(data)->direction = value; }
@@ -351,7 +351,9 @@ int main() {
     host.fail = true;
     check(config.run_binding(0) == Result::failure);
     host.fail = false;
-    for (const char *action : {"close", "floating-toggle", "fullscreen-toggle"}) {
+    check(config.evaluate("(move-to-workspace 3 42)").success && host.move == 3 && host.target == 42);
+    check(!config.evaluate("(move-to-workspace 3 0)").success);
+    for (const char *action : {"close", "floating-toggle", "fullscreen-toggle", "scratchpad-move"}) {
         check(config.evaluate(std::string("(") + action + " 42)").success && host.target == 42);
         for (const char *value : {"0", "-1", "4294967296", "#f", "'bad"})
             check(!config.evaluate(std::string("(") + action + " " + value + ")").success);

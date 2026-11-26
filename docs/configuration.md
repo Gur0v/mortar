@@ -25,7 +25,7 @@ Here Alt+1 switches to workspace 2, and Alt+Shift+0 moves the focused window to 
 - `(rename-workspace digit "name")` renames a numbered slot and immediately updates `_NET_DESKTOP_NAMES` and the bar. Names must be unique, nonempty, at most 4096 UTF-8 bytes, and contain no NUL. Duplicate names raise errors. Names start as `"1"` through `"10"` and last until Mortar exits or restarts; reload does not reset them. Up to 16384 workspaces can exist. These actions are available in callbacks and IPC, not while loading configuration.
 - `(workspace-next)` and `(workspace-previous)` switch among occupied or visible workspaces in numeric order, wrapping at either end.
 - `(workspace-back-and-forth)` switches to the previously focused workspace, including one that became empty. It does nothing until a workspace change occurs. These actions have no default shortcuts; use `bind-key` to assign them.
-- `(move-to-workspace digit)` moves the focused window to the specified workspace.
+- `(move-to-workspace digit [xid])` moves the focused window or the window identified by `xid` to the specified workspace.
 - `(focus-output-next)` and `(focus-output-previous)` focus the visible workspace on the next or previous output. `(move-to-output-next)` and `(move-to-output-previous)` move the focused window to that workspace without changing output focus. These actions cycle through the outputs model's order, wrap at either end, and do nothing with fewer than two outputs. They have no default shortcuts.
 
 Bindings can only be registered while loading configuration. Workspace actions can only be called from a callback, not during configuration loading. Repeated registrations for the same shortcut replace the previous callback.
@@ -52,7 +52,7 @@ Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(toggle-split)
 
 `(focus-mode-toggle)` switches focus between the most recently focused tiling and floating windows on the current workspace. It does nothing when the other mode has no window. Alt+Space runs this action by default. `(focus-sibling-next)` and `(focus-sibling-previous)` focus the next or previous sibling without wrapping. They have no default shortcuts.
 
-`(floating-toggle)` and `(fullscreen-toggle)` toggle the focused window. `(close xid)`, `(floating-toggle xid)`, and `(fullscreen-toggle xid)` instead target a managed window by its nonzero 32-bit X11 window ID. An invalid or unmanaged ID raises an error. Hidden scratchpad windows are not valid targets. Omitting the ID keeps the focused-window behavior. Fullscreen may change focus, as with the focused-window action. `(scratchpad-move)` moves the focused window to the scratchpad; `(scratchpad-show)` shows, focuses, or hides a scratchpad window. These actions also work in IPC evaluations. They are unavailable while loading configuration.
+`(floating-toggle)` and `(fullscreen-toggle)` toggle the focused window. `(close xid)`, `(floating-toggle xid)`, and `(fullscreen-toggle xid)` instead target a managed window by its nonzero 32-bit X11 window ID. An invalid or unmanaged ID raises an error. Hidden scratchpad windows are not valid targets. Omitting the ID keeps the focused-window behavior. Fullscreen may change focus, as with the focused-window action. `(scratchpad-move [xid])` moves the focused window or the window identified by `xid` to the scratchpad; `(scratchpad-show)` shows, focuses, or hides a scratchpad window. These actions also work in IPC evaluations. They are unavailable while loading configuration.
 
 ## Window rules
 

@@ -121,7 +121,7 @@ Dir.mktmpdir('mortar-ipc') do |dir|
     Timeout.timeout(5) do
       events << read_frame.call until events.include?("event window new #{window}") && events.include?("event window focus #{window}")
     end
-    ['close', 'floating-toggle', 'fullscreen-toggle'].each do |action|
+    ['close', 'floating-toggle', 'fullscreen-toggle', 'scratchpad-move'].each do |action|
       send_frame.call("eval (#{action} 4294967295)")
       raise "unmanaged target accepted by #{action}" unless read_frame.call.start_with?('error ')
     end
@@ -129,9 +129,15 @@ Dir.mktmpdir('mortar-ipc') do |dir|
       send_frame.call("eval (#{action} #{window})")
       raise "targeted #{action} failed" unless read_frame.call.start_with?('ok ')
     end
-    send_frame.call('eval (move-to-workspace 3)')
+    send_frame.call('eval (move-to-workspace 3 4294967295)')
+    raise 'unmanaged move target accepted' unless read_frame.call.start_with?('error ')
+    send_frame.call("eval (move-to-workspace 3 #{window})")
     frames = [read_frame.call, read_frame.call]
     raise "window move missing: #{frames.inspect}" unless frames.include?("event window move #{window}") && frames.any? { |f| f.start_with?('ok ') }
+    send_frame.call("eval (scratchpad-move #{window})")
+    raise 'targeted scratchpad move failed' unless read_frame.call.start_with?('ok ')
+    send_frame.call("eval (scratchpad-move #{window})")
+    raise 'hidden scratchpad target accepted' unless read_frame.call.start_with?('error ')
     client_writer.puts
     client_writer.close
     Timeout.timeout(5) { events << read_frame.call until events.include?("event window close #{window}") }

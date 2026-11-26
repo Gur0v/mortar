@@ -150,7 +150,7 @@ int main() {
         std::function<void(unsigned, const std::string &)> rename_workspace;
         std::function<void(const std::string &)> workspace_name;
         std::function<void(mortar::Config::WorkspaceNavigation)> workspace_navigation;
-        std::function<void(unsigned)> move;
+        std::function<void(unsigned, xcb_window_t)> move;
         std::function<void(mortar::Config::WindowAction)> output_action;
         std::function<void(mortar::Split)> split;
         std::function<void(mortar::Direction)> focus;
@@ -158,14 +158,15 @@ int main() {
         std::function<void(mortar::Direction)> move_direction;
         std::function<void(mortar::Direction, int)> resize;
         std::function<void(xcb_window_t)> close;
-        std::function<void()> scratch_send, scratch_toggle, toggle_split, focus_mode_toggle;
+        std::function<void()> scratch_toggle, toggle_split, focus_mode_toggle;
+        std::function<void(xcb_window_t)> scratch_send;
         std::function<void(xcb_window_t)> toggle_fullscreen, toggle_floating;
         std::function<void(const std::vector<std::string> &)> spawn;
         xcb_timestamp_t time = XCB_CURRENT_TIME;
     } actions;
     mortar::Config config(&actions,
         [](void *host, unsigned digit) { static_cast<Actions *>(host)->workspace(digit); },
-        [](void *host, unsigned digit) { static_cast<Actions *>(host)->move(digit); },
+        [](void *host, unsigned digit, std::uint32_t window) { static_cast<Actions *>(host)->move(digit, window); },
         [](void *host, mortar::Split value) { static_cast<Actions *>(host)->split(value); },
         [](void *host, mortar::Direction value) { static_cast<Actions *>(host)->focus(value); },
         [](void *host, std::uint32_t window) { static_cast<Actions *>(host)->close(window); },
@@ -180,7 +181,7 @@ int main() {
             case mortar::Config::WindowAction::focus_sibling_next: actions.focus_sibling(false); break;
             case mortar::Config::WindowAction::focus_sibling_previous: actions.focus_sibling(true); break;
             case mortar::Config::WindowAction::floating: actions.toggle_floating(window); break;
-            case mortar::Config::WindowAction::scratch_move: actions.scratch_send(); break;
+            case mortar::Config::WindowAction::scratch_move: actions.scratch_send(window); break;
             case mortar::Config::WindowAction::scratch_show: actions.scratch_toggle(); break;
             case mortar::Config::WindowAction::fullscreen: actions.toggle_fullscreen(window); break;
             case mortar::Config::WindowAction::exit: stopping = 1; break;
@@ -904,7 +905,10 @@ int main() {
         else move_window(workspaces[current].focused, *destination);
     };
     actions.workspace = [&](unsigned digit) { switch_workspace((digit + 9) % 10); };
-    actions.move = [&](unsigned digit) { move_window(workspaces[current].focused, (digit + 9) % 10); };
+    actions.move = [&](unsigned digit, xcb_window_t window) {
+        if (window && owner(window) < 0) throw std::runtime_error("unmanaged window");
+        move_window(window ? window : workspaces[current].focused, (digit + 9) % 10);
+    };
     actions.split = [&](mortar::Split direction) {
         auto &ws = workspaces[current];
         ws.layout.set_split(ws.tiled_focus(), direction);
@@ -1437,9 +1441,13 @@ int main() {
         return false;
     };
     start_bar();
-    actions.scratch_send = [&] {
-        auto &ws = workspaces[current];
-        auto window = ws.focused;
+    actions.scratch_send = [&](xcb_window_t window) {
+        if (window && owner(window) < 0) throw std::runtime_error("unmanaged window");
+        if (!window) window = workspaces[current].focused;
+        if (!window) return;
+        auto source = static_cast<unsigned>(owner(window));
+        auto &ws = workspaces[source];
+        bool was_focused = ws.focused == window;
         if (window && !scratchpad.get(window)) {
             set_fullscreen(window, false);
             if (is_fullscreen(window) == fullscreen.end()) {
@@ -1450,7 +1458,7 @@ int main() {
                     if (!geometry) throw std::runtime_error("cannot query scratchpad geometry");
                     saved = mortar::Rect{geometry->x, geometry->y, geometry->width, geometry->height};
                 }
-                if (scratchpad.add(window, current, saved)) {
+                if (scratchpad.add(window, source, saved)) {
                     scratch_windows.push_back(window);
                     if (!ws.remove_floating(window)) {
                         ws.layout.remove(window);
@@ -1460,17 +1468,17 @@ int main() {
                     if (ws.focused == window) ws.focused = ws.windows.empty() ? XCB_NONE : ws.windows.back();
                     unmap(window);
                     tile();
-                    restore_focus();
+                    if (source == current && was_focused) restore_focus();
                 }
             }
         } else if (window && scratchpad.get(window)) {
             set_fullscreen(window, false);
-            auto result = is_fullscreen(window) == fullscreen.end() ? scratchpad.toggle(current, window, window) : std::nullopt;
+            auto result = is_fullscreen(window) == fullscreen.end() ? scratchpad.toggle(source, window, window) : std::nullopt;
             if (result && result->action == mortar::ScratchpadAction::hide) {
                 ws.remove_floating(window);
                 unmap(window);
                 tile();
-                restore_focus();
+                if (source == current && was_focused) restore_focus();
             }
         }
     };
@@ -1682,7 +1690,7 @@ int main() {
                 } else if (*id == close_focused) {
                     actions.close(0);
                 } else if (*id == scratch_send) {
-                    actions.scratch_send();
+                    actions.scratch_send(XCB_NONE);
                 } else if (*id == scratch_toggle) {
                     actions.scratch_toggle();
                 } else if (*id == toggle_fullscreen) {

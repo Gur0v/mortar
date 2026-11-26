@@ -20,6 +20,7 @@ class Config {
 public:
     using NativeActionWithoutGuile = void (*)(void *, unsigned);
     using Action = NativeActionWithoutGuile;
+    using MoveWorkspaceAction = void (*)(void *, unsigned, std::uint32_t);
     enum class Result { success, absent, failure };
     struct Binding {
         std::uint32_t keysym;
@@ -81,7 +82,7 @@ public:
     using CloseAction = void (*)(void *, std::uint32_t);
     using SpawnAction = void (*)(void *, const std::vector<std::string> &);
 
-    Config(void *host, Action workspace, Action move_workspace, SplitAction split = nullptr,
+    Config(void *host, Action workspace, MoveWorkspaceAction move_workspace, SplitAction split = nullptr,
            FocusAction focus = nullptr, CloseAction close = nullptr, SpawnAction spawn = nullptr,
            FocusAction move = nullptr, ResizeAction resize = nullptr, WindowActionCallback window_action = nullptr,
            WorkspaceNavigationCallback workspace_navigation = nullptr);
@@ -123,7 +124,7 @@ private:
     SCM module_ = SCM_BOOL_F;
     void *host_;
     Action workspace_;
-    Action move_workspace_;
+    MoveWorkspaceAction move_workspace_;
     SplitAction split_;
     FocusAction focus_;
     FocusAction move_;

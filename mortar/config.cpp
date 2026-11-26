@@ -185,7 +185,7 @@ struct ConfigRuntime {
     static SCM bind_workspace(SCM value, SCM procedure) { return bind(value, procedure, false); }
     static SCM bind_move(SCM value, SCM procedure) { return bind(value, procedure, true); }
 
-    static SCM action(SCM value, bool move_action) {
+    static SCM action(SCM value, bool move_action, SCM target_value = SCM_UNDEFINED) {
         if (!active) {
             scm_misc_error("workspace action", "no active configuration", SCM_EOL);
         }
@@ -194,16 +194,18 @@ struct ConfigRuntime {
         }
         unsigned index = digit(value);
         Config *config = active->config;
-        Config::Action function = move_action ? config->move_workspace_ : config->workspace_;
+        auto window = target(target_value, "move-to-workspace");
+        bool available = move_action ? config->move_workspace_ != nullptr : config->workspace_ != nullptr;
         bool failed = false;
         try {
-            if (function) {
-                function(config->host_, index);
+            if (available) {
+                if (move_action) config->move_workspace_(config->host_, index, window);
+                else config->workspace_(config->host_, index);
             }
         } catch (...) {
             failed = true;
         }
-        if (failed || !function) {
+        if (failed || !available) {
             scm_misc_error("workspace action", "native action failed", SCM_EOL);
         }
         return SCM_UNSPECIFIED;
@@ -238,7 +240,7 @@ struct ConfigRuntime {
         return scm_is_string(value) ? named_workspace(value, SCM_UNDEFINED) : action(value, false);
     }
     static SCM rename_workspace(SCM value, SCM name) { return named_workspace(value, name); }
-    static SCM move_action(SCM value) { return action(value, true); }
+    static SCM move_action(SCM value, SCM window) { return action(value, true, window); }
 
     static void require_action(const char *name) {
         if (!active || active->path) scm_misc_error(name, "action is only allowed in a binding", SCM_EOL);
@@ -350,7 +352,7 @@ struct ConfigRuntime {
     static SCM focus_sibling_next() { return window_action("focus-sibling-next", Config::WindowAction::focus_sibling_next); }
     static SCM focus_sibling_previous() { return window_action("focus-sibling-previous", Config::WindowAction::focus_sibling_previous); }
     static SCM floating_toggle(SCM value) { return window_action("floating-toggle", Config::WindowAction::floating, value); }
-    static SCM scratchpad_move() { return window_action("scratchpad-move", Config::WindowAction::scratch_move); }
+    static SCM scratchpad_move(SCM value) { return window_action("scratchpad-move", Config::WindowAction::scratch_move, value); }
     static SCM scratchpad_show() { return window_action("scratchpad-show", Config::WindowAction::scratch_show); }
     static SCM fullscreen_toggle(SCM value) { return window_action("fullscreen-toggle", Config::WindowAction::fullscreen, value); }
     static SCM exit_action() { return window_action("exit", Config::WindowAction::exit); }
@@ -613,7 +615,7 @@ struct ConfigRuntime {
         scm_c_define_gsubr("workspace-next", 0, 0, 0, reinterpret_cast<scm_t_subr>(workspace_next));
         scm_c_define_gsubr("workspace-previous", 0, 0, 0, reinterpret_cast<scm_t_subr>(workspace_previous));
         scm_c_define_gsubr("workspace-back-and-forth", 0, 0, 0, reinterpret_cast<scm_t_subr>(workspace_back_and_forth));
-        scm_c_define_gsubr("move-to-workspace", 1, 0, 0, reinterpret_cast<scm_t_subr>(move_action));
+        scm_c_define_gsubr("move-to-workspace", 1, 1, 0, reinterpret_cast<scm_t_subr>(move_action));
         scm_c_define_gsubr("split", 1, 0, 0, reinterpret_cast<scm_t_subr>(split_action));
         scm_c_define_gsubr("move", 1, 0, 0, reinterpret_cast<scm_t_subr>(move_direction_action));
         scm_c_define_gsubr("resize", 2, 0, 0, reinterpret_cast<scm_t_subr>(resize_action));
@@ -625,7 +627,7 @@ struct ConfigRuntime {
         scm_c_define_gsubr("move-to-output-next", 0, 0, 0, reinterpret_cast<scm_t_subr>(move_output_next));
         scm_c_define_gsubr("move-to-output-previous", 0, 0, 0, reinterpret_cast<scm_t_subr>(move_output_previous));
         scm_c_define_gsubr("floating-toggle", 0, 1, 0, reinterpret_cast<scm_t_subr>(floating_toggle));
-        scm_c_define_gsubr("scratchpad-move", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_move));
+        scm_c_define_gsubr("scratchpad-move", 0, 1, 0, reinterpret_cast<scm_t_subr>(scratchpad_move));
         scm_c_define_gsubr("scratchpad-show", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_show));
         scm_c_define_gsubr("toggle-split", 0, 0, 0, reinterpret_cast<scm_t_subr>(toggle_split));
         scm_c_define_gsubr("focus-mode-toggle", 0, 0, 0, reinterpret_cast<scm_t_subr>(focus_mode_toggle));
@@ -729,7 +731,7 @@ struct ConfigRuntime {
 
 thread_local ConfigRuntime *ConfigRuntime::active = nullptr;
 
-Config::Config(void *host, Action workspace, Action move_workspace, SplitAction split,
+Config::Config(void *host, Action workspace, MoveWorkspaceAction move_workspace, SplitAction split,
                FocusAction focus, CloseAction close, SpawnAction spawn, FocusAction move, ResizeAction resize,
                WindowActionCallback window_action, WorkspaceNavigationCallback workspace_navigation)
     : host_(host), workspace_(workspace), move_workspace_(move_workspace), split_(split),
