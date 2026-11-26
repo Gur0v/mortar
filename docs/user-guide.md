@@ -145,7 +145,7 @@ mortar tracks outputs and their visible workspaces. `(focus-output-next)` and `(
 
 mortar exposes a local Unix socket for trusted clients to evaluate Scheme and subscribe to events. IPC evaluation runs synchronously on the window manager thread, so a long-running expression freezes window management. See the [IPC reference](ipc.md) for socket discovery, framing, and requests.
 
-Call `(restart)` from a configured callback or IPC evaluation to restart mortar while preserving window state. Existing IPC connections close and must reconnect and resubscribe. If restart preparation or execution fails, the current session continues. A failure after the new process starts may leave the session without a window manager.
+Call `(restart)` from a configured callback or IPC evaluation to restart mortar while preserving window state. After a successful restart, mortar replaces mortarbar with a new process. Existing IPC connections close and must reconnect and resubscribe. If restart preparation or execution fails, the current session continues. A failure after the new process starts may leave the session without a window manager.
 
 There is no default exit shortcut. Call `(exit)` from a configured callback or IPC evaluation to request graceful shutdown; managed clients are preserved. For example, add `(bind-key '(alt shift e) (lambda () (exit)))` to configuration and reload. This exits without a confirmation prompt.
 

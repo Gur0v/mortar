@@ -1692,7 +1692,7 @@ int main(int argc, char **argv) {
         std::fputs("mortar: mortarbar did not exit; cannot restart it\n", stderr);
         return false;
     };
-    if (bar <= 0) start_bar();
+    if ((!restart_state || stop_bar()) && bar <= 0) start_bar();
     actions.scratch_send = [&](xcb_window_t window) {
         if (window && owner(window) < 0) throw std::runtime_error("unmanaged window");
         if (!window) window = workspaces[current].focused;

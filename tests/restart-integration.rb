@@ -39,7 +39,11 @@ Dir.mktmpdir('mortar-restart-') do |dir|
     FileUtils.cp(ARGV.fetch(0), binary)
     socket_path = File.join(dir, 'ipc.sock')
     log = File.join(dir, 'wm.log')
-    env = { 'DISPLAY' => ":#{Integer(display)}", 'XDG_CONFIG_HOME' => dir, 'HOME' => dir, 'MORTARSOCK' => socket_path }
+    bar_log = File.join(dir, 'bars')
+    bar = File.join(dir, 'mortarbar')
+    File.write(bar, "#!/bin/sh\nprintf '%s\\n' \"$$\" >> #{bar_log.dump}\nexec sleep 10000\n")
+    File.chmod(0755, bar)
+    env = { 'PATH' => "#{dir}:#{ENV.fetch('PATH')}", 'DISPLAY' => ":#{Integer(display)}", 'XDG_CONFIG_HOME' => dir, 'HOME' => dir, 'MORTARSOCK' => socket_path }
     wm = Process.spawn(env, binary, out: File::NULL, err: log)
     wait = lambda do |message, &condition|
       Timeout.timeout(10) { sleep 0.02 until condition.call }
@@ -58,6 +62,16 @@ Dir.mktmpdir('mortar-restart-') do |dir|
       end
     end
     wait.call('WM not ready') { request.call('(+ 1 2)') == 'ok 3' }
+    wait.call('Bar did not start') { File.exist?(bar_log) && File.readlines(bar_log).size == 1 }
+    bar_pids = -> { File.readlines(bar_log).map { |line| Integer(line) } }
+    alive = lambda do |pid|
+      Process.kill(0, pid)
+      true
+    rescue Errno::ESRCH
+      false
+    end
+    initial_bar = bar_pids.call.fetch(0)
+    raise 'Initial bar is not running' unless alive.call(initial_bar)
     connection = X11.XOpenDisplay(env.fetch('DISPLAY'))
     raise 'XOpenDisplay failed' if connection.null?
     root = X11.XDefaultRootWindow(connection)
@@ -116,6 +130,11 @@ Dir.mktmpdir('mortar-restart-') do |dir|
       end
     end
     raise 'Restart changed process ID' unless Process.waitpid(wm, Process::WNOHANG).nil?
+    wait.call('Bar was not replaced after restart') { bar_pids.call.size >= 2 }
+    raise 'Restart started multiple bars' unless bar_pids.call.size == 2
+    first_bar = bar_pids.call.last
+    raise 'Restart retained old bar' if first_bar == initial_bar || alive.call(initial_bar)
+    raise 'Replacement bar is not running' unless alive.call(first_bar)
     wait.call('Window geometry or focus changed after restart') do
       windows.map { |window| geometry.call(window) } == before_geometry && focus.call == before_focus
     end
@@ -153,6 +172,11 @@ Dir.mktmpdir('mortar-restart-') do |dir|
         false
       end
     end
+    wait.call('Bar was not replaced after second restart') { bar_pids.call.size >= 3 }
+    raise 'Second restart started multiple bars' unless bar_pids.call.size == 3
+    second_bar = bar_pids.call.last
+    raise 'Second restart retained old bar' if second_bar == first_bar || alive.call(first_bar)
+    raise 'Second replacement bar is not running' unless alive.call(second_bar)
     iconic.each { |window| raise 'Iconic state lost' unless property.call(window, 'WM_STATE').first == 3 }
     X11.XDestroyWindow(connection, iconic[0])
     X11.XMapWindow(connection, iconic[1])
@@ -182,6 +206,8 @@ Dir.mktmpdir('mortar-restart-') do |dir|
       end
     end
     raise 'Failed exec restarted process' unless File.readlines(marker).size == 3
+    raise 'Failed exec replaced bar' unless bar_pids.call == [initial_bar, first_bar, second_bar]
+    raise 'Failed exec stopped bar' unless alive.call(second_bar)
     request.call('(exit)') rescue nil
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
     wm = nil
