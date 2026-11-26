@@ -1083,10 +1083,18 @@ int main(int argc, char **argv) {
                    reinterpret_cast<const char *>(&message));
     xcb_flush(c);
     if (!state_is(second, 3) || !tiled(first, 0, 400) || !tiled(third, 400, 400)) return EXIT_FAILURE;
+    bool restored_focus = false;
+    for (int i = 0; i < 250; ++i) {
+        std::unique_ptr<xcb_get_input_focus_reply_t, decltype(&std::free)> reply{
+            xcb_get_input_focus_reply(c, xcb_get_input_focus(c), nullptr), &std::free};
+        if (reply && reply->focus == third) { restored_focus = true; break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    if (!restored_focus) return EXIT_FAILURE;
     xcb_map_window(c, second);
     xcb_flush(c);
-    if (!state_is(second, 1) || !tiled(first, 0, 266) || !tiled(second, 266, 267) ||
-        !tiled(third, 533, 267)) return EXIT_FAILURE;
+    if (!state_is(second, 1) || !tiled(first, 0, 266) || !tiled(third, 266, 267) ||
+        !tiled(second, 533, 267)) return EXIT_FAILURE;
     xcb_unmap_window(c, second);
     xcb_flush(c);
     if (!state_is(second, 0) || !tiled(first, 0, 400) || !tiled(third, 400, 400)) return EXIT_FAILURE;
@@ -1184,8 +1192,23 @@ int main(int argc, char **argv) {
         }
         return false;
     };
+    auto requested = xcb_generate_id(c);
+    xcb_create_window(c, XCB_COPY_FROM_PARENT, requested, screen->root, 0, 0, 100, 100, 0,
+                      XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+    const uint32_t requested_desktop = 1;
+    xcb_change_property(c, XCB_PROP_MODE_REPLACE, requested, window_desktop, XCB_ATOM_CARDINAL, 32, 1, &requested_desktop);
+    xcb_map_window(c, requested);
+    xcb_flush(c);
+    if (!state_is(requested, 1) || !property_is(requested, window_desktop, 1) ||
+        !property_is(screen->root, current_desktop, 0) || !focused_on(fourth) || !tiled(fourth, 0, 800)) return EXIT_FAILURE;
+    Attributes requested_attributes{xcb_get_window_attributes_reply(c, xcb_get_window_attributes(c, requested), nullptr), &std::free};
+    if (!requested_attributes || requested_attributes->map_state != XCB_MAP_STATE_UNMAPPED) return EXIT_FAILURE;
     send_desktop(current_desktop, screen->root, 1);
-    if (!property_is(screen->root, current_desktop, 1)) return EXIT_FAILURE;
+    if (!property_is(screen->root, current_desktop, 1) || !tiled(requested, 0, 800) || !focused_on(requested)) return EXIT_FAILURE;
+    requested_attributes.reset(xcb_get_window_attributes_reply(c, xcb_get_window_attributes(c, requested), nullptr));
+    if (!requested_attributes || requested_attributes->map_state != XCB_MAP_STATE_VIEWABLE) return EXIT_FAILURE;
+    xcb_destroy_window(c, requested);
+    xcb_flush(c);
     auto other = create();
     if (!property_is(other, window_desktop, 1) || !tiled(other, 0, 800) || !focused_on(other)) return EXIT_FAILURE;
     send_desktop(current_desktop, screen->root, 0);

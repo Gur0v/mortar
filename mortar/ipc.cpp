@@ -105,6 +105,14 @@ void Ipc::close_client(int fd) {
     }
 }
 
+void Ipc::subscribe(int fd) {
+    auto it = std::find_if(clients_.begin(), clients_.end(), [fd](const Client& c) { return c.fd == fd; });
+    if (it != clients_.end()) {
+        it->subscribed = true;
+        if (it->input.empty()) it->deadline = {};
+    }
+}
+
 bool Ipc::send(int fd, std::string_view frame) {
     auto it = std::find_if(clients_.begin(), clients_.end(), [fd](const Client& c) { return c.fd == fd; });
     if (it == clients_.end()) return false;
@@ -125,6 +133,12 @@ void Ipc::broadcast(std::string_view frame) {
 }
 
 void Ipc::dispatch(const std::vector<pollfd>& ready, const Handler& handler) {
+    const auto now = std::chrono::steady_clock::now();
+    std::vector<int> expired;
+    for (const auto& client : clients_)
+        if (client.deadline != std::chrono::steady_clock::time_point{} && now >= client.deadline)
+            expired.push_back(client.fd);
+    for (int fd : expired) close_client(fd);
     std::vector<pollfd> ordered;
     for (const auto& event : ready) if (event.fd == listener_) ordered.push_back(event);
     if (!clients_.empty()) {
@@ -187,6 +201,8 @@ void Ipc::dispatch(const std::vector<pollfd>& ready, const Handler& handler) {
                 if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) close_client(event.fd);
                 continue;
             }
+            if (it->input.empty() && it->deadline == std::chrono::steady_clock::time_point{})
+                it->deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
             it->input.append(buffer.data(), static_cast<std::size_t>(n));
             while ((it = find()) != clients_.end() && it->input.size() >= 4) {
                 std::uint32_t size = 0;
@@ -195,6 +211,9 @@ void Ipc::dispatch(const std::vector<pollfd>& ready, const Handler& handler) {
                 if (it->input.size() < 4 + size) break;
                 std::string frame = it->input.substr(4, size);
                 it->input.erase(0, 4 + size);
+                it->deadline = it->subscribed && it->input.empty()
+                    ? std::chrono::steady_clock::time_point{}
+                    : std::chrono::steady_clock::now() + std::chrono::seconds(5);
                 evaluated = true;
                 handler(event.fd, frame);
             }

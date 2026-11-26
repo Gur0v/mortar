@@ -21,6 +21,12 @@ std::uint32_t Workspace::focus_mode_target() const {
     return 0;
 }
 
+std::uint32_t Workspace::recent_focus() const {
+    for (auto it = focus_history.rbegin(); it != focus_history.rend(); ++it)
+        if (std::find(windows.begin(), windows.end(), *it) != windows.end()) return *it;
+    return windows.empty() ? 0 : windows.back();
+}
+
 bool Workspace::add_floating(std::uint32_t window) {
     if (!window || layout.contains(window) ||
         std::find(floating.begin(), floating.end(), window) != floating.end()) return false;
@@ -34,7 +40,7 @@ bool Workspace::remove_floating(std::uint32_t window) {
     if (!std::erase(floating, window)) return false;
     std::erase(windows, window);
     std::erase(focus_history, window);
-    if (focused == window) focused = windows.empty() ? 0 : windows.back();
+    if (focused == window) focused = recent_focus();
     return true;
 }
 
@@ -95,7 +101,7 @@ bool Workspaces::move(std::uint32_t window, std::uint32_t destination) {
     }
     std::erase(source.windows, window);
     std::erase(source.focus_history, window);
-    if (source.focused == window) source.focused = source.windows.empty() ? 0 : source.windows.back();
+    if (source.focused == window) source.focused = source.recent_focus();
     target.windows.push_back(window);
     if (destination != current || !target.focused) target.focused = window;
     return true;

@@ -25,6 +25,7 @@ public:
     const std::string& path() const { return path_; }
     std::vector<pollfd> poll_fds() const;
     void dispatch(const std::vector<pollfd>& ready, const Handler& handler);
+    void subscribe(int client);
     bool send(int client, std::string_view frame);
     void broadcast(std::string_view frame);
     std::function<void(int)> on_close;
@@ -35,6 +36,8 @@ private:
         std::string input;
         std::string output;
         bool eof = false;
+        bool subscribed = false;
+        std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     };
     int listener_ = -1;
     int dir_ = -1;

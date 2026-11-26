@@ -1050,8 +1050,7 @@ int main() {
             return;
         }
         using Property = std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)>;
-        uint32_t desktop = existing || std::find(iconic.begin(), iconic.end(), window) != iconic.end()
-                               ? cardinal(window, net_desktop, current) : current;
+        uint32_t desktop = cardinal(window, net_desktop, current);
         if (existing && attributes->map_state != XCB_MAP_STATE_VIEWABLE) {
             Property state{xcb_get_property_reply(c, xcb_get_property(c, false, window, wm_state,
                                                                       wm_state, 0, 2), nullptr), &std::free};
@@ -1479,7 +1478,7 @@ int main() {
                         std::erase(ws.windows, window);
                         std::erase(ws.focus_history, window);
                     }
-                    if (ws.focused == window) ws.focused = ws.windows.empty() ? XCB_NONE : ws.windows.back();
+                    if (ws.focused == window) ws.focused = ws.recent_focus();
                     unmap(window);
                     tile();
                     if (source == current && was_focused) restore_focus();
@@ -1597,7 +1596,7 @@ int main() {
             std::free(event);
             break;
         }
-        bool ipc_dispatched = ipc && ready > 0;
+        bool ipc_dispatched = ipc && ready >= 0;
         if (ipc_dispatched) {
             fds.pop_back();
             try {
@@ -1605,14 +1604,17 @@ int main() {
                     if (frame == "subscribe workspace") {
                         if (std::find(subscribers.begin(), subscribers.end(), client) == subscribers.end())
                             subscribers.push_back(client);
+                        ipc->subscribe(client);
                         ipc->send(client, "ok subscribed");
                     } else if (frame == "subscribe window") {
                         if (std::find(window_subscribers.begin(), window_subscribers.end(), client) == window_subscribers.end())
                             window_subscribers.push_back(client);
+                        ipc->subscribe(client);
                         ipc->send(client, "ok subscribed");
                     } else if (frame == "subscribe output") {
                         if (std::find(output_subscribers.begin(), output_subscribers.end(), client) == output_subscribers.end())
                             output_subscribers.push_back(client);
+                        ipc->subscribe(client);
                         ipc->send(client, "ok subscribed");
                     } else if (frame.starts_with("eval ")) {
                         actions.time = XCB_CURRENT_TIME;
@@ -1942,7 +1944,7 @@ int main() {
                     std::erase(workspaces[workspace].focus_history, message->window);
                 }
                 if (workspaces[workspace].focused == message->window)
-                    workspaces[workspace].focused = workspaces[workspace].windows.empty() ? XCB_NONE : workspaces[workspace].windows.back();
+                    workspaces[workspace].focused = workspaces[workspace].recent_focus();
                 iconic.push_back(message->window);
                 set_state(message->window, 3);
                 unmap(message->window);
@@ -1984,7 +1986,7 @@ int main() {
                     std::erase(ws.windows, window);
                     std::erase(ws.focus_history, window);
                 }
-                if (ws.focused == window) ws.focused = ws.windows.empty() ? XCB_NONE : ws.windows.back();
+                if (ws.focused == window) ws.focused = ws.recent_focus();
                 xcb_delete_property(c, window, net_desktop);
             }
             auto removed = static_cast<size_t>(was_tiled || scratch_removed) + std::erase(iconic, window);

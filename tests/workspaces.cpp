@@ -128,4 +128,13 @@ int main() {
     check(modes.focus_mode_target() == 40);
     check(modes.remove_floating(40));
     check(modes.focus_mode_target() == 42);
+
+    mortar::Workspaces history;
+    auto &recent = history.workspaces[0];
+    check(recent.add_floating(1) && recent.add_floating(2) && recent.add_floating(3));
+    recent.focus_history = {3, 1, 2};
+    recent.focused = 2;
+    check(recent.remove_floating(2) && recent.focused == 1);
+    recent.focus_history = {3, 1};
+    check(history.move(1, 1) && recent.focused == 3);
 }

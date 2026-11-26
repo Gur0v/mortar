@@ -36,6 +36,7 @@ struct Workspace {
     bool toggle_floating(std::uint32_t window);
     std::uint32_t tiled_focus() const;
     std::uint32_t focus_mode_target() const;
+    std::uint32_t recent_focus() const;
 };
 
 struct Workspaces {

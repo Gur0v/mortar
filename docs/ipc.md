@@ -4,7 +4,7 @@ mortar creates `$XDG_RUNTIME_DIR/mortar-ipc.<uid>.<pid>.sock`, using its effecti
 
 On success, mortar exports the selected path as `MORTARSOCK` to child processes and writes it to standard error as `mortar: IPC socket PATH`. If setup fails, mortar clears `MORTARSOCK` and continues without IPC. Socket connections must have the same effective UID as mortar. IPC clients are trusted to execute Scheme with the user's privileges.
 
-Messages are a four-byte unsigned big-endian length followed by that many bytes. Frames are limited to 65536 bytes. mortar accepts at most 32 clients and buffers at most 262144 output bytes per client. Oversized frames and clients exceeding the output limit are disconnected. Requests and responses are processed in order, except events can precede the response to the request that causes them.
+Messages are a four-byte unsigned big-endian length followed by that many bytes. Frames are limited to 65536 bytes. mortar accepts at most 32 clients and buffers at most 262144 output bytes per client. Oversized frames and clients exceeding the output limit are disconnected. Clients have five seconds to complete each frame; idle clients without subscriptions are disconnected after five seconds. Idle subscribed clients remain connected. Requests and responses are processed in order, except events can precede the response to the request that causes them.
 
 - `eval EXPRESSION` evaluates Scheme synchronously on the window manager event-loop thread. The response is `ok RESULT` or `error MESSAGE`. A long-running expression freezes window management.
 - `subscribe workspace` subscribes the connection to workspace changes and replies `ok subscribed`. Events have the form `event workspace N`, where N is the zero-based workspace index.

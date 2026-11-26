@@ -140,6 +140,46 @@ int main() {
         check(ipc.poll_fds().size() == 2);
         close(client);
     }
+    {
+        mortar::Ipc ipc(path);
+        sockaddr_un address {};
+        address.sun_family = AF_UNIX;
+        std::strcpy(address.sun_path, path.c_str());
+        int idle = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        int partial = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        int subscriber = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        int ordinary = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        for (int fd : {idle, partial, subscriber, ordinary}) {
+            check(fd >= 0);
+            check(connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0);
+        }
+        auto step = [&] {
+            auto fds = ipc.poll_fds();
+            poll(fds.data(), fds.size(), 100);
+            ipc.dispatch(fds, [&](int fd, std::string_view frame) {
+                if (frame == "x") ipc.subscribe(fd);
+            });
+        };
+        step();
+        const char frame[] = {0, 0, 0, 1, 'x'};
+        check(write(partial, frame, 1) == 1);
+        check(write(subscriber, frame, sizeof(frame)) == sizeof(frame));
+        const char ordinary_frame[] = {0, 0, 0, 1, 'y'};
+        check(write(ordinary, ordinary_frame, sizeof(ordinary_frame)) == sizeof(ordinary_frame));
+        for (int i = 0; i < 5; ++i) step();
+        usleep(5100000);
+        step();
+        check(ipc.poll_fds().size() == 2);
+        check(ipc.send(ipc.poll_fds()[1].fd, "event"));
+        step();
+        char reply[9];
+        check(read(subscriber, reply, sizeof(reply)) == sizeof(reply));
+        check(std::string(reply, sizeof(reply)) == std::string("\0\0\0\5event", 9));
+        close(idle);
+        close(partial);
+        close(subscriber);
+        close(ordinary);
+    }
     struct stat st {};
     check(lstat(path.c_str(), &st) < 0);
     {
