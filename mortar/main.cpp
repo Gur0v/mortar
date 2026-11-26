@@ -38,6 +38,7 @@
 #include <thread>
 #include <memory>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 extern char **environ;
@@ -260,6 +261,7 @@ int main(int argc, char **argv) {
         std::function<void(xcb_window_t)> toggle_fullscreen, toggle_floating;
         std::function<void(const std::vector<std::string> &)> spawn;
         bool restart = false;
+        bool reload = false;
         xcb_timestamp_t time = XCB_CURRENT_TIME;
     } actions;
     mortar::Config config(&actions,
@@ -286,6 +288,7 @@ int main(int argc, char **argv) {
             case mortar::Config::WindowAction::fullscreen: actions.toggle_fullscreen(window); break;
             case mortar::Config::WindowAction::exit: stopping = 1; break;
             case mortar::Config::WindowAction::restart: actions.restart = true; break;
+            case mortar::Config::WindowAction::reload: actions.reload = true; break;
             case mortar::Config::WindowAction::focus_output_next:
             case mortar::Config::WindowAction::focus_output_previous:
             case mortar::Config::WindowAction::move_output_next:
@@ -298,26 +301,19 @@ int main(int argc, char **argv) {
     config.workspace_names(
         [](void *host, unsigned digit, const std::string &name) { static_cast<Actions *>(host)->rename_workspace(digit, name); },
         [](void *host, const std::string &name) { static_cast<Actions *>(host)->workspace_name(name); });
-    if (!config.load("/dev/null")) {
-        std::fputs("mortar: cannot initialize default configuration\n", stderr);
-        return EXIT_FAILURE;
-    }
     const char *xdg = std::getenv("XDG_CONFIG_HOME");
     const char *home = std::getenv("HOME");
     std::filesystem::path config_dir;
     if (xdg && *xdg && std::filesystem::path(xdg).is_absolute()) config_dir = xdg;
     else if (home && *home && std::filesystem::path(home).is_absolute()) config_dir = std::filesystem::path(home) / ".config";
     const auto path = config_dir.empty() ? std::filesystem::path{} : config_dir / "mortar/config.scm";
-    if (!path.empty()) {
-        std::error_code error;
-        auto status = std::filesystem::status(path, error);
-        if (error && error != std::errc::no_such_file_or_directory) {
-            std::fprintf(stderr, "mortar: cannot inspect configuration %s: %s\n", path.c_str(), error.message().c_str());
-        } else if (std::filesystem::exists(status) && !config.load(path.c_str())) {
-            std::fprintf(stderr, "mortar: failed to load configuration %s; using defaults\n", path.c_str());
-        }
-    } else {
+    if (path.empty()) {
         std::fputs("mortar: cannot locate configuration: HOME is not an absolute path\n", stderr);
+        return EXIT_FAILURE;
+    }
+    if (!config.load(path.c_str())) {
+        std::fprintf(stderr, "mortar: failed to load configuration %s\n", path.c_str());
+        return EXIT_FAILURE;
     }
     xcb_grab_server(connection.get());
     auto *c = connection.get();
@@ -329,31 +325,8 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "mortar: keyboard setup failed: %s\n", error.what());
         return EXIT_FAILURE;
     }
-    enum : uint32_t { split_horizontal = UINT32_MAX - 24, split_vertical, toggle_split, focus_left, focus_down,
-        focus_up, focus_right, move_left, move_down, move_up, move_right,
-        resize_left, resize_down, resize_up, resize_right, close_focused, terminal, launcher, toggle_floating, toggle_fullscreen, scratch_send, scratch_toggle, reload_config, focus_mode_toggle, focus_parent };
-    std::vector<mortar::KeyboardBinding> defaults{
-        {XKB_KEY_b, 0, split_horizontal, true}, {XKB_KEY_v, 0, split_vertical, true},
-        {XKB_KEY_e, 0, toggle_split, true}, {XKB_KEY_a, 0, focus_parent, true},
-        {XKB_KEY_h, 0, focus_left, true}, {XKB_KEY_j, 0, focus_down, true},
-        {XKB_KEY_k, 0, focus_up, true}, {XKB_KEY_l, 0, focus_right, true},
-        {XKB_KEY_Left, 0, focus_left, true}, {XKB_KEY_Down, 0, focus_down, true},
-        {XKB_KEY_Up, 0, focus_up, true}, {XKB_KEY_Right, 0, focus_right, true},
-        {XKB_KEY_h, XCB_MOD_MASK_SHIFT, move_left, true}, {XKB_KEY_j, XCB_MOD_MASK_SHIFT, move_down, true},
-        {XKB_KEY_k, XCB_MOD_MASK_SHIFT, move_up, true}, {XKB_KEY_l, XCB_MOD_MASK_SHIFT, move_right, true},
-        {XKB_KEY_Left, XCB_MOD_MASK_SHIFT, move_left, true}, {XKB_KEY_Down, XCB_MOD_MASK_SHIFT, move_down, true},
-        {XKB_KEY_Up, XCB_MOD_MASK_SHIFT, move_up, true}, {XKB_KEY_Right, XCB_MOD_MASK_SHIFT, move_right, true},
-        {XKB_KEY_Left, XCB_MOD_MASK_CONTROL, resize_left, true}, {XKB_KEY_Down, XCB_MOD_MASK_CONTROL, resize_down, true},
-        {XKB_KEY_Up, XCB_MOD_MASK_CONTROL, resize_up, true}, {XKB_KEY_Right, XCB_MOD_MASK_CONTROL, resize_right, true},
-        {XKB_KEY_q, XCB_MOD_MASK_SHIFT, close_focused, true},
-        {XKB_KEY_space, XCB_MOD_MASK_SHIFT, toggle_floating, true}, {XKB_KEY_space, 0, focus_mode_toggle, true},
-        {XKB_KEY_f, 0, toggle_fullscreen, true},
-        {XKB_KEY_minus, XCB_MOD_MASK_SHIFT, scratch_send, true}, {XKB_KEY_minus, 0, scratch_toggle, true},
-        {XKB_KEY_Return, 0, terminal, true}, {XKB_KEY_d, 0, launcher, true},
-        {XKB_KEY_c, XCB_MOD_MASK_SHIFT, reload_config, true}
-    };
-    auto prepare_bindings = [&](const auto &custom) {
-        auto bindings = defaults;
+    auto prepare_bindings = [](const auto &custom) {
+        std::vector<mortar::KeyboardBinding> bindings;
         for (const auto &binding : custom) {
             bindings.push_back({binding.keysym, binding.modifiers, binding.callback, binding.dynamic_alt});
         }
@@ -362,13 +335,8 @@ int main(int argc, char **argv) {
     try {
         keyboard->replace_bindings(prepare_bindings(config.bindings()));
     } catch (const std::exception &error) {
-        std::fprintf(stderr, "mortar: custom key grabs failed: %s; using default keybindings\n", error.what());
-        try {
-            keyboard->replace_bindings(defaults);
-        } catch (const std::exception &fallback_error) {
-            std::fprintf(stderr, "mortar: default key grabs failed: %s\n", fallback_error.what());
-            return EXIT_FAILURE;
-        }
+        std::fprintf(stderr, "mortar: key grabs failed: %s\n", error.what());
+        return EXIT_FAILURE;
     }
     struct PointerDrag {
         xcb_window_t window;
@@ -376,6 +344,10 @@ int main(int argc, char **argv) {
         int x, y;
         bool left, top, floating;
         uint8_t button;
+        int gx, gy, width, height;
+        int anchor_x, anchor_y, anchor_gx, anchor_gy, anchor_width, anchor_height;
+        std::vector<uint32_t> hints;
+        bool valid;
     };
     std::optional<PointerDrag> drag;
     std::vector<std::pair<uint8_t, uint16_t>> mouse_grabs;
@@ -407,6 +379,15 @@ int main(int argc, char **argv) {
         mouse_grabs = std::move(next);
     };
     grab_mouse(config.mouse_modifier());
+    auto grab_focus = [&](xcb_window_t window) {
+        for (uint8_t button : {uint8_t{1}, uint8_t{2}, uint8_t{3}}) {
+            auto cookie = xcb_grab_button_checked(c, false, window, XCB_EVENT_MASK_BUTTON_PRESS,
+                XCB_GRAB_MODE_SYNC, XCB_GRAB_MODE_ASYNC, XCB_NONE, XCB_NONE, button, XCB_MOD_MASK_ANY);
+            std::unique_ptr<xcb_generic_error_t, decltype(&std::free)> error{xcb_request_check(c, cookie), &std::free};
+            if (error) std::fprintf(stderr, "mortar: cannot grab focus button %u on window %u: X error %u\n",
+                button, window, error->error_code);
+        }
+    };
     std::vector<pid_t> children = std::move(inherited_children);
     mortar::Workspaces workspace_state;
     mortar::Scratchpad scratchpad;
@@ -443,6 +424,11 @@ int main(int argc, char **argv) {
     const auto utf8 = atom("UTF8_STRING", 11);
     const auto window_type = atom("_NET_WM_WINDOW_TYPE", 19);
     const auto dialog_type = atom("_NET_WM_WINDOW_TYPE_DIALOG", 26);
+    const auto utility_type = atom("_NET_WM_WINDOW_TYPE_UTILITY", 27);
+    const auto toolbar_type = atom("_NET_WM_WINDOW_TYPE_TOOLBAR", 27);
+    const auto notification_type = atom("_NET_WM_WINDOW_TYPE_NOTIFICATION", 32);
+    const auto splash_type = atom("_NET_WM_WINDOW_TYPE_SPLASH", 26);
+    const auto modal_atom = atom("_NET_WM_STATE_MODAL", 19);
     const auto dock_type = atom("_NET_WM_WINDOW_TYPE_DOCK", 24);
     const auto strut = atom("_NET_WM_STRUT", 13);
     const auto strut_partial = atom("_NET_WM_STRUT_PARTIAL", 21);
@@ -451,7 +437,7 @@ int main(int argc, char **argv) {
     const auto fullscreen_atom = atom("_NET_WM_STATE_FULLSCREEN", 24);
     const auto attention_atom = atom("_NET_WM_STATE_DEMANDS_ATTENTION", 31);
     const auto urgent_workspaces = atom("_MORTAR_URGENT_WORKSPACES", 25);
-    if (!output_workspaces || !net_clients || !net_stacking || !net_active || !net_names || !net_supported || !net_number || !net_current || !net_close || !net_workarea || !net_desktop || !net_check || !net_name || !utf8 || !window_type || !dialog_type || !dock_type || !strut || !strut_partial || !local_bar || !net_state || !fullscreen_atom || !attention_atom || !urgent_workspaces) return EXIT_FAILURE;
+    if (!output_workspaces || !net_clients || !net_stacking || !net_active || !net_names || !net_supported || !net_number || !net_current || !net_close || !net_workarea || !net_desktop || !net_check || !net_name || !utf8 || !window_type || !dialog_type || !utility_type || !toolbar_type || !notification_type || !splash_type || !modal_atom || !dock_type || !strut || !strut_partial || !local_bar || !net_state || !fullscreen_atom || !attention_atom || !urgent_workspaces) return EXIT_FAILURE;
     const auto persisted_workspaces = atom("_MORTAR_WORKSPACES", 18);
     if (!persisted_workspaces) return EXIT_FAILURE;
     using Property = std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)>;
@@ -789,11 +775,56 @@ int main(int argc, char **argv) {
         bottom = std::clamp(bottom, top + 1, int64_t(area.y) + area.height);
         return mortar::Rect{static_cast<int>(left), static_cast<int>(top), static_cast<int>(right-left), static_cast<int>(bottom-top)};
     };
+    std::optional<mortar::Rect> drag_gap_bounds;
+    std::vector<std::pair<xcb_window_t, std::vector<uint32_t>>> drag_hints;
+    auto tile_placements = [&](uint32_t workspace, mortar::Rect gap_bounds, bool cached) {
+        for (auto placement : workspaces[workspace].layout.geometry(gap_bounds)) {
+            if (is_fullscreen(placement.window) != fullscreen.end()) continue;
+            placement.bounds = mortar::inner_gap(placement.bounds, gap_bounds, config.gaps().inner);
+            auto found = std::find_if(drag_hints.begin(), drag_hints.end(), [&](const auto &entry) {
+                return entry.first == placement.window;
+            });
+            if (!cached || found == drag_hints.end()) {
+                Property hints{xcb_get_property_reply(c, xcb_get_property(c, false, placement.window,
+                    XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 0, 18), nullptr), &std::free};
+                std::vector<uint32_t> values;
+                if (hints && hints->type == XCB_ATOM_WM_SIZE_HINTS && hints->format == 32) {
+                    const auto *data = static_cast<const uint32_t *>(xcb_get_property_value(hints.get()));
+                    auto count = xcb_get_property_value_length(hints.get()) / 4;
+                    if (count) values.assign(data, data + count);
+                }
+                if (found == drag_hints.end()) {
+                    drag_hints.emplace_back(placement.window, std::move(values));
+                    found = std::prev(drag_hints.end());
+                } else found->second = std::move(values);
+            }
+            const uint32_t border = std::min<uint32_t>(config.border().width,
+                std::max(0, std::min(placement.bounds.width, placement.bounds.height) - 1) / 2);
+            uint32_t tile_width = std::max(1, placement.bounds.width - static_cast<int>(2 * border));
+            uint32_t tile_height = std::max(1, placement.bounds.height - static_cast<int>(2 * border));
+            if (!found->second.empty())
+                std::tie(tile_width, tile_height) = hinted_size(tile_width, tile_height,
+                    found->second.data(), found->second.size());
+            const uint32_t values[] = {static_cast<uint32_t>(placement.bounds.x),
+                                       static_cast<uint32_t>(placement.bounds.y), tile_width, tile_height, border};
+            xcb_configure_window(c, placement.window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+                                 XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
+                                 XCB_CONFIG_WINDOW_BORDER_WIDTH, values);
+        }
+    };
     auto tile = [&] {
+        drag_gap_bounds.reset();
+        drag_hints.clear();
+        if (drag && drag->floating) drag->valid = false;
         for (const auto &output : outputs.outputs()) {
         const auto workspace = output.workspace;
         for (auto window : workspaces[workspace].windows) {
-            const uint32_t color = workspace == current && window == workspaces[workspace].focused
+            const auto &layout = workspaces[workspace].layout;
+            const auto &selected = layout.selected_path();
+            auto path = selected ? layout.window_path(window) : std::nullopt;
+            const bool highlighted = selected ? path && path->size() > selected->size() &&
+                std::equal(selected->begin(), selected->end(), path->begin()) : window == workspaces[workspace].focused;
+            const uint32_t color = workspace == current && highlighted
                 ? config.border().focused : config.border().unfocused;
             border_colors.apply(window, color);
         }
@@ -811,27 +842,7 @@ int main(int argc, char **argv) {
                 XCB_CONFIG_WINDOW_BORDER_WIDTH, values);
         }
         const auto gap_bounds = mortar::outer_gap(usable(output.bounds), config.gaps().outer);
-        for (auto placement : workspaces[workspace].layout.geometry(gap_bounds)) {
-            if (is_fullscreen(placement.window) != fullscreen.end()) continue;
-            placement.bounds = mortar::inner_gap(placement.bounds, gap_bounds, config.gaps().inner);
-            using Property = std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)>;
-            Property hints{xcb_get_property_reply(c, xcb_get_property(c, false, placement.window,
-                XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 0, 18), nullptr), &std::free};
-            const uint32_t border = std::min<uint32_t>(config.border().width,
-                std::max(0, std::min(placement.bounds.width, placement.bounds.height) - 1) / 2);
-            uint32_t tile_width = std::max(1, placement.bounds.width - static_cast<int>(2 * border));
-            uint32_t tile_height = std::max(1, placement.bounds.height - static_cast<int>(2 * border));
-            if (hints && hints->type == XCB_ATOM_WM_SIZE_HINTS && hints->format == 32) {
-                std::tie(tile_width, tile_height) = hinted_size(tile_width, tile_height,
-                    static_cast<const uint32_t *>(xcb_get_property_value(hints.get())),
-                    xcb_get_property_value_length(hints.get()) / 4);
-            }
-            const uint32_t values[] = {static_cast<uint32_t>(placement.bounds.x),
-                                       static_cast<uint32_t>(placement.bounds.y), tile_width, tile_height, border};
-            xcb_configure_window(c, placement.window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
-                                 XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
-                                 XCB_CONFIG_WINDOW_BORDER_WIDTH, values);
-        }
+        tile_placements(workspace, gap_bounds, false);
         const uint32_t above = XCB_STACK_MODE_ABOVE;
         for (auto window : workspaces[workspace].floating)
             if (window != workspaces[workspace].focused)
@@ -1087,12 +1098,12 @@ int main(int argc, char **argv) {
     };
     actions.focus_parent = [&] {
         auto &ws = workspaces[current];
-        if (is_fullscreen(ws.focused) == fullscreen.end() && ws.layout.contains(ws.focused))
-            ws.layout.select_parent(ws.focused);
+        if (is_fullscreen(ws.focused) == fullscreen.end() && ws.layout.contains(ws.focused) &&
+            ws.layout.select_parent(ws.focused)) tile();
     };
     actions.focus_child = [&] {
         auto &ws = workspaces[current];
-        if (ws.layout.contains(ws.focused)) ws.layout.select_child();
+        if (ws.layout.contains(ws.focused) && ws.layout.select_child()) tile();
     };
     actions.focus_sibling = [&](bool previous) {
         auto &ws = workspaces[current];
@@ -1141,7 +1152,10 @@ int main(int argc, char **argv) {
     auto resize_window = [&](xcb_window_t target, mortar::Direction direction, int pixels) {
         auto &ws = workspaces[current];
         if (is_fullscreen(target) != fullscreen.end()) return;
-        if (target != ws.focused) ws.layout.clear_selection();
+        if (target != ws.focused && ws.layout.selected_path()) {
+            ws.layout.clear_selection();
+            tile();
+        }
         if (ws.layout.contains(target)) {
             if (ws.layout.resize(target, direction, pixels, bounds())) tile();
         } else if (std::find(ws.floating.begin(), ws.floating.end(), target) != ws.floating.end()) {
@@ -1255,12 +1269,29 @@ int main(int argc, char **argv) {
             }
         }
         bool floating = transient && transient->type == XCB_ATOM_WINDOW && transient->format == 32 &&
-                        xcb_get_property_value_length(transient.get()) == 4 &&
+                        !transient->bytes_after && xcb_get_property_value_length(transient.get()) == 4 &&
                         *static_cast<const xcb_window_t *>(xcb_get_property_value(transient.get())) != XCB_NONE;
-        if (types && types->type == XCB_ATOM_ATOM && types->format == 32) {
+        if (types && types->type == XCB_ATOM_ATOM && types->format == 32 && !types->bytes_after) {
             auto *values = static_cast<const xcb_atom_t *>(xcb_get_property_value(types.get()));
             auto count = xcb_get_property_value_length(types.get()) / 4;
-            floating = floating || std::find(values, values + count, dialog_type) != values + count;
+            for (auto type : {dialog_type, utility_type, toolbar_type, notification_type, splash_type})
+                floating = floating || std::find(values, values + count, type) != values + count;
+        }
+        Property state{xcb_get_property_reply(c, xcb_get_property(c, false, window, net_state,
+            XCB_ATOM_ATOM, 0, 1024), nullptr), &std::free};
+        if (state && state->type == XCB_ATOM_ATOM && state->format == 32 && !state->bytes_after) {
+            auto *values = static_cast<const xcb_atom_t *>(xcb_get_property_value(state.get()));
+            auto count = xcb_get_property_value_length(state.get()) / 4;
+            floating = floating || std::find(values, values + count, modal_atom) != values + count;
+        }
+        Property size_hints{xcb_get_property_reply(c, xcb_get_property(c, false, window, XCB_ATOM_WM_NORMAL_HINTS,
+            XCB_ATOM_WM_SIZE_HINTS, 0, 18), nullptr), &std::free};
+        if (size_hints && size_hints->type == XCB_ATOM_WM_SIZE_HINTS && size_hints->format == 32 &&
+            !size_hints->bytes_after && xcb_get_property_value_length(size_hints.get()) >= 9 * 4) {
+            auto *values = static_cast<const uint32_t *>(xcb_get_property_value(size_hints.get()));
+            floating = floating || ((values[0] & ((1u << 4) | (1u << 5))) == ((1u << 4) | (1u << 5)) &&
+                values[5] > 0 && values[6] > 0 && values[5] <= INT32_MAX && values[6] <= INT32_MAX &&
+                values[5] == values[7] && values[6] == values[8]);
         }
         Property window_class{xcb_get_property_reply(c, xcb_get_property(c, false, window, XCB_ATOM_WM_CLASS,
             XCB_ATOM_STRING, 0, 1024), nullptr), &std::free};
@@ -1327,6 +1358,7 @@ int main(int argc, char **argv) {
             workspaces[desktop].windows.push_back(window);
         }
         if (std::find(clients.begin(), clients.end(), window) == clients.end()) clients.push_back(window);
+        grab_focus(window);
         if (desktop != current || !workspaces[desktop].focused) workspaces[desktop].focused = window;
         set_desktop(window, desktop);
         set_state(window, 1);
@@ -1533,6 +1565,7 @@ int main(int argc, char **argv) {
                 const uint32_t mask = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_COLOR_MAP_CHANGE;
                 xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &mask);
                 clients.push_back(window);
+                grab_focus(window);
                 bool attention = hints_urgent(window);
                 Property state{xcb_get_property_reply(c, xcb_get_property(c, false, window, net_state,
                     XCB_ATOM_ATOM, 0, 1024), nullptr), &std::free};
@@ -1553,6 +1586,7 @@ int main(int argc, char **argv) {
                 const uint32_t mask = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_COLOR_MAP_CHANGE;
                 xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &mask);
                 clients.push_back(window);
+                grab_focus(window);
             }
         }
         std::erase_if(scratch_windows, [&](auto window) { return !exists(window); });
@@ -1879,7 +1913,45 @@ int main(int argc, char **argv) {
             std::fprintf(stderr, "mortar: restart failed: %s\n", error.what());
         }
     };
+    auto reload = [&] {
+        if (!config.stage(path.c_str())) {
+            std::fprintf(stderr, "mortar: failed to reload configuration %s; keeping current configuration\n", path.c_str());
+            return;
+        }
+        try {
+            auto old_status = config.bar_status();
+            auto old_bar = config.bar();
+            auto bindings = prepare_bindings(config.staged_bindings());
+            xcb_grab_server(c);
+            try {
+                grab_mouse(config.staged_mouse_modifier());
+                try {
+                    keyboard->replace_bindings(std::move(bindings));
+                } catch (...) {
+                    grab_mouse(config.mouse_modifier());
+                    throw;
+                }
+            } catch (...) {
+                xcb_ungrab_server(c);
+                throw;
+            }
+            xcb_ungrab_server(c);
+            xcb_flush(c);
+            config.commit();
+            try {
+                tile();
+                if ((old_status != config.bar_status() || old_bar != config.bar()) && stop_bar()) start_bar();
+            } catch (const std::exception &error) {
+                std::fprintf(stderr, "mortar: configuration reloaded, but applying changes failed: %s\n", error.what());
+            }
+        } catch (const std::exception &error) {
+            config.discard();
+            std::fprintf(stderr, "mortar: failed to reload keybindings: %s; keeping current configuration\n", error.what());
+        }
+    };
+    std::unique_ptr<xcb_generic_event_t, decltype(&std::free)> deferred_event{nullptr, &std::free};
     while (!stopping) {
+        if (actions.reload) { actions.reload = false; reload(); }
         if (actions.restart) { actions.restart = false; restart(); }
         if (bar > 0) {
             bool reaped = false;
@@ -1895,7 +1967,27 @@ int main(int argc, char **argv) {
             if (error) std::fprintf(stderr, "mortar: cannot reap child: %s\n", std::strerror(error));
             return reaped || error;
         });
-        auto *event = xcb_poll_for_event(c);
+        auto *event = deferred_event ? deferred_event.release() : xcb_poll_for_event(c);
+        if (event && drag && drag->floating && (event->response_type & 0x7f) == XCB_MOTION_NOTIFY) {
+            for (int count = 0; count < 64; ++count) {
+                auto *next = xcb_poll_for_queued_event(c);
+                if (!next) break;
+                if ((next->response_type & 0x7f) != XCB_MOTION_NOTIFY) {
+                    deferred_event.reset(next);
+                    break;
+                }
+                auto *previous = reinterpret_cast<xcb_motion_notify_event_t *>(event);
+                auto *motion = reinterpret_cast<xcb_motion_notify_event_t *>(next);
+                int px = previous->root_x - drag->x, py = previous->root_y - drag->y;
+                int nx = motion->root_x - previous->root_x, ny = motion->root_y - previous->root_y;
+                if ((px && nx && (px < 0) != (nx < 0)) || (py && ny && (py < 0) != (ny < 0))) {
+                    deferred_event.reset(next);
+                    break;
+                }
+                std::free(event);
+                event = next;
+            }
+        }
         if (xcb_connection_has_error(c)) { std::free(event); break; }
         auto fds = ipc ? ipc->poll_fds() : std::vector<pollfd>{};
         fds.push_back({xcb_get_file_descriptor(c), POLLIN, 0});
@@ -1908,6 +2000,10 @@ int main(int argc, char **argv) {
         bool ipc_dispatched = ipc && ready >= 0;
         if (ipc_dispatched) {
             fds.pop_back();
+            if (drag && std::any_of(fds.begin(), fds.end(), [](const auto &fd) { return fd.revents != 0; })) {
+                drag->valid = false;
+                drag_gap_bounds.reset();
+            }
             try {
                 ipc->dispatch(fds, [&](int client, std::string_view frame) {
                     if (frame == "subscribe workspace") {
@@ -1947,90 +2043,15 @@ int main(int argc, char **argv) {
             }
         }
         try {
+            if (drag && (event->response_type & 0x7f) == XCB_KEY_PRESS) drag->valid = false;
             if ((event->response_type & 0x7f) == XCB_KEY_PRESS)
                 actions.time = reinterpret_cast<xcb_key_press_event_t *>(event)->time;
             auto old_alt = keyboard->alt_modifier();
             auto old_locks = keyboard->lock_modifiers();
-            auto action = keyboard->process(*event);
+            keyboard->process(*event);
             if (old_alt != keyboard->alt_modifier() || old_locks != keyboard->lock_modifiers()) grab_mouse(config.mouse_modifier());
-            if (action) {
-                unsigned digit = (action->workspace + 1) % 10;
-                auto result = action->move ? config.run_move_workspace(digit) : config.run_workspace(digit);
-                if (result == mortar::Config::Result::absent) {
-                    if (action->move) move_window(workspaces[current].focused, action->workspace);
-                    else switch_workspace(action->workspace);
-                } else if (result == mortar::Config::Result::failure) {
-                    std::fprintf(stderr, "mortar: %sworkspace binding %u failed\n", action->move ? "move-" : "", digit);
-                }
-            }
-            if (auto id = keyboard->callback()) {
-                if (*id == reload_config) {
-                    if (path.empty() || !config.stage(path.c_str())) {
-                        std::fprintf(stderr, "mortar: failed to reload configuration %s; keeping current configuration\n", path.c_str());
-                    } else {
-                        try {
-                            auto old_status = config.bar_status();
-                            auto old_bar = config.bar();
-                            auto bindings = prepare_bindings(config.staged_bindings());
-                            xcb_grab_server(c);
-                            try {
-                                grab_mouse(config.staged_mouse_modifier());
-                                try {
-                                    keyboard->replace_bindings(std::move(bindings));
-                                } catch (...) {
-                                    grab_mouse(config.mouse_modifier());
-                                    throw;
-                                }
-                            } catch (...) {
-                                xcb_ungrab_server(c);
-                                throw;
-                            }
-                            xcb_ungrab_server(c);
-                            xcb_flush(c);
-                            config.commit();
-                            try {
-                                tile();
-                                if ((old_status != config.bar_status() || old_bar != config.bar()) && stop_bar()) start_bar();
-                            } catch (const std::exception &error) {
-                                std::fprintf(stderr, "mortar: configuration reloaded, but applying changes failed: %s\n", error.what());
-                            }
-                        } catch (const std::exception &error) {
-                            config.discard();
-                            std::fprintf(stderr, "mortar: failed to reload keybindings: %s; keeping current configuration\n", error.what());
-                        }
-                    }
-                } else if (*id == split_horizontal || *id == split_vertical) {
-                    actions.split(*id == split_horizontal ? mortar::Split::horizontal : mortar::Split::vertical);
-                } else if (*id == toggle_split) {
-                    actions.toggle_split();
-                } else if (*id >= focus_left && *id <= focus_right) {
-                    const mortar::Direction directions[] = {mortar::Direction::left, mortar::Direction::down,
-                        mortar::Direction::up, mortar::Direction::right};
-                    actions.focus(directions[*id - focus_left]);
-                } else if (*id >= move_left && *id <= resize_right) {
-                    const mortar::Direction directions[] = {mortar::Direction::left, mortar::Direction::down,
-                        mortar::Direction::up, mortar::Direction::right};
-                    if (*id <= move_right) actions.move_direction(directions[*id - move_left]);
-                    else actions.resize(directions[*id - resize_left], 10);
-                } else if (*id == close_focused) {
-                    actions.close(0);
-                } else if (*id == scratch_send) {
-                    actions.scratch_send(XCB_NONE);
-                } else if (*id == scratch_toggle) {
-                    actions.scratch_toggle();
-                } else if (*id == toggle_fullscreen) {
-                    actions.toggle_fullscreen(0);
-                } else if (*id == toggle_floating) {
-                    actions.toggle_floating(0);
-                } else if (*id == focus_parent) {
-                    actions.focus_parent();
-                } else if (*id == focus_mode_toggle) {
-                    actions.focus_mode_toggle();
-                } else if (*id == terminal || *id == launcher) {
-                    actions.spawn({*id == terminal ? "x-terminal-emulator" : "dmenu_run"});
-                } else if (config.run_binding(*id) != mortar::Config::Result::success) {
-                    std::fprintf(stderr, "mortar: key binding %u failed\n", *id);
-                }
+            if (auto id = keyboard->callback(); id && config.run_binding(*id) != mortar::Config::Result::success) {
+                std::fprintf(stderr, "mortar: key binding %u failed\n", *id);
             }
         } catch (const std::exception &error) {
             std::fprintf(stderr, "mortar: keyboard update failed: %s\n", error.what());
@@ -2038,6 +2059,7 @@ int main(int argc, char **argv) {
         const auto type = event->response_type & 0x7f;
         if (randr && randr->present && (type == randr->first_event + XCB_RANDR_SCREEN_CHANGE_NOTIFY ||
             type == randr->first_event + XCB_RANDR_NOTIFY)) {
+            if (drag) drag->valid = false;
             try {
                 auto old_outputs = outputs.outputs();
                 auto discovered = mortar::discover_outputs(c, root);
@@ -2101,6 +2123,22 @@ int main(int argc, char **argv) {
         switch (type) {
         case XCB_BUTTON_PRESS: {
             auto *press = reinterpret_cast<xcb_button_press_event_t *>(event);
+            if (press->event != root) {
+                struct ReplayPointer {
+                    xcb_connection_t *connection;
+                    xcb_timestamp_t time;
+                    ~ReplayPointer() {
+                        xcb_allow_events(connection, XCB_ALLOW_REPLAY_POINTER, time);
+                        xcb_flush(connection);
+                    }
+                } replay{c, press->time};
+                int workspace = owner(press->event);
+                if (workspace >= 0 && visible(workspace)) {
+                    if (static_cast<uint32_t>(workspace) != current) switch_workspace(workspace);
+                    focus(press->event, press->time);
+                }
+                break;
+            }
             int workspace = owner(press->child);
             if (workspace < 0 || !visible(workspace) || is_fullscreen(press->child) != fullscreen.end()) break;
             auto &ws = workspaces[workspace];
@@ -2111,9 +2149,12 @@ int main(int argc, char **argv) {
             if (!geometry) break;
             if (static_cast<uint32_t>(workspace) != current) switch_workspace(workspace);
             focus(press->child, press->time);
+            drag_gap_bounds.reset();
             drag = PointerDrag{press->child, static_cast<uint32_t>(workspace), press->root_x, press->root_y,
                 press->root_x <= geometry->x + geometry->width / 2,
-                press->root_y <= geometry->y + geometry->height / 2, floating, press->detail};
+                press->root_y <= geometry->y + geometry->height / 2, floating, press->detail,
+                geometry->x, geometry->y, geometry->width, geometry->height,
+                press->root_x, press->root_y, geometry->x, geometry->y, geometry->width, geometry->height, {}, press->detail == 1};
             break;
         }
         case XCB_MOTION_NOTIFY: {
@@ -2130,24 +2171,90 @@ int main(int argc, char **argv) {
             auto *motion = reinterpret_cast<xcb_motion_notify_event_t *>(event);
             int dx = motion->root_x - drag->x, dy = motion->root_y - drag->y;
             if (drag->floating) {
-                std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
-                    xcb_get_geometry_reply(c, xcb_get_geometry(c, drag->window), nullptr), &std::free};
-                if (!geometry) break;
+                if (!drag->valid) {
+                    std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                        xcb_get_geometry_reply(c, xcb_get_geometry(c, drag->window), nullptr), &std::free};
+                    if (!geometry) { drag.reset(); xcb_ungrab_pointer(c, XCB_CURRENT_TIME); break; }
+                    drag->gx = geometry->x; drag->gy = geometry->y;
+                    drag->width = geometry->width; drag->height = geometry->height;
+                    drag->anchor_x = drag->x; drag->anchor_y = drag->y;
+                    drag->anchor_gx = drag->gx; drag->anchor_gy = drag->gy;
+                    drag->anchor_width = drag->width; drag->anchor_height = drag->height;
+                    drag->hints.clear();
+                    if (drag->button != 1) {
+                        std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)> hints{
+                            xcb_get_property_reply(c, xcb_get_property(c, false, drag->window, XCB_ATOM_WM_NORMAL_HINTS,
+                                XCB_ATOM_WM_SIZE_HINTS, 0, 18), nullptr), &std::free};
+                        if (hints && hints->type == XCB_ATOM_WM_SIZE_HINTS && hints->format == 32) {
+                            auto *values = static_cast<const uint32_t *>(xcb_get_property_value(hints.get()));
+                            drag->hints.assign(values, values + xcb_get_property_value_length(hints.get()) / 4);
+                        }
+                    }
+                    drag->valid = true;
+                }
+                dx = motion->root_x - drag->anchor_x; dy = motion->root_y - drag->anchor_y;
+                drag->gx = drag->anchor_gx; drag->gy = drag->anchor_gy;
+                drag->width = drag->anchor_width; drag->height = drag->anchor_height;
                 if (drag->button == 1) {
-                    int x = std::clamp(int(geometry->x) + dx, int(INT16_MIN), int(INT16_MAX));
-                    int y = std::clamp(int(geometry->y) + dy, int(INT16_MIN), int(INT16_MAX));
-                    uint32_t values[] = {static_cast<uint32_t>(x), static_cast<uint32_t>(y)};
+                    int x = drag->gx + dx, y = drag->gy + dy;
+                    drag->gx = std::clamp(x, int(INT16_MIN), int(INT16_MAX));
+                    drag->gy = std::clamp(y, int(INT16_MIN), int(INT16_MAX));
+                    if (x != drag->gx) { drag->anchor_x = motion->root_x; drag->anchor_gx = drag->gx; }
+                    if (y != drag->gy) { drag->anchor_y = motion->root_y; drag->anchor_gy = drag->gy; }
+                    uint32_t values[] = {static_cast<uint32_t>(drag->gx), static_cast<uint32_t>(drag->gy)};
                     xcb_configure_window(c, drag->window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, values);
                 } else {
                     workspaces[current].layout.clear_selection();
-                    resize_window(drag->window, drag->left ? mortar::Direction::left : mortar::Direction::right, drag->left ? -dx : dx);
-                    resize_window(drag->window, drag->top ? mortar::Direction::up : mortar::Direction::down, drag->top ? -dy : dy);
-                    std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> updated{
-                        xcb_get_geometry_reply(c, xcb_get_geometry(c, drag->window), nullptr), &std::free};
-                    if (updated) {
-                        drag->x += (int(updated->width) - geometry->width) * (drag->left ? -1 : 1);
-                        drag->y += (int(updated->height) - geometry->height) * (drag->top ? -1 : 1);
+                    int requested_width = drag->width + dx * (drag->left ? -1 : 1);
+                    int requested_height = drag->height + dy * (drag->top ? -1 : 1);
+                    int min_width = 1, min_height = 1, max_width = UINT16_MAX, max_height = UINT16_MAX;
+                    if (drag->hints.size() >= 15) {
+                        auto flags = drag->hints[0];
+                        auto bound = [&](size_t index, uint32_t flag, int fallback) {
+                            auto value = drag->hints[index];
+                            return (flags & flag) && value > 0 && value <= INT32_MAX
+                                ? static_cast<int>(std::min(value, uint32_t{UINT16_MAX})) : fallback;
+                        };
+                        min_width = bound(5, 16, 1); min_height = bound(6, 16, 1);
+                        max_width = std::max(min_width, bound(7, 32, UINT16_MAX));
+                        max_height = std::max(min_height, bound(8, 32, UINT16_MAX));
                     }
+                    uint32_t width = std::clamp(requested_width, min_width, max_width);
+                    uint32_t height = std::clamp(requested_height, min_height, max_height);
+                    if (drag->hints.size() >= 15 && (drag->hints[0] & 128)) {
+                        auto &h = drag->hints;
+                        if (h[11] && h[12] && h[13] && h[14] && h[11] <= INT32_MAX && h[12] <= INT32_MAX &&
+                            h[13] <= INT32_MAX && h[14] <= INT32_MAX && uint64_t{h[11]} * h[14] <= uint64_t{h[13]} * h[12]) {
+                            if (dx && !dy) {
+                                uint64_t low = (uint64_t{width} * h[14] + h[13] - 1) / h[13];
+                                uint64_t high = uint64_t{width} * h[12] / h[11];
+                                if (low <= high) height = static_cast<uint32_t>(std::min<uint64_t>(UINT16_MAX, std::clamp<uint64_t>(height, low, high)));
+                            } else if (dy && !dx) {
+                                uint64_t low = (uint64_t{height} * h[11] + h[12] - 1) / h[12];
+                                uint64_t high = uint64_t{height} * h[13] / h[14];
+                                if (low <= high) width = static_cast<uint32_t>(std::min<uint64_t>(UINT16_MAX, std::clamp<uint64_t>(width, low, high)));
+                            }
+                        }
+                    }
+                    if (!drag->hints.empty())
+                        std::tie(width, height) = floating_hinted_size(width, height, drag->hints.data(), drag->hints.size());
+                    int x = drag->gx + (drag->left ? drag->width - static_cast<int>(width) : 0);
+                    int y = drag->gy + (drag->top ? drag->height - static_cast<int>(height) : 0);
+                    if (x >= INT16_MIN && x <= INT16_MAX && y >= INT16_MIN && y <= INT16_MAX) {
+                        drag->gx = x; drag->gy = y; drag->width = width; drag->height = height;
+                    }
+                    if (requested_width < min_width || requested_width > max_width || x < INT16_MIN || x > INT16_MAX) {
+                        drag->anchor_x = motion->root_x; drag->anchor_gx = drag->gx; drag->anchor_width = drag->width;
+                    }
+                    if (requested_height < min_height || requested_height > max_height || y < INT16_MIN || y > INT16_MAX) {
+                        drag->anchor_y = motion->root_y; drag->anchor_gy = drag->gy; drag->anchor_height = drag->height;
+                    }
+                    uint32_t values[] = {static_cast<uint32_t>(drag->gx), static_cast<uint32_t>(drag->gy),
+                        static_cast<uint32_t>(drag->width), static_cast<uint32_t>(drag->height)};
+                    xcb_configure_window(c, drag->window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+                        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, values);
+                    drag->x = motion->root_x;
+                    drag->y = motion->root_y;
                     break;
                 }
             } else {
@@ -2158,7 +2265,14 @@ int main(int argc, char **argv) {
                                               drag->top ? -dy : dy, bounds());
                 if (horizontal) drag->x = motion->root_x;
                 if (vertical) drag->y = motion->root_y;
-                if (horizontal || vertical) tile();
+                if (horizontal || vertical) {
+                    if (!drag_gap_bounds) {
+                        drag_hints.clear();
+                        drag_gap_bounds = mortar::outer_gap(usable(bounds()), config.gaps().outer);
+                    }
+                    tile_placements(drag->workspace, *drag_gap_bounds, true);
+                    xcb_flush(c);
+                }
                 break;
             }
             drag->x = motion->root_x;
@@ -2194,6 +2308,10 @@ int main(int argc, char **argv) {
         }
         case XCB_PROPERTY_NOTIFY: {
             auto *property = reinterpret_cast<xcb_property_notify_event_t *>(event);
+            if (drag && property->atom == XCB_ATOM_WM_NORMAL_HINTS) {
+                drag_gap_bounds.reset();
+                if (property->window == drag->window) drag->valid = false;
+            }
             if (!(event->response_type & 0x80) && (property->atom == strut || property->atom == strut_partial || property->atom == local_bar) &&
                 std::find(docks.begin(), docks.end(), property->window) != docks.end()) tile();
             if (!(event->response_type & 0x80) && property->atom == XCB_ATOM_WM_HINTS && owner(property->window) >= 0)
@@ -2300,6 +2418,8 @@ int main(int argc, char **argv) {
             }
             auto removed = static_cast<size_t>(was_tiled || scratch_removed) + std::erase(iconic, window);
             if (removed) {
+                if (type == XCB_UNMAP_NOTIFY)
+                    xcb_ungrab_button(c, XCB_BUTTON_INDEX_ANY, window, XCB_MOD_MASK_ANY);
                 std::erase(urgent, window);
                 window_event("close", window);
                 std::erase(clients, window);
@@ -2320,6 +2440,7 @@ int main(int argc, char **argv) {
         }
         case XCB_CONFIGURE_REQUEST: {
             auto *request = reinterpret_cast<xcb_configure_request_event_t *>(event);
+            if (drag && request->window == drag->window) drag->valid = false;
             int workspace = owner(request->window);
             if (workspace >= 0 && (workspaces[workspace].layout.contains(request->window) ||
                                    is_fullscreen(request->window) != fullscreen.end())) {
@@ -2362,7 +2483,7 @@ int main(int argc, char **argv) {
             break;
         }
         }
-        if (ipc_dispatched || type == XCB_KEY_PRESS || type == XCB_ENTER_NOTIFY ||
+        if (ipc_dispatched || type == XCB_KEY_PRESS || type == XCB_BUTTON_PRESS || type == XCB_ENTER_NOTIFY ||
             type == XCB_MAP_REQUEST || type == XCB_UNMAP_NOTIFY || type == XCB_DESTROY_NOTIFY ||
             type == XCB_CLIENT_MESSAGE || type == XCB_CONFIGURE_REQUEST || type == XCB_CONFIGURE_NOTIFY ||
             (type == XCB_PROPERTY_NOTIFY && (reinterpret_cast<xcb_property_notify_event_t *>(event)->atom == focus_time || reinterpret_cast<xcb_property_notify_event_t *>(event)->atom == XCB_ATOM_WM_HINTS)) ||

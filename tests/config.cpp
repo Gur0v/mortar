@@ -32,8 +32,7 @@ void workspace(void *data, unsigned digit) {
     if (host.fail) throw std::runtime_error("failure");
     if (host.reenter) {
         check(!host.config->load(host.path));
-        check(host.config->run_workspace(1) == mortar::Config::Result::failure);
-        check(host.config->run_workspace(9) == mortar::Config::Result::failure);
+        check(host.config->run_binding(0) == mortar::Config::Result::failure);
         check(!host.config->evaluate("1").success);
     }
     host.workspace = digit;
@@ -192,14 +191,10 @@ int main() {
     check(dup2(saved_stderr, STDERR_FILENO) >= 0);
     close(saved_stderr);
     std::fclose(errors);
-    check(config.run_workspace(1) == Result::absent);
-    check(config.run_workspace(10) == Result::failure);
-    write("(bind-workspace 1 (lambda () (workspace 4)))\n"
-          "(bind-move-workspace 2 (lambda () (move-to-workspace 7)))\n"
-          "(bind-workspace 3 (lambda () (error \"failure\")))\n"
-          "(bind-key 65 8 (lambda () (workspace 2)))\n"
+    write("(bind-key 65 8 (lambda () (workspace 2)))\n"
           "(bind-key 65 8 (lambda () (workspace 5)))\n"
-          "(bind-key 66 9 (lambda () (error \"failure\")))\n");
+          "(bind-key 66 9 (lambda () (error \"failure\")))\n"
+          "(bind-key 67 0 (lambda () (move-to-workspace 7)))\n");
     check(config.load(path));
     auto evaluation = config.evaluate("(begin (define evaluation-value 42) (+ evaluation-value 1))");
     check(evaluation.success && evaluation.text == "43");
@@ -225,27 +220,24 @@ int main() {
                           "(make-capture))").success);
     check(!config.evaluate("(begin (display \"bad\" saved-port) (force-output saved-port))").success);
     scm_gc();
-    check(config.bindings().size() == 2);
+    check(config.bindings().size() == 3);
     check(config.bindings()[0].keysym == 65 && config.bindings()[0].modifiers == 8);
     check(config.run_binding(config.bindings()[0].callback) == Result::success && host.workspace == 5);
     check(config.run_binding(config.bindings()[1].callback) == Result::failure);
-    check(config.run_binding(2) == Result::absent);
-    check(config.run_workspace(1) == Result::success && host.workspace == 4);
+    check(config.run_binding(2) == Result::success && host.move == 7);
+    check(config.run_binding(3) == Result::absent);
     host.reenter = true;
-    check(config.run_workspace(1) == Result::success);
+    check(config.run_binding(0) == Result::success);
     host.reenter = false;
-    check(config.run_move_workspace(2) == Result::success && host.move == 7);
-    check(config.run_workspace(3) == Result::failure);
+    check(config.evaluate("(move-to-workspace 7)").success && host.move == 7);
     host.fail = true;
-    check(config.run_workspace(1) == Result::failure);
+    check(config.run_binding(0) == Result::failure);
     host.fail = false;
-    write("(bind-workspace 1 (lambda () (workspace 8))) "
-          "(bind-key 67 0 (lambda () (workspace 8))) (error \"bad\")");
+    write("(bind-key 67 0 (lambda () (workspace 8))) (error \"bad\")");
     check(!config.load(path));
     scm_gc();
-    check(config.bindings().size() == 2 && config.bindings()[0].keysym == 65);
+    check(config.bindings().size() == 3 && config.bindings()[0].keysym == 65);
     check(config.run_binding(0) == Result::success && host.workspace == 5);
-    check(config.run_workspace(1) == Result::success && host.workspace == 4);
     write("(bind-key 67 0 (lambda () (workspace 8)))");
     check(config.stage(path));
     scm_gc();
@@ -257,10 +249,8 @@ int main() {
     scm_gc();
     config.commit();
     check(config.run_binding(0) == Result::success && host.workspace == 8);
-    write("(bind-workspace 1 (lambda () (workspace 4))) "
-          "(bind-key 65 8 (lambda () (workspace 5)))");
+    write("(bind-key 65 8 (lambda () (workspace 5)))");
     check(config.load(path));
-    check(config.run_workspace(1) == Result::success && host.workspace == 4);
     write("(bind-key 0 0 (lambda () #t))");
     check(!config.load(path));
     write("(bind-key 65 65536 (lambda () #t))");
@@ -280,21 +270,19 @@ int main() {
         write(invalid);
         check(!config.load(path) && config.bindings().size() == 2);
     }
-    write("(bind-workspace 1 (lambda () (workspace 4))) (bind-key 65 8 (lambda () (workspace 5)))");
+    write("(bind-key 65 8 (lambda () (workspace 5)))");
     check(config.load(path));
     host.workspace = 4;
     write("(workspace 8)");
     check(!config.load(path) && host.workspace == 4);
     write("(move-to-workspace 8)");
     check(!config.load(path) && host.move == 7);
-    check(config.run_workspace(1) == Result::success && host.workspace == 4);
-    write("(bind-workspace 10 (lambda () #t))");
-    check(!config.load(path));
-    write("(bind-workspace 1 42)");
-    check(!config.load(path));
+    for (const char *obsolete : {"(bind-workspace 1 (lambda () #t))", "(bind-move-workspace 1 (lambda () #t))"}) {
+        write(obsolete);
+        check(!config.load(path));
+    }
     write("(throw 'misc-error)");
     check(!config.load(path));
-    check(config.run_workspace(1) == Result::success && host.workspace == 4);
     write("(bind-key 1 0 (lambda () (split 'vertical) (focus 'down) (close) (spawn \"printf\" \"a b\" \"\"))) "
           "(bind-key 2 0 (lambda () (spawn 5))) "
           "(bind-key 3 0 (lambda () (spawn \"\"))) "
@@ -319,7 +307,6 @@ int main() {
     check(!config.load(path));
     write("#t");
     check(config.load(path));
-    check(config.run_workspace(1) == Result::absent);
     check(config.bindings().empty() && config.run_binding(0) == Result::absent);
     check(!config.load("/nonexistent/mortar-config"));
     write("(bar-status \"program\" \"a b\" \"\")");
@@ -396,6 +383,17 @@ int main() {
     check(host.window_actions.back() == mortar::Config::WindowAction::restart);
     host.fail = true;
     check(!config.evaluate("(restart)").success);
+    host.fail = false;
+    write("(reload)");
+    check(!config.load(path));
+    check(config.evaluate("(reload)").success);
+    check(host.window_actions.back() == mortar::Config::WindowAction::reload && host.target == 0);
+    check(!config.evaluate("(reload 1)").success);
+    write("(bind-key 1 0 (lambda () (reload)))");
+    check(config.load(path) && config.run_binding(0) == Result::success);
+    check(host.window_actions.back() == mortar::Config::WindowAction::reload && host.target == 0);
+    host.fail = true;
+    check(!config.evaluate("(reload)").success);
     host.fail = false;
     for (const char *action : {"(focus-output-next)", "(focus-output-previous)", "(move-to-output-next)", "(move-to-output-previous)"}) {
         write(action);

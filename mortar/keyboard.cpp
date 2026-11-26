@@ -138,7 +138,6 @@ void Keyboard::reload()
         xkb_keymap_unref(map);
         throw std::runtime_error("XKB Alt modifier unavailable");
     }
-    std::vector<Key> keys;
     std::vector<BindingKey> binding_keys;
     for (auto key = xkb_keymap_min_keycode(map); key <= xkb_keymap_max_keycode(map) && key <= 255; ++key) {
         for (xkb_layout_index_t group = 0; group < xkb_keymap_num_layouts_for_key(map, key); ++group) {
@@ -156,19 +155,6 @@ void Keyboard::reload()
                             auto mods = static_cast<std::uint16_t>((masks[j] | binding.modifiers |
                                 (binding.dynamic_alt ? alt : 0)) & ~locks);
                             binding_keys.push_back({static_cast<xcb_keycode_t>(key), group, mods, binding.callback, priority});
-                        }
-                    }
-                    if (symbols[i] >= XKB_KEY_0 && symbols[i] <= XKB_KEY_9) {
-                        auto workspace = symbols[i] == XKB_KEY_0 ? 9U : symbols[i] - XKB_KEY_1;
-                        xkb_mod_mask_t masks[256];
-                        auto mask_count = xkb_keymap_key_get_mods_for_level(map, key, group, level, masks, 256);
-                        for (std::size_t j = 0; j < mask_count; ++j) {
-                            if ((masks[j] & ~(0xffU | static_cast<unsigned>(locks))) != 0) continue;
-                            auto mods = static_cast<std::uint16_t>(masks[j] & ~locks);
-                            if ((mods & alt) != 0 ||
-                                (mods & (XCB_MOD_MASK_SHIFT | XCB_MOD_MASK_CONTROL)) ==
-                                    (XCB_MOD_MASK_SHIFT | XCB_MOD_MASK_CONTROL)) continue;
-                            keys.push_back({static_cast<xcb_keycode_t>(key), group, workspace, mods});
                         }
                     }
                 }
@@ -198,28 +184,6 @@ void Keyboard::reload()
                 }
             }
         }
-        for (auto [key, group, workspace, modifiers] : keys) {
-            (void)group;
-            (void)workspace;
-            auto move = (modifiers & XCB_MOD_MASK_SHIFT) ? XCB_MOD_MASK_CONTROL : XCB_MOD_MASK_SHIFT;
-            for (unsigned extra : {0U, static_cast<unsigned>(move)}) {
-                for (unsigned mask = 0; mask < 256; ++mask) {
-                    if ((mask & ~locks) != 0) continue;
-                    auto grab = std::pair{key, static_cast<std::uint16_t>(alt | modifiers | extra | mask)};
-                    if (std::find(next.begin(), next.end(), grab) != next.end()) continue;
-                    next.push_back(grab);
-                    if (std::find(grabs_.begin(), grabs_.end(), grab) != grabs_.end()) continue;
-                    added.push_back(grab);
-                    try {
-                        check(connection_, xcb_grab_key_checked(connection_, 1, root_, grab.second, key,
-                            XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC));
-                    } catch (...) {
-                        added.pop_back();
-                        throw;
-                    }
-                }
-            }
-        }
     } catch (...) {
         for (auto [key, mods] : added) xcb_ungrab_key(connection_, key, root_, mods);
         xkb_keymap_unref(map);
@@ -233,13 +197,12 @@ void Keyboard::reload()
     device_ = device;
     xkb_keymap_unref(keymap_);
     keymap_ = map;
-    keys_ = std::move(keys);
     binding_keys_ = std::move(binding_keys);
     alt_ = alt;
     locks_ = locks;
 }
 
-std::optional<WorkspaceAction> Keyboard::process(const xcb_generic_event_t& event)
+void Keyboard::process(const xcb_generic_event_t& event)
 {
     callback_.reset();
     auto type = event.response_type & 0x7f;
@@ -264,18 +227,7 @@ std::optional<WorkspaceAction> Keyboard::process(const xcb_generic_event_t& even
                 callback_ = callback;
             }
         }
-        if (priority) return std::nullopt;
-        for (auto [key, layout, workspace, modifiers] : keys_) {
-            if (key != press.detail || layout != group) continue;
-            if (mods == (alt_ | modifiers)) return WorkspaceAction{workspace, false};
-        }
-        for (auto [key, layout, workspace, modifiers] : keys_) {
-            auto move = (modifiers & XCB_MOD_MASK_SHIFT) ? XCB_MOD_MASK_CONTROL : XCB_MOD_MASK_SHIFT;
-            if (key == press.detail && layout == group && mods == (alt_ | modifiers | move))
-                return WorkspaceAction{workspace, true};
-        }
     }
-    return std::nullopt;
 }
 
 }

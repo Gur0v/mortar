@@ -10,11 +10,6 @@
 
 namespace mortar {
 
-struct WorkspaceAction {
-    std::uint32_t workspace;
-    bool move;
-};
-
 struct KeyboardBinding {
     xkb_keysym_t keysym;
     std::uint16_t modifiers;
@@ -29,7 +24,7 @@ public:
     Keyboard(const Keyboard&) = delete;
     Keyboard& operator=(const Keyboard&) = delete;
 
-    std::optional<WorkspaceAction> process(const xcb_generic_event_t& event);
+    void process(const xcb_generic_event_t& event);
     void reload();
     void replace_bindings(std::vector<KeyboardBinding> bindings);
     std::optional<std::uint32_t> callback() const noexcept { return callback_; }
@@ -47,13 +42,6 @@ private:
     std::uint16_t alt_ = 0;
     std::uint16_t locks_ = 0;
     std::vector<std::pair<xcb_keycode_t, std::uint16_t>> grabs_;
-    struct Key {
-        xcb_keycode_t key;
-        xkb_layout_index_t group;
-        std::uint32_t workspace;
-        std::uint16_t modifiers;
-    };
-    std::vector<Key> keys_;
     struct BindingKey {
         xcb_keycode_t key;
         xkb_layout_index_t group;

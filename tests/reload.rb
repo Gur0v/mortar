@@ -22,7 +22,7 @@ Dir.mktmpdir('mortar-reload-') do |dir|
     File.write(bar, "#!/bin/sh\ntrap '' TERM\nprintf '%s %s\\n' \"$$\" \"$*\" >> #{bar_log}\nwhile :; do sleep 1; done\n")
     File.chmod(0755, bar)
     env = { 'PATH' => "#{dir}:#{ENV.fetch('PATH')}", 'DISPLAY' => ":#{Integer(display)}", 'XDG_CONFIG_HOME' => dir, 'HOME' => dir }
-    binding = ->(key, value) { "(bind-key #{key.ord} 8 (lambda () (call-with-output-file #{log.dump} (lambda (p) (display #{value.dump} p)))))\n" }
+    binding = ->(key, value) { "(bind-key '(alt shift c) reload)\n(bind-key #{key.ord} 8 (lambda () (call-with-output-file #{log.dump} (lambda (p) (display #{value.dump} p)))))\n" }
     File.write(config, binding.call('z', 'old') + '(bar-status "old")')
     wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: errors)
     input, output = IO.pipe

@@ -63,8 +63,6 @@ bool Config::WindowRule::matches(std::optional<std::string_view> class_name,
 
 struct ConfigRuntime {
     Config *config;
-    std::array<SCM, 10> workspace;
-    std::array<SCM, 10> move;
     std::vector<Config::Binding> bindings;
     std::vector<SCM> callbacks;
     std::vector<std::string> bar_status;
@@ -91,23 +89,6 @@ struct ConfigRuntime {
             scm_out_of_range("workspace digit", value);
         }
         return scm_to_uint(value);
-    }
-
-    static SCM bind(SCM value, SCM procedure, bool move_binding) {
-        if (!active || !active->path) {
-            scm_misc_error("workspace binding", "binding is only allowed while loading", SCM_EOL);
-        }
-        unsigned index = digit(value);
-        if (scm_is_false(scm_procedure_p(procedure))) {
-            scm_wrong_type_arg_msg("workspace binding", 2, procedure, "procedure");
-        }
-        auto &slot = move_binding ? active->move[index] : active->workspace[index];
-        scm_gc_protect_object(procedure);
-        if (!scm_is_false(slot)) {
-            scm_gc_unprotect_object(slot);
-        }
-        slot = procedure;
-        return SCM_UNSPECIFIED;
     }
 
     static SCM floating_modifier(SCM modifiers) {
@@ -192,9 +173,6 @@ struct ConfigRuntime {
         scm_gc_protect_object(procedure);
         return SCM_UNSPECIFIED;
     }
-
-    static SCM bind_workspace(SCM value, SCM procedure) { return bind(value, procedure, false); }
-    static SCM bind_move(SCM value, SCM procedure) { return bind(value, procedure, true); }
 
     static SCM action(SCM value, bool move_action, SCM target_value = SCM_UNDEFINED) {
         if (!active) {
@@ -370,6 +348,7 @@ struct ConfigRuntime {
     static SCM fullscreen_toggle(SCM value) { return window_action("fullscreen-toggle", Config::WindowAction::fullscreen, value); }
     static SCM exit_action() { return window_action("exit", Config::WindowAction::exit); }
     static SCM restart_action() { return window_action("restart", Config::WindowAction::restart); }
+    static SCM reload_action() { return window_action("reload", Config::WindowAction::reload); }
     static SCM focus_output_next() { return window_action("focus-output-next", Config::WindowAction::focus_output_next); }
     static SCM focus_output_previous() { return window_action("focus-output-previous", Config::WindowAction::focus_output_previous); }
     static SCM move_output_next() { return window_action("move-to-output-next", Config::WindowAction::move_output_next); }
@@ -636,8 +615,6 @@ struct ConfigRuntime {
         runtime->changed_module = true;
         scm_c_define_gsubr("bind-key", 2, 1, 0, reinterpret_cast<scm_t_subr>(bind_key));
         scm_c_define_gsubr("floating-modifier", 1, 0, 0, reinterpret_cast<scm_t_subr>(floating_modifier));
-        scm_c_define_gsubr("bind-workspace", 2, 0, 0, reinterpret_cast<scm_t_subr>(bind_workspace));
-        scm_c_define_gsubr("bind-move-workspace", 2, 0, 0, reinterpret_cast<scm_t_subr>(bind_move));
         scm_c_define_gsubr("workspace", 1, 0, 0, reinterpret_cast<scm_t_subr>(workspace_action));
         scm_c_define_gsubr("rename-workspace", 2, 0, 0, reinterpret_cast<scm_t_subr>(rename_workspace));
         scm_c_define_gsubr("workspace-next", 0, 0, 0, reinterpret_cast<scm_t_subr>(workspace_next));
@@ -651,6 +628,7 @@ struct ConfigRuntime {
         scm_c_define_gsubr("close", 0, 1, 0, reinterpret_cast<scm_t_subr>(close_action));
         scm_c_define_gsubr("exit", 0, 0, 0, reinterpret_cast<scm_t_subr>(exit_action));
         scm_c_define_gsubr("restart", 0, 0, 0, reinterpret_cast<scm_t_subr>(restart_action));
+        scm_c_define_gsubr("reload", 0, 0, 0, reinterpret_cast<scm_t_subr>(reload_action));
         scm_c_define_gsubr("focus-output-next", 0, 0, 0, reinterpret_cast<scm_t_subr>(focus_output_next));
         scm_c_define_gsubr("focus-output-previous", 0, 0, 0, reinterpret_cast<scm_t_subr>(focus_output_previous));
         scm_c_define_gsubr("move-to-output-next", 0, 0, 0, reinterpret_cast<scm_t_subr>(move_output_next));
@@ -770,20 +748,13 @@ Config::Config(void *host, Action workspace, MoveWorkspaceAction move_workspace,
       focus_(focus), move_(move), resize_(resize), close_(close), spawn_(spawn), window_action_(window_action),
       workspace_navigation_(workspace_navigation) {
     scm_init_guile();
-    workspace_bindings_.fill(SCM_BOOL_F);
-    move_bindings_.fill(SCM_BOOL_F);
 }
 
 Config::~Config() {
     discard();
     if (!scm_is_false(module_)) scm_gc_unprotect_object(module_);
     for (SCM callback : callbacks_) scm_gc_unprotect_object(callback);
-    for (SCM callback : workspace_bindings_) {
-        if (!scm_is_false(callback)) scm_gc_unprotect_object(callback);
-    }
-    for (SCM callback : move_bindings_) {
-        if (!scm_is_false(callback)) scm_gc_unprotect_object(callback);
-    }
+
 }
 
 bool Config::load(const char *path) {
@@ -800,8 +771,6 @@ bool Config::stage(const char *path) {
     runtime.config = this;
     runtime.module = SCM_BOOL_F;
     runtime.path = path;
-    runtime.workspace.fill(SCM_BOOL_F);
-    runtime.move.fill(SCM_BOOL_F);
     ConfigRuntime::active = &runtime;
     scm_c_catch(SCM_BOOL_T, ConfigRuntime::load_body, &runtime, ConfigRuntime::handle, &runtime, nullptr, nullptr);
     if (runtime.changed_module) scm_set_current_module(runtime.previous_module);
@@ -832,8 +801,6 @@ std::optional<std::uint16_t> Config::staged_mouse_modifier() const noexcept {
 void Config::commit() noexcept {
     if (!staged_) return;
     std::swap(module_, staged_->module);
-    workspace_bindings_.swap(staged_->workspace);
-    move_bindings_.swap(staged_->move);
     bindings_.swap(staged_->bindings);
     callbacks_.swap(staged_->callbacks);
     bar_status_.swap(staged_->bar_status);
@@ -850,12 +817,6 @@ void Config::discard() noexcept {
     auto &runtime = *staged_;
     if (!scm_is_false(runtime.module)) scm_gc_unprotect_object(runtime.module);
     for (SCM callback : runtime.callbacks) scm_gc_unprotect_object(callback);
-    for (SCM callback : runtime.workspace) {
-        if (!scm_is_false(callback)) scm_gc_unprotect_object(callback);
-    }
-    for (SCM callback : runtime.move) {
-        if (!scm_is_false(callback)) scm_gc_unprotect_object(callback);
-    }
     staged_.reset();
 }
 
@@ -889,14 +850,6 @@ Config::Result Config::run(SCM callback) {
 
 Config::Result Config::run_binding(std::uint32_t callback) {
     return callback < callbacks_.size() ? run(callbacks_[callback]) : Result::absent;
-}
-
-Config::Result Config::run_workspace(unsigned digit) {
-    return digit < workspace_bindings_.size() ? run(workspace_bindings_[digit]) : Result::failure;
-}
-
-Config::Result Config::run_move_workspace(unsigned digit) {
-    return digit < move_bindings_.size() ? run(move_bindings_[digit]) : Result::failure;
 }
 
 }

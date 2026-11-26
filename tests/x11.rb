@@ -17,7 +17,8 @@ Dir.mktmpdir('mortar-test-') do |dir|
     system(invalid_env, ARGV.fetch(0), out: File::NULL, err: File::NULL) and
       abort 'Expected failure without an X server'
     abort 'Configuration executed without an X server' if File.exist?(marker)
-    File.delete(config)
+    defaults = File.read(File.expand_path('../config.scm', __dir__))
+    File.write(config, defaults)
     reader, writer = IO.pipe
     xvfb = Process.spawn('Xvfb', '-displayfd', '3', '-screen', '0', '800x600x24', '-extension', 'RANDR',
                          3 => writer, out: File::NULL, err: File::NULL)
@@ -38,7 +39,7 @@ Dir.mktmpdir('mortar-test-') do |dir|
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
     wm = nil
     abort 'Window manager unexpectedly accepted keyboard grab conflict without RandR' if status.success?
-    abort 'Window manager failed for an unexpected reason' unless File.read(error_path).include?('keyboard setup failed')
+    abort 'Window manager failed for an unexpected reason' unless File.read(error_path).include?('key grabs failed')
     client_writer.puts
     client_writer.close
     client_reader.close
@@ -87,7 +88,7 @@ Dir.mktmpdir('mortar-test-') do |dir|
     _, status = Timeout.timeout(10) { Process.wait2(client) }
     client = nil
     abort 'Floating window moved after restart' unless status.success?
-    File.delete(config)
+    File.write(config, defaults)
     Process.kill('TERM', wm)
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
     wm = nil
@@ -129,7 +130,7 @@ Dir.mktmpdir('mortar-test-') do |dir|
     wm = nil
     abort 'Window manager unexpectedly accepted keyboard grab conflict' if status.success?
     abort 'Window manager failed for an unexpected reason' unless
-      File.read(error_path).include?('keyboard setup failed')
+      File.read(error_path).include?('key grabs failed')
     client_writer.puts
     client_writer.close
     _, status = Timeout.timeout(10) { Process.wait2(client) }
@@ -144,7 +145,7 @@ Dir.mktmpdir('mortar-test-') do |dir|
     abort 'Client failed to create existing window' unless
       Timeout.timeout(10) { client_reader.gets } == "existing window ready\n"
     wm_error_path = File.join(dir, 'wm.log')
-    File.write(config, side_effect)
+    File.write(config, defaults + side_effect)
     socket_path = File.join(dir, 'exit.sock')
     wm = Process.spawn(env.merge('MORTARSOCK' => socket_path), ARGV.fetch(0), out: File::NULL, err: wm_error_path)
     client_writer.puts
@@ -156,7 +157,7 @@ Dir.mktmpdir('mortar-test-') do |dir|
     File.write(config, side_effect)
     success = system(env, ARGV.fetch(0), out: File::NULL, err: error_path)
     abort 'Configuration executed while another window manager exists' if File.exist?(marker)
-    File.delete(config)
+    File.write(config, defaults)
     abort 'Second window manager unexpectedly succeeded' if success
     abort 'Second window manager failed for an unexpected reason' unless
       File.read(error_path).include?('cannot acquire window management')
@@ -210,21 +211,24 @@ Dir.mktmpdir('mortar-test-') do |dir|
     wm = nil
     abort "Window manager shutdown failed:\n#{File.read(wm_error_path)}" unless status.success?
     abort 'Keyboard reset failed' unless system(env, 'setxkbmap', '-layout', 'us', out: File::NULL)
-    File.write(config, "(bind-workspace 2 (lambda () (workspace 3)))\n(error \"broken configuration\")\n")
+    File.write(config, "(bind-key 50 8 (lambda () (workspace 3)))\n(error \"broken configuration\")\n")
     error_path = File.join(dir, 'config.log')
     wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: error_path)
-    abort 'Broken configuration did not fall back to defaults' unless
-      system(env, ARGV.fetch(1), 'switch', out: File::NULL)
-    abort 'Broken configuration was not reported' if File.empty?(error_path)
-    Process.kill('TERM', wm)
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
     wm = nil
-    abort "Window manager shutdown failed:\n#{File.read(error_path)}" unless status.success?
-    File.write(config, "(bind-workspace 1 (lambda () (error \"callback failure\")))\n" \
-                       "(bind-workspace 2 (lambda () (workspace 3)))\n" \
+    abort 'Broken configuration unexpectedly succeeded' if status.success?
+    abort 'Broken configuration was not reported' if File.empty?(error_path)
+    File.delete(config)
+    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: error_path)
+    _, status = Timeout.timeout(10) { Process.wait2(wm) }
+    wm = nil
+    abort 'Missing configuration unexpectedly succeeded' if status.success?
+    abort 'Missing configuration was not reported' if File.empty?(error_path)
+    File.write(config, "(bind-key 49 8 (lambda () (error \"callback failure\")))\n" \
+                       "(bind-key 50 8 (lambda () (workspace 3)))\n" \
                        "(bind-key 65475 8 (lambda () (workspace 3)))\n")
     wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: error_path)
-    abort 'Configuration callback checks failed' unless system(env, ARGV.fetch(1), 'config', out: File::NULL)
+    abort "Configuration callback checks failed:\n#{File.read(error_path)}" unless system(env, ARGV.fetch(1), 'config', out: File::NULL)
     abort 'Arbitrary key binding failed' unless system(env, ARGV.fetch(1), 'arbitrary', out: File::NULL)
     Process.kill('TERM', wm)
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
@@ -239,9 +243,10 @@ Dir.mktmpdir('mortar-test-') do |dir|
       wm = nil
       abort 'Window manager shutdown failed after gap checks' unless status.success?
     end
-    File.write(config, "(border 3 #x123456 #x654321)\n")
+    File.write(config, defaults + "(border 3 #x123456 #x654321)\n")
     wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: error_path)
     abort 'Border checks failed' unless system(env, ARGV.fetch(1), 'borders')
+    abort 'Parent border and split checks failed' unless system(env, ARGV.fetch(1), 'parent-borders')
     abort 'ARGB border check failed' unless system(env, ARGV.fetch(1), 'argb-border')
     Process.kill('TERM', wm)
     _, status = Timeout.timeout(10) { Process.wait2(wm) }

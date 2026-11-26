@@ -108,7 +108,7 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "argb-border: focused border pixel is not opaque #123456\n");
         return EXIT_FAILURE;
     }
-    if (argc == 2 && std::strcmp(argv[1], "borders") == 0) {
+    if (argc == 2 && (std::strcmp(argv[1], "borders") == 0 || std::strcmp(argv[1], "parent-borders") == 0)) {
         bool rgb_visual = false;
         for (auto depths = xcb_screen_allowed_depths_iterator(screen); depths.rem; xcb_depth_next(&depths)) {
             if (depths.data->depth != 24) continue;
@@ -140,7 +140,8 @@ int main(int argc, char **argv) {
             xcb_change_property(c, XCB_PROP_MODE_REPLACE, second, type->atom, XCB_ATOM_ATOM, 32, 1, &value->atom);
             return true;
         };
-        if (!dialog()) return EXIT_FAILURE;
+        const bool parent_borders = std::strcmp(argv[1], "parent-borders") == 0;
+        if (!parent_borders && !dialog()) return EXIT_FAILURE;
         xcb_map_window(c, first);
         xcb_flush(c);
         auto wait = [&](auto predicate) {
@@ -168,6 +169,42 @@ int main(int argc, char **argv) {
             const uint32_t value = uint32_t(data[0]) | (uint32_t(data[1]) << 8) | (uint32_t(data[2]) << 16);
             return value == expected;
         };
+        if (parent_borders) {
+            auto setup = xcb_get_setup(c);
+            auto count = static_cast<uint8_t>(setup->max_keycode - setup->min_keycode + 1);
+            std::unique_ptr<xcb_get_keyboard_mapping_reply_t, decltype(&std::free)> mapping{
+                xcb_get_keyboard_mapping_reply(c, xcb_get_keyboard_mapping(c, setup->min_keycode, count), nullptr), &std::free};
+            if (!mapping) return EXIT_FAILURE;
+            auto symbols = xcb_get_keyboard_mapping_keysyms(mapping.get());
+            auto key = [&](xcb_keysym_t symbol) -> xcb_keycode_t {
+                for (int i = 0; i < count; ++i)
+                    for (int j = 0; j < mapping->keysyms_per_keycode; ++j)
+                        if (symbols[i * mapping->keysyms_per_keycode + j] == symbol)
+                            return static_cast<xcb_keycode_t>(setup->min_keycode + i);
+                return 0;
+            };
+            auto alt = key(0xffe9), a = key('a'), e = key('e');
+            if (!alt || !a || !e) return EXIT_FAILURE;
+            auto shortcut = [&](xcb_keycode_t code) {
+                xcb_test_fake_input(c, XCB_KEY_PRESS, alt, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+                xcb_test_fake_input(c, XCB_KEY_PRESS, code, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+                xcb_test_fake_input(c, XCB_KEY_RELEASE, code, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+                xcb_test_fake_input(c, XCB_KEY_RELEASE, alt, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+                xcb_flush(c);
+            };
+            if (!wait([&] { return pixel(0, 100, 0x654321) && pixel(400, 100, 0x123456); })) return EXIT_FAILURE;
+            shortcut(a);
+            if (!wait([&] { return pixel(0, 100, 0x123456) && pixel(400, 100, 0x123456); })) return EXIT_FAILURE;
+            shortcut(e);
+            if (!wait([&] {
+                std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> a{
+                    xcb_get_geometry_reply(c, xcb_get_geometry(c, first), nullptr), &std::free};
+                std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> b{
+                    xcb_get_geometry_reply(c, xcb_get_geometry(c, second), nullptr), &std::free};
+                return a && b && a->y == 0 && b->y == 300 && a->height == 294 && b->height == 294;
+            })) return EXIT_FAILURE;
+            return EXIT_SUCCESS;
+        }
         if (!wait([&] { return pixel(0, 100, 0x654321) && pixel(350, 250, 0x123456); })) {
             std::fprintf(stderr, "borders: focused or unfocused color mismatch\n");
             return EXIT_FAILURE;
@@ -464,6 +501,18 @@ int main(int argc, char **argv) {
         request.format = 32;
         request.window = screen->root;
         request.type = current;
+        bool ready = false;
+        for (int i = 0; i < 250; ++i) {
+            std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)> property{
+                xcb_get_property_reply(c, xcb_get_property(c, false, screen->root, current, XCB_ATOM_CARDINAL, 0, 1), nullptr), &std::free};
+            if (property && property->type == XCB_ATOM_CARDINAL && property->format == 32 &&
+                xcb_get_property_value_length(property.get()) == 4) {
+                ready = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        if (!ready) { std::fprintf(stderr, "%s: window manager did not publish desktop\n", mode); return EXIT_FAILURE; }
         xcb_send_event(c, false, screen->root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
                        reinterpret_cast<const char *>(&request));
         auto wait_property = [&](xcb_window_t window, xcb_atom_t atom, uint32_t expected) {
@@ -573,6 +622,16 @@ int main(int argc, char **argv) {
             xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 450, 340, 0);
             xcb_flush(c);
             if (!wait([&] { return geometry(third, 440, 330, 360, 270); }, "live diagonal tiled mouse resize")) return EXIT_FAILURE;
+            uint32_t tiled_hints[18]{};
+            tiled_hints[0] = 64;
+            tiled_hints[9] = 100; tiled_hints[10] = 100;
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, third, XCB_ATOM_WM_NORMAL_HINTS,
+                                XCB_ATOM_WM_SIZE_HINTS, 32, 18, tiled_hints);
+            xcb_flush(c);
+            if (!wait([&] { return geometry(third, 440, 330, 300, 200); }, "changed tiled hints during drag")) return EXIT_FAILURE;
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 470, 350, 0);
+            xcb_flush(c);
+            if (!wait([&] { return geometry(third, 460, 340, 300, 200); }, "tiled drag preserves changed hints")) return EXIT_FAILURE;
             xcb_test_fake_input(c, XCB_BUTTON_RELEASE, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
             press(alt, false);
             xcb_destroy_window(c, third); xcb_flush(c);
@@ -618,6 +677,81 @@ int main(int argc, char **argv) {
             xcb_flush(c);
             press(alt, true); press(control, true); tap(left); press(control, false); press(alt, false); xcb_flush(c);
             if (!wait([&] { return geometry(other, 50, 80, 260, 180); }, "hinted floating resize")) return EXIT_FAILURE;
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 300, 250, 0);
+            press(alt, true);
+            xcb_test_fake_input(c, XCB_BUTTON_PRESS, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 340, 270, 0);
+            xcb_test_fake_input(c, XCB_BUTTON_RELEASE, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            press(alt, false); xcb_flush(c);
+            if (!wait([&] { return geometry(other, 50, 80, 300, 200); }, "final diagonal floating resize")) return EXIT_FAILURE;
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 340, 270, 0);
+            press(alt, true);
+            xcb_test_fake_input(c, XCB_BUTTON_PRESS, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 360, 280, 0);
+            xcb_flush(c);
+            if (!wait([&] { return geometry(other, 50, 80, 320, 210); }, "resize before hint change")) return EXIT_FAILURE;
+            hints[9] = 40; hints[10] = 20;
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, other, XCB_ATOM_WM_NORMAL_HINTS,
+                                XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 380, 310, 0);
+            xcb_test_fake_input(c, XCB_BUTTON_RELEASE, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            press(alt, false); xcb_flush(c);
+            if (!wait([&] { return geometry(other, 50, 80, 320, 240); }, "changed hints during floating resize")) return EXIT_FAILURE;
+            hints[0] |= 32;
+            hints[7] = 360; hints[8] = 300;
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, other, XCB_ATOM_WM_NORMAL_HINTS,
+                                XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 360, 290, 0);
+            press(alt, true);
+            xcb_test_fake_input(c, XCB_BUTTON_PRESS, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 460, 290, 0);
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 420, 290, 0);
+            xcb_flush(c);
+            if (!wait([&] { return geometry(other, 50, 80, 320, 240); }, "resize reverses beyond maximum")) return EXIT_FAILURE;
+            xcb_test_fake_input(c, XCB_BUTTON_RELEASE, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            press(alt, false); xcb_flush(c);
+            hints[0] = 128;
+            hints[11] = 1; hints[12] = 1; hints[13] = 1; hints[14] = 1;
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, other, XCB_ATOM_WM_NORMAL_HINTS,
+                                XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
+            const uint32_t square[] = {200, 200, 200, 200};
+            xcb_configure_window(c, other, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+                                 XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, square);
+            xcb_flush(c);
+            if (!wait([&] { return geometry(other, 200, 200, 200, 200); }, "prepare square aspect resize")) return EXIT_FAILURE;
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 210, 210, 0);
+            press(alt, true);
+            xcb_test_fake_input(c, XCB_BUTTON_PRESS, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 190, 190, 0);
+            xcb_test_fake_input(c, XCB_BUTTON_RELEASE, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            press(alt, false); xcb_flush(c);
+            if (!wait([&] { return geometry(other, 180, 180, 220, 220); }, "aspect resize anchors opposite edges")) return EXIT_FAILURE;
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 190, 190, 0);
+            press(alt, true);
+            xcb_test_fake_input(c, XCB_BUTTON_PRESS, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 170, 190, 0);
+            xcb_test_fake_input(c, XCB_BUTTON_RELEASE, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            press(alt, false); xcb_flush(c);
+            if (!wait([&] { return geometry(other, 160, 160, 240, 240); }, "horizontal aspect resize anchors opposite edges")) return EXIT_FAILURE;
+            hints[0] = 16;
+            hints[5] = 100; hints[6] = 100;
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, other, XCB_ATOM_WM_NORMAL_HINTS,
+                                XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 170, 170, 0);
+            press(alt, true);
+            xcb_test_fake_input(c, XCB_BUTTON_PRESS, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 500, 170, 0);
+            xcb_test_fake_input(c, XCB_BUTTON_RELEASE, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            press(alt, false); xcb_flush(c);
+            if (!wait([&] { return geometry(other, 300, 160, 100, 240); }, "oversized shrinking drag reaches minimum")) return EXIT_FAILURE;
+            hints[0] = 16 | 64 | 256;
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, other, XCB_ATOM_WM_NORMAL_HINTS,
+                                XCB_ATOM_WM_SIZE_HINTS, 32, 18, hints);
+            const uint32_t restore[] = {50, 80, 260, 180};
+            xcb_configure_window(c, other, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+                                 XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, restore);
+            xcb_flush(c);
+            if (!wait([&] { return geometry(other, 50, 80, 260, 180); }, "restore floating geometry")) return EXIT_FAILURE;
             shortcut(false);
             if (!wait([&] { return mapped(other, XCB_MAP_STATE_UNMAPPED) && focus(window); }, "hide and restore focus")) return EXIT_FAILURE;
             press(alt, true); tap(two); press(alt, false); xcb_flush(c);
@@ -654,7 +788,33 @@ int main(int argc, char **argv) {
             shortcut(false);
             xcb_map_window(c, other); xcb_flush(c);
             if (!wait([&] { return mapped(other, XCB_MAP_STATE_VIEWABLE); }, "restore iconified window")) return EXIT_FAILURE;
-            xcb_destroy_window(c, other); xcb_flush(c);
+            press(alt, true); press(shift, true); tap(key(' ')); press(shift, false); press(alt, false); xcb_flush(c);
+            const uint32_t move_position[] = {100, 100};
+            xcb_configure_window(c, other, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, move_position);
+            xcb_flush(c);
+            if (!wait([&] { std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> g{
+                xcb_get_geometry_reply(c, xcb_get_geometry(c, other), nullptr), &std::free};
+                return g && g->x == 100 && g->y == 100; }, "position disappearing window")) return EXIT_FAILURE;
+            std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> before_move{
+                xcb_get_geometry_reply(c, xcb_get_geometry(c, other), nullptr), &std::free};
+            if (!before_move) return EXIT_FAILURE;
+            int x = before_move->x + 10, y = before_move->y + 10;
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, x, y, 0);
+            press(alt, true);
+            xcb_test_fake_input(c, XCB_BUTTON_PRESS, 1, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            xcb_flush(c);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, x + 20, y + 20, 0);
+            xcb_flush(c);
+            if (!wait([&] { return geometry(other, before_move->x + 20, before_move->y + 20,
+                                             before_move->width, before_move->height); }, "live floating move")) return EXIT_FAILURE;
+            xcb_destroy_window(c, other);
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, x + 40, y + 40, 0);
+            xcb_test_fake_input(c, XCB_BUTTON_RELEASE, 1, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            press(alt, false); xcb_flush(c);
+            if (!wait([&] { return focus(window); }, "focus after dragged window disappears")) return EXIT_FAILURE;
+            press(alt, true); tap(two); press(alt, false); xcb_flush(c);
+            if (!wait_property(screen->root, current, 1)) return EXIT_FAILURE;
             return EXIT_SUCCESS;
         }
         if (std::strcmp(mode, "fullscreen") == 0) {

@@ -18,14 +18,14 @@ See [Development](docs/development.md) for details.
 
 ## Configuration
 
-mortar loads `$XDG_CONFIG_HOME/mortar/config.scm`, or `~/.config/mortar/config.scm` when `XDG_CONFIG_HOME` is unset or not absolute. For example:
+mortar requires `$XDG_CONFIG_HOME/mortar/config.scm`, or `~/.config/mortar/config.scm` when `XDG_CONFIG_HOME` is unset or not absolute. It has no built-in keyboard shortcuts. Copy the installed example to your configuration directory before starting mortar; see the [User’s Guide](docs/user-guide.md) for commands and migration instructions. For example, add:
 
 ```scheme
 (bind-key '(alt Return) (lambda () (spawn "alacritty")))
 (gaps 10 5)
 ```
 
-Configuration is executable Scheme and runs with your user privileges. See the [User’s Guide](docs/user-guide.md) for setup, default bindings, and available settings.
+Configuration is executable Scheme and runs with your user privileges. Startup fails if configuration cannot be loaded; a failed reload retains the previous settings and bindings. See the [User’s Guide](docs/user-guide.md) for example bindings and available settings.
 
 ## Documentation
 

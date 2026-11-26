@@ -75,7 +75,7 @@ public:
     enum class WorkspaceNavigation { next, previous, back_and_forth };
     using WorkspaceNavigationCallback = void (*)(void *, WorkspaceNavigation);
     using WorkspaceNameCallback = void (*)(void *, unsigned, const std::string &);
-    enum class WindowAction { toggle_split, focus_mode_toggle, focus_sibling_next, focus_sibling_previous, focus_parent, focus_child, floating, scratch_move, scratch_show, fullscreen, exit, restart, focus_output_next, focus_output_previous, move_output_next, move_output_previous };
+    enum class WindowAction { toggle_split, focus_mode_toggle, focus_sibling_next, focus_sibling_previous, focus_parent, focus_child, floating, scratch_move, scratch_show, fullscreen, exit, restart, reload, focus_output_next, focus_output_previous, move_output_next, move_output_previous };
     using WindowActionCallback = void (*)(void *, WindowAction, std::uint32_t);
     using SplitAction = void (*)(void *, Split);
     using FocusAction = void (*)(void *, Direction);
@@ -106,8 +106,6 @@ public:
     const std::vector<Binding> &staged_bindings() const noexcept;
     void commit() noexcept;
     void discard() noexcept;
-    Result run_workspace(unsigned digit);
-    Result run_move_workspace(unsigned digit);
     const std::vector<Binding> &bindings() const noexcept { return bindings_; }
     Result run_binding(std::uint32_t callback);
     const std::vector<std::string> &bar_status() const noexcept { return bar_status_; }
@@ -136,8 +134,6 @@ private:
     WorkspaceNavigationCallback workspace_navigation_;
     WorkspaceNameCallback rename_workspace_ = nullptr;
     void (*switch_workspace_name_)(void *, const std::string &) = nullptr;
-    std::array<SCM, 10> workspace_bindings_;
-    std::array<SCM, 10> move_bindings_;
     std::vector<Binding> bindings_;
     std::vector<SCM> callbacks_;
     std::vector<std::string> bar_status_;

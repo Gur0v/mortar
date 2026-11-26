@@ -5,7 +5,7 @@ mortar is an X11 window manager configured in Guile Scheme. It arranges windows 
 ## Contents
 
 - [Getting started](#getting-started)
-- [Default keys](#default-keys)
+- [Example keys](#example-keys)
 - [Using mortar](#using-mortar)
 - [The tree](#the-tree)
 - [Configuration](#configuration)
@@ -16,13 +16,13 @@ mortar is an X11 window manager configured in Guile Scheme. It arranges windows 
 
 ## Getting started
 
-Start `mortar` in an X11 session. The default modifier is Alt. Alt+Enter runs `x-terminal-emulator`, and Alt+D runs `dmenu_run`; those executables must be available on your path. mortar starts `mortarbar` separately by default.
+Install a configuration before starting `mortar` in an X11 session. The example configuration uses Alt as its modifier. Alt+Enter runs `x-terminal-emulator`, and Alt+D runs `dmenu_run`; those executables must be available on your path. mortar starts `mortarbar` separately by default.
 
 Open windows and use Alt+B or Alt+V to choose a horizontal or vertical split. Use the focus and move shortcuts below to arrange them.
 
-## Default keys
+## Example keys
 
-These bindings use Alt as mapped by XKB. Keys also require any modifiers needed to produce their keysyms on your keyboard layout.
+mortar has no built-in keyboard shortcuts. The supplied example configuration provides these bindings, using Alt as mapped by XKB. Keys also require any modifiers needed to produce their keysyms on your keyboard layout.
 
 | Shortcut | Action |
 | --- | --- |
@@ -46,7 +46,7 @@ These bindings use Alt as mapped by XKB. Keys also require any modifiers needed 
 | Alt+Shift+digit | Move the focused window to a workspace |
 | Alt+Shift+C | Reload configuration |
 
-Digits 1–9 select workspaces 1–9; 0 selects workspace 10. If a digit requires Shift, use Control instead of Shift for the move shortcut. Digit levels requiring both Shift and Control are not bound. If a shortcut matches multiple digit levels, switching takes priority over moving.
+Digits 1–9 select workspaces 1–9; 0 selects workspace 10. On layouts where digits require Shift, the example's workspace and move bindings may overlap; adapt the bindings to your keyboard layout.
 
 ## Using mortar
 
@@ -62,9 +62,18 @@ A split container groups windows horizontally or vertically. Alt+A selects its p
 
 ## Configuration
 
-mortar loads `$XDG_CONFIG_HOME/mortar/config.scm` when `XDG_CONFIG_HOME` is nonempty and absolute. Otherwise it uses `$HOME/.config/mortar/config.scm` when `HOME` is nonempty and absolute. A missing file leaves defaults in place. If neither location is available, mortar reports an error and uses defaults.
+mortar requires `$XDG_CONFIG_HOME/mortar/config.scm` when `XDG_CONFIG_HOME` is nonempty and absolute. Otherwise it uses `$HOME/.config/mortar/config.scm` when `HOME` is nonempty and absolute. Copy the installed example before starting, substituting your Meson installation prefix and datadir if different. For the default `/usr/local/share` and an unset `XDG_CONFIG_HOME`:
 
-Configuration is executable Scheme with your user privileges, not a sandbox. On startup, a failed load leaves built-in defaults active. On reload, settings and bindings change only after loading and new key grabs succeed; Scheme side effects cannot be rolled back.
+```sh
+mkdir -p "$HOME/.config/mortar"
+cp -n /usr/local/share/mortar/config.scm "$HOME/.config/mortar/config.scm"
+```
+
+If you use an absolute `XDG_CONFIG_HOME`, copy it to `$XDG_CONFIG_HOME/mortar/config.scm` instead. The example is also available as `config.scm` in the source tree. Review and edit your copy; installation does not overwrite it.
+
+Configuration is executable Scheme with your user privileges, not a sandbox. If the path cannot be determined or the file is missing or fails to load, mortar reports an error and exits at startup. Call `(reload)` from a configured callback or IPC to reload. On reload, settings and bindings change only after loading and new key grabs succeed; failure retains the previous configuration. Scheme side effects cannot be rolled back. Errors applying changes after commit do not restore the previous configuration.
+
+When migrating an existing configuration, add explicit `bind-key` registrations for every shortcut you want, including reload and workspace shortcuts. The old `bind-workspace` and `bind-move-workspace` registrations no longer provide workspace bindings; replace them with `bind-key` callbacks that call `workspace` and `move-to-workspace`. Copy or adapt the supplied example rather than relying on former default shortcuts.
 
 For example:
 
@@ -80,7 +89,7 @@ For example:
 
 `gaps` sets inner and outer gaps in pixels, each from 0 to 65535; both default to zero. Outer gaps inset the usable workspace. Inner gaps inset tiles by the full amount at workspace edges and half at shared edges, rounded down. Floating and fullscreen windows are unaffected. Oversized gaps can leave tiles at the minimum X11 window size. `floating-modifier` sets the X modifier bitmask for mouse move and resize: 64 is Mod4, and 0 disables both. It does not change keyboard shortcuts.
 
-`bind-key` takes a list with one case-sensitive XKB keysym and any of `alt`, `shift`, `control`, `mod1` through `mod5`, followed by a zero-argument procedure. Keysyms resolve across layouts and levels, including required modifiers; bindings follow keyboard map changes and ignore lock modifiers. Bindings are registered while loading; later registrations replace earlier ones, and arbitrary bindings take precedence over built-in shortcuts. The numeric form `(bind-key keysym modifiers procedure)` accepts an integer keysym and X modifier mask. `(bind-workspace digit procedure)` and `(bind-move-workspace digit procedure)` replace the callbacks for built-in workspace shortcuts.
+`bind-key` takes a list with one case-sensitive XKB keysym and any of `alt`, `shift`, `control`, `mod1` through `mod5`, followed by a zero-argument procedure. Keysyms resolve across layouts and levels, including required modifiers; bindings follow keyboard map changes and ignore lock modifiers. Bindings are registered while loading; later registrations replace earlier ones. The numeric form `(bind-key keysym modifiers procedure)` accepts an integer keysym and X modifier mask.
 
 The example window rule assigns matching new windows to desktop index 1, the second workspace. `(window-rule class workspace floating [instance [title]])` matches specified `WM_CLASS` components and title exactly. Criteria are nonempty strings or `#f`, with at least one specified; omitted criteria are `#f`. The title uses valid `_NET_WM_NAME`, otherwise `WM_NAME`. Workspace is an index from 0 to 9 or `#f`; floating is `'floating`, `'tiled`, or `#f`. Later matching rules override earlier assignments. Rules apply when windows are managed, not retroactively on reload. `window-rule-regex` takes the same arguments but searches with PCRE2 regular expressions; use `^` and `$` to anchor matches. Invalid patterns fail configuration loading; on reload, the previous configuration remains active. Matching has resource limits. A match error, including a resource limit or invalid UTF-8, is reported on standard error and the rule is treated as not matching; an ordinary non-match is not reported.
 
@@ -107,7 +116,7 @@ Actions below run in callbacks or IPC, not during configuration loading. `spawn`
 (spawn "xterm" "-e" "top")
 ```
 
-Workspace names must be unique, nonempty, no more than 4096 UTF-8 bytes, and contain no NUL. mortar saves names on the X root window, so they survive reload and restart while that X server retains its state. Up to 16384 workspaces can exist. Next and previous cycle in numeric order through occupied or visible workspaces, wrapping at either end. Back-and-forth returns to the previously focused workspace, even if empty, and does nothing before the first workspace change. These actions have no default shortcuts. Explicit window IDs must be nonzero 32-bit IDs of managed windows; hidden scratchpad windows are not valid targets. Floating resize uses valid `WM_NORMAL_HINTS` size constraints when possible; conflicting constraints may be ignored. An action that fails in a callback is reported and does not trigger the shortcut's default action; earlier side effects remain.
+Workspace names must be unique, nonempty, no more than 4096 UTF-8 bytes, and contain no NUL. mortar saves names on the X root window, so they survive reload and restart while that X server retains its state. Up to 16384 workspaces can exist. Next and previous cycle in numeric order through occupied or visible workspaces, wrapping at either end. Back-and-forth returns to the previously focused workspace, even if empty, and does nothing before the first workspace change. These actions have no default shortcuts. Explicit window IDs must be nonzero 32-bit IDs of managed windows; hidden scratchpad windows are not valid targets. Floating resize uses valid `WM_NORMAL_HINTS` size constraints when possible; conflicting constraints may be ignored. An action that fails in a callback is reported; earlier side effects remain.
 
 ## Bar
 
@@ -152,7 +161,7 @@ There is no default exit shortcut. Call `(exit)` from a configured callback or I
 ## Troubleshooting
 
 - If a program does not launch, check that its executable is installed and on mortar's path. `spawn` does not interpret shell syntax.
-- If configuration fails, check mortar's error output. Startup falls back to defaults; reload retains the prior settings and bindings. Side effects already performed are not undone.
-- If a shortcut behaves differently, check the XKB layout and required modifiers. A custom binding can override a default, including reload.
+- If configuration fails, check mortar's error output. Startup exits; a failed reload retains the prior settings and bindings. Side effects already performed are not undone.
+- If a shortcut behaves differently, check the XKB layout, required modifiers, and your configuration's bindings.
 - If the bar is missing, check its mode and output selection, and mortar's error output for a mortarbar startup or restart failure.
 - If IPC is unavailable, check mortar's error output and socket directory permissions. IPC setup failure does not prevent mortar from starting.

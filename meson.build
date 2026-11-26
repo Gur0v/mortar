@@ -16,6 +16,7 @@ pangocairo = dependency('pangocairo')
 fontconfig = dependency('fontconfig')
 mortarbar = executable('mortarbar', 'mortarbar/main.cpp', 'mortarbar/status.cpp', 'mortar/randr.cpp', dependencies: [xcb, xcb_randr, xcb_xkb, libjq, pangocairo, fontconfig], install: true)
 mortar = executable('mortar', 'mortar/main.cpp', 'mortar/restart.cpp', 'mortar/randr.cpp', 'mortar/outputs.cpp', 'mortar/scratchpad.cpp', 'mortar/ipc.cpp', 'mortar/actions.cpp', 'mortar/layout.cpp', 'mortar/workspaces.cpp', 'mortar/keyboard.cpp', 'mortar/config.cpp', dependencies: [xcb, xcb_randr, xcb_render, xcb_xkb, xkbcommon, guile, pcre2], install: true)
+install_data('config.scm', install_dir: get_option('datadir') / 'mortar')
 
 if get_option('tests')
   test('mortarbar', find_program('ruby'), args: [files('tests/mortarbar.rb'), mortarbar])
@@ -151,6 +152,7 @@ end
   client = executable('test-client', 'tests/client.cpp', dependencies: [xcb, xcb_xtest, xcb_composite])
   test('ipc-integration', find_program('ruby'), args: [files('tests/ipc-integration.rb'), mortar, client])
   test('restart-integration', find_program('ruby'), args: [files('tests/restart-integration.rb'), mortar])
+  test('click-focus', find_program('ruby'), args: [files('tests/click-focus.rb'), mortar])
   ewmh_test = executable('test-ewmh', 'tests/ewmh.cpp', dependencies: xcb)
   test('ewmh', find_program('ruby'), args: ['-e', '''
 require 'timeout'
@@ -180,6 +182,8 @@ end
 ''', mortar, ewmh_test])
   rules_test = executable('test-window-rules', 'tests/window-rules.cpp', dependencies: xcb)
   test('window-rules', find_program('ruby'), args: [files('tests/window-rules.rb'), mortar, rules_test])
+  application_floating_test = executable('test-application-floating', 'tests/application-floating.cpp', dependencies: xcb)
+  test('application-floating', find_program('ruby'), args: [files('tests/window-rules.rb'), mortar, application_floating_test], timeout: 90)
   test('reload', find_program('ruby'), args: [files('tests/reload.rb'), mortar, client])
   test('x11', find_program('ruby'), args: [files('tests/x11.rb'), mortar, client, mortarbar], timeout: 180)
 endif
