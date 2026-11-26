@@ -97,7 +97,7 @@ WorkspacesSnapshot Workspaces::snapshot() const {
     result.current = current;
     result.previous = previous;
     for (const auto &workspace : workspaces)
-        result.workspaces.push_back({workspace.layout.snapshot(), workspace.windows, workspace.floating, workspace.focused});
+        result.workspaces.push_back({workspace.layout.snapshot(), workspace.windows, workspace.floating, workspace.focused, workspace.focus_history});
     return result;
 }
 
@@ -111,7 +111,7 @@ Workspaces Workspaces::restore(const WorkspacesSnapshot &snapshot) {
     result.previous = snapshot.previous;
     for (std::size_t i = 0; i < result.workspaces.size(); ++i) {
         const auto &source = snapshot.workspaces[i];
-        result.workspaces[i] = {Layout::restore(source.layout), source.windows, source.floating, source.focused};
+        result.workspaces[i] = {Layout::restore(source.layout), source.windows, source.floating, source.focused, source.focus_history};
     }
     return result;
 }
@@ -148,6 +148,10 @@ void validate_restart_snapshot(const RestartSnapshot &snapshot) {
         if (workspace.windows.size() > restart_max_nodes || workspace.floating.size() > restart_max_nodes) invalid();
         for (auto window : workspace.windows)
             if (!window || !members.insert(window).second || !all.insert(window).second || all.size() > restart_max_nodes) invalid();
+        std::unordered_set<std::uint32_t> history;
+        if (workspace.focus_history.size() > restart_max_nodes) invalid();
+        for (auto window : workspace.focus_history)
+            if (!members.contains(window) || !history.insert(window).second) invalid();
         std::unordered_set<std::uint32_t> floating;
         for (auto window : workspace.floating)
             if (!members.contains(window) || !floating.insert(window).second || codec.windows.contains(window)) invalid();
@@ -167,6 +171,10 @@ void validate_restart_snapshot(const RestartSnapshot &snapshot) {
             if (std::find(floating.begin(), floating.end(), entry.window) == floating.end()) invalid();
         } else if (all.contains(entry.window)) invalid();
     }
+    std::unordered_set<std::uint32_t> iconic;
+    if (snapshot.iconic.size() > restart_max_nodes) invalid();
+    for (auto window : snapshot.iconic)
+        if (!window || !iconic.insert(window).second || all.contains(window) || scratch.contains(window)) invalid();
     std::unordered_set<std::string> names;
     std::unordered_set<std::uint32_t> visible;
     if (snapshot.outputs.size() > state.workspaces.size()) invalid();
@@ -210,7 +218,7 @@ std::vector<std::uint8_t> encode_restart_snapshot(const RestartSnapshot &snapsho
     validate_restart_snapshot(snapshot);
     Codec codec;
     codec.put(0x3154524d, 4);
-    codec.put(5, 4);
+    codec.put(6, 4);
     codec.put(snapshot.workspaces.workspaces.size(), 4);
     codec.put(snapshot.workspaces.current, 4);
     codec.put(snapshot.workspaces.previous ? *snapshot.workspaces.previous + 1 : 0, 4);
@@ -263,6 +271,12 @@ std::vector<std::uint8_t> encode_restart_snapshot(const RestartSnapshot &snapsho
     put_geometry(snapshot.fullscreen_geometry);
     codec.put(snapshot.workspace_names.size(), 4);
     for (const auto &name : snapshot.workspace_names) put_string(name);
+    for (const auto &workspace : snapshot.workspaces.workspaces) {
+        codec.put(workspace.focus_history.size(), 4);
+        for (auto window : workspace.focus_history) codec.put(window, 4);
+    }
+    codec.put(snapshot.iconic.size(), 4);
+    for (auto window : snapshot.iconic) codec.put(window, 4);
     return codec.output;
 }
 
@@ -272,7 +286,7 @@ RestartSnapshot decode_restart_snapshot(std::span<const std::uint8_t> bytes) {
     codec.input = bytes;
     if (codec.get(4) != 0x3154524d) invalid();
     auto version = codec.get(4);
-    if (version != 3 && version != 4 && version != 5) invalid();
+    if (version != 3 && version != 4 && version != 5 && version != 6) invalid();
     auto workspace_count = version == 3 ? 10 : codec.get(4);
     if (!workspace_count || workspace_count > restart_max_nodes || workspace_count > (bytes.size() - codec.position) / 23) invalid();
     RestartSnapshot result{};
@@ -360,6 +374,10 @@ RestartSnapshot decode_restart_snapshot(std::span<const std::uint8_t> bytes) {
             for (std::size_t j = 0; j < size; ++j) name.push_back(static_cast<char>(codec.get(1)));
             result.workspace_names.push_back(std::move(name));
         }
+    }
+    if (version >= 6) {
+        for (auto &workspace : result.workspaces.workspaces) workspace.focus_history = read_windows();
+        result.iconic = read_windows();
     }
     if (codec.position != bytes.size()) invalid();
     validate_restart_snapshot(result);

@@ -81,7 +81,12 @@ int main() {
     duplicate_names.workspace_names[12] = duplicate_names.workspace_names[0];
     rejects([&] { encode_restart_snapshot(duplicate_names); });
     auto legacy = encoded;
+    legacy.resize(legacy.size() - 4 * (state.workspaces.workspaces.size() + 1));
+    legacy[4] = 5;
+    assert(decode_restart_snapshot(legacy) == state);
     legacy.resize(legacy.size() - 4);
+    legacy[4] = 4;
+    assert(decode_restart_snapshot(legacy) == state);
     legacy[4] = 3;
     legacy.erase(legacy.begin() + 8, legacy.begin() + 12);
     assert(decode_restart_snapshot(legacy) == state);
@@ -97,7 +102,27 @@ int main() {
     auto trailing = encoded;
     trailing.push_back(0);
     rejects([&] { decode_restart_snapshot(trailing); });
-    auto invalid_state = state;
+    auto with_history = state;
+    with_history.workspaces.workspaces[0].focus_history = {42, 7};
+    with_history.iconic = {10, 11};
+    auto history_bytes = encode_restart_snapshot(with_history);
+    assert(decode_restart_snapshot(history_bytes) == with_history);
+    assert(Workspaces::restore(with_history.workspaces).snapshot() == with_history.workspaces);
+    for (std::size_t i = 0; i < history_bytes.size(); ++i)
+        rejects([&] { decode_restart_snapshot(std::span(history_bytes).first(i)); });
+    auto invalid_state = with_history;
+    invalid_state.workspaces.workspaces[0].focus_history = {42, 42};
+    rejects([&] { encode_restart_snapshot(invalid_state); });
+    invalid_state.workspaces.workspaces[0].focus_history = {9};
+    rejects([&] { encode_restart_snapshot(invalid_state); });
+    invalid_state = with_history;
+    invalid_state.iconic = {10, 10};
+    rejects([&] { encode_restart_snapshot(invalid_state); });
+    for (auto window : {0u, 7u, 9u}) {
+        invalid_state.iconic = {window};
+        rejects([&] { encode_restart_snapshot(invalid_state); });
+    }
+    invalid_state = state;
     invalid_state.workspaces.current = 10;
     rejects([&] { encode_restart_snapshot(invalid_state); });
     invalid_state = state;

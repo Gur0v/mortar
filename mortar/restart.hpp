@@ -31,6 +31,7 @@ struct RestartSnapshot {
     std::vector<RestartGeometry> floating_geometry{};
     std::vector<RestartGeometry> fullscreen_geometry{};
     std::vector<std::string> workspace_names{};
+    std::vector<std::uint32_t> iconic{};
     bool operator==(const RestartSnapshot &) const = default;
 };
 

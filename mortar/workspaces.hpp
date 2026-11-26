@@ -13,6 +13,7 @@ struct WorkspaceSnapshot {
     std::vector<std::uint32_t> windows;
     std::vector<std::uint32_t> floating;
     std::uint32_t focused;
+    std::vector<std::uint32_t> focus_history{};
     bool operator==(const WorkspaceSnapshot &) const = default;
 };
 
