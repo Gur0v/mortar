@@ -500,6 +500,7 @@ bool Layout::resize(std::uint32_t window, Direction direction, int pixels, Rect 
             if ((!selected_path_ || path.size() < selected_path_->size()) && self(self, node.children_[i], child_area)) return true;
             path.pop_back();
             if (found || node.direction_ != axis || extent == 0 ||
+                (clamp && extent > std::numeric_limits<std::uint16_t>::max()) ||
                 (previous ? i == 0 : i + 1 == node.children_.size())) return false;
             found = true;
             const auto other = previous ? i - 1 : i + 1;
@@ -535,20 +536,19 @@ bool Layout::resize(std::uint32_t window, Direction direction, int pixels, Rect 
                     }
                     return static_cast<int>(extent * (pos / sum)) == target;
                 };
-                int low = 0;
-                int high = wanted > boundary ? wanted - boundary : boundary - wanted;
-                if (high == 0 || !valid(wanted)) {
-                    while (low < high) {
-                        const int middle = low + (high - low) / 2 + (high - low) % 2;
-                        if (valid(boundary + (wanted > boundary ? middle : -middle))) low = middle;
-                        else high = middle - 1;
-                    }
-                    const int step = wanted > boundary ? 1 : -1;
-                    if (low == 0 || !valid(boundary + step * low)) {
-                        node.weights_[i] = original_i;
-                        node.weights_[other] = original_other;
-                        return false;
-                    }
+                const int step = wanted > boundary ? -1 : 1;
+                int target = wanted;
+                const auto limit = std::max<std::size_t>(1, 65536 / std::max<std::size_t>(1, original_geometry.size()));
+                std::size_t attempts = 0;
+                while (target != boundary && attempts < limit && !valid(target)) {
+                    target += step;
+                    ++attempts;
+                }
+                if (attempts == limit) target = boundary;
+                if (target == boundary) {
+                    node.weights_[i] = original_i;
+                    node.weights_[other] = original_other;
+                    return false;
                 }
             } else {
                 const double delta = (static_cast<double>(pixels) / extent) * total;

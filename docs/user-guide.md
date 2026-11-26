@@ -54,7 +54,7 @@ Use workspace shortcuts to switch workspaces or move the focused window. When sw
 
 New floating windows are centered on their output's usable area. Existing windows keep their positions when mortar starts or restarts.
 
-Hold Alt and drag a floating window with the left mouse button to move it. Alt+right-drag resizes a floating or tiled window from the clicked corner. Tiled resizing requires a neighboring split boundary. Near a limit, nested splits may stop short of the closest valid boundary. The mouse modifier is configurable.
+Hold Alt and drag a floating window with the left mouse button to move it. Alt+right-drag resizes a floating or tiled window from the clicked corner. Tiled resizing requires a neighboring split boundary. Near limits, large nested splits can stop short when the resize search reaches its work limit. The mouse modifier is configurable.
 
 ## The tree
 

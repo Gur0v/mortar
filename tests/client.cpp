@@ -623,6 +623,14 @@ int main(int argc, char **argv) {
                 xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 410 + i, 310 + i * 3 / 4, 0);
             xcb_flush(c);
             if (!wait([&] { return geometry(third, 440, 330, 360, 270); }, "rapid diagonal tiled mouse resize")) return EXIT_FAILURE;
+            for (int i = 0; i < 40; ++i)
+                xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root,
+                                    i % 2 ? 460 : 490, i % 2 ? 350 : 370, 0);
+            xcb_flush(c);
+            if (!wait([&] { return geometry(third, 450, 340, 350, 260); }, "rapid tiled resize reversals")) return EXIT_FAILURE;
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 450, 340, 0);
+            xcb_flush(c);
+            if (!wait([&] { return geometry(third, 440, 330, 360, 270); }, "restore tiled geometry")) return EXIT_FAILURE;
             uint32_t tiled_hints[18]{};
             tiled_hints[0] = 64;
             tiled_hints[9] = 100; tiled_hints[10] = 100;

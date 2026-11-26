@@ -262,8 +262,29 @@ int main() {
     auto uneven = Layout::restore(uneven_snapshot);
     check(uneven.resize(84, Direction::right, 5, {0, 0, 10, 10}, true));
     check(uneven.geometry({0, 0, 10, 10}) ==
-          (std::vector<Placement>{{84, {0, 0, 5, 10}}, {85, {5, 0, 2, 10}},
-                                  {86, {7, 0, 1, 10}}, {87, {8, 0, 2, 10}}}));
+          (std::vector<Placement>{{84, {0, 0, 7, 10}}, {85, {7, 0, 1, 10}},
+                                  {86, {8, 0, 1, 10}}, {87, {9, 0, 1, 10}}}));
+    auto reverse_snapshot = Layout::split(Split::vertical, {
+        Layout::split(Split::vertical, {Layout::leaf(91), Layout::leaf(92), Layout::leaf(93)}),
+        Layout::leaf(94)}).snapshot();
+    reverse_snapshot.weights = {7, 3};
+    reverse_snapshot.children[0].weights = {2, 1, 3};
+    auto reverse = Layout::restore(reverse_snapshot);
+    check(reverse.resize(94, Direction::up, 5, {0, 0, 10, 10}, true));
+    check(reverse.geometry({0, 0, 10, 10}) ==
+          (std::vector<Placement>{{91, {0, 0, 10, 1}}, {92, {0, 1, 10, 1}},
+                                  {93, {0, 2, 10, 2}}, {94, {0, 4, 10, 6}}}));
+    std::vector<Layout> many_children;
+    for (std::uint32_t id = 100; id < 612; ++id) many_children.push_back(Layout::leaf(id));
+    auto limited_snapshot = Layout::split(Split::horizontal, {
+        Layout::leaf(99), Layout::split(Split::horizontal, std::move(many_children))}).snapshot();
+    limited_snapshot.children[1].weights[1] = 32000;
+    auto limited = Layout::restore(limited_snapshot);
+    const auto before_limit = limited.snapshot();
+    check(!limited.resize(99, Direction::right, 65535, {0, 0, 65535, 20}, true));
+    check(limited.snapshot() == before_limit);
+    auto oversized = Layout::split(Split::horizontal, {Layout::leaf(95), Layout::leaf(96)});
+    check(!oversized.resize(95, Direction::right, 1, {0, 0, 65536, 10}, true));
     auto huge_snapshot = Layout::split(Split::horizontal, {Layout::leaf(79), Layout::leaf(80)}).snapshot();
     huge_snapshot.weights = {std::numeric_limits<double>::max() / 4, std::numeric_limits<double>::max() / 4};
     auto huge = Layout::restore(huge_snapshot);
