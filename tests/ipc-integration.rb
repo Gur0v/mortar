@@ -1,6 +1,18 @@
 require 'socket'
 require 'tmpdir'
 require 'timeout'
+require 'fiddle/import'
+
+module X11
+  extend Fiddle::Importer
+  dlload File.join(IO.popen(['pkg-config', '--variable=libdir', 'x11'], &:read).strip, 'libX11.so.6')
+  extern 'void *XOpenDisplay(char*)'
+  extern 'unsigned long XDefaultRootWindow(void*)'
+  extern 'unsigned long XInternAtom(void*, char*, int)'
+  extern 'int XGetWindowProperty(void*, unsigned long, unsigned long, long, long, int, unsigned long, void*, void*, void*, void*, void*)'
+  extern 'int XFree(void*)'
+  extern 'int XCloseDisplay(void*)'
+end
 
 Dir.mktmpdir('mortar-ipc') do |dir|
   Dir.mkdir(File.join(dir, 'mortar'))
@@ -53,6 +65,44 @@ Dir.mktmpdir('mortar-ipc') do |dir|
     end
     send_frame.call('eval (workspace-next)')
     raise 'empty workspace should not be visited' unless read_frame.call.start_with?('ok ')
+    connection = X11.XOpenDisplay(":#{Integer(display)}")
+    raise 'cannot open display' if connection.null?
+    root = X11.XDefaultRootWindow(connection)
+    property = lambda do |name, type|
+      actual_type = Fiddle::Pointer.malloc(Fiddle::SIZEOF_LONG)
+      format = Fiddle::Pointer.malloc(Fiddle::SIZEOF_INT)
+      count = Fiddle::Pointer.malloc(Fiddle::SIZEOF_LONG)
+      remaining = Fiddle::Pointer.malloc(Fiddle::SIZEOF_LONG)
+      data = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP)
+      atom = X11.XInternAtom(connection, name, 0)
+      result = X11.XGetWindowProperty(connection, root, atom, 0, 16384, 0, type, actual_type, format, count, remaining, data)
+      raise "invalid #{name} property" unless result == 0 && actual_type[0, Fiddle::SIZEOF_LONG].unpack1('L!') == type && remaining[0, Fiddle::SIZEOF_LONG].unpack1('L!') == 0
+      values = Fiddle::Pointer.new(data[0, Fiddle::SIZEOF_VOIDP].unpack1('J'))
+      size = count[0, Fiddle::SIZEOF_LONG].unpack1('L!')
+      value = format[0, Fiddle::SIZEOF_INT].unpack1('I') == 8 ? values[0, size] : values[0, size * Fiddle::SIZEOF_LONG].unpack('L!*')
+      X11.XFree(values)
+      value
+    end
+    utf8 = X11.XInternAtom(connection, 'UTF8_STRING', 0)
+    names = (1..10).map(&:to_s)
+    send_frame.call('eval (rename-workspace 3 "web-é")')
+    raise 'rename failed' unless read_frame.call.start_with?('ok ')
+    names[2] = 'web-é'
+    raise 'EWMH names not updated' unless property.call('_NET_DESKTOP_NAMES', utf8) == names.join("\0").b + "\0"
+    send_frame.call('eval (workspace "web-é")')
+    frames = 3.times.map { read_frame.call }
+    raise "named switch failed: #{frames.inspect}" unless frames.include?('event workspace 2') && frames.include?('event output unspecified') && frames.any? { |f| f.start_with?('ok ') }
+    raise 'EWMH current desktop not updated' unless property.call('_NET_CURRENT_DESKTOP', 6) == [2]
+    ['(rename-workspace 4 "web-é")', '(workspace "missing")'].each do |expression|
+      send_frame.call("eval #{expression}")
+      raise "invalid workspace action accepted: #{expression}" unless read_frame.call.start_with?('error ')
+    end
+    raise 'failed action changed EWMH names' unless property.call('_NET_DESKTOP_NAMES', utf8) == names.join("\0").b + "\0"
+    raise 'failed action changed current desktop' unless property.call('_NET_CURRENT_DESKTOP', 6) == [2]
+    X11.XCloseDisplay(connection)
+    send_frame.call('eval (workspace 2)')
+    frames = 3.times.map { read_frame.call }
+    raise "workspace reset failed: #{frames.inspect}" unless frames.include?('event workspace 1') && frames.include?('event output unspecified') && frames.any? { |f| f.start_with?('ok ') }
     send_frame.call('subscribe window')
     raise 'window subscription failed' unless read_frame.call == 'ok subscribed'
     client_reader, client_output = IO.pipe

@@ -171,7 +171,35 @@ struct ConfigRuntime {
         return SCM_UNSPECIFIED;
     }
 
-    static SCM workspace_action(SCM value) { return action(value, false); }
+    static SCM named_workspace(SCM value, SCM name) {
+        const bool rename = !SCM_UNBNDP(name);
+        const char *operation = rename ? "rename-workspace" : "workspace";
+        require_action(operation);
+        unsigned index = rename ? digit(value) : 0;
+        SCM text_value = rename ? name : value;
+        if (!scm_is_string(text_value)) scm_wrong_type_arg_msg(operation, rename ? 2 : 1, text_value, "string");
+        size_t length = 0;
+        char *text = scm_to_utf8_stringn(text_value, &length);
+        bool failed = !length || length > 4096 || std::memchr(text, 0, length);
+        try {
+            if (!failed) {
+                std::string name_string(text, length);
+                if (rename && active->config->rename_workspace_)
+                    active->config->rename_workspace_(active->config->host_, index, name_string);
+                else if (!rename && active->config->switch_workspace_name_)
+                    active->config->switch_workspace_name_(active->config->host_, name_string);
+                else failed = true;
+            }
+        } catch (...) { failed = true; }
+        std::free(text);
+        if (failed) scm_misc_error(operation, "invalid name or native action failed", SCM_EOL);
+        return SCM_UNSPECIFIED;
+    }
+
+    static SCM workspace_action(SCM value) {
+        return scm_is_string(value) ? named_workspace(value, SCM_UNDEFINED) : action(value, false);
+    }
+    static SCM rename_workspace(SCM value, SCM name) { return named_workspace(value, name); }
     static SCM move_action(SCM value) { return action(value, true); }
 
     static void require_action(const char *name) {
@@ -518,6 +546,7 @@ struct ConfigRuntime {
         scm_c_define_gsubr("bind-workspace", 2, 0, 0, reinterpret_cast<scm_t_subr>(bind_workspace));
         scm_c_define_gsubr("bind-move-workspace", 2, 0, 0, reinterpret_cast<scm_t_subr>(bind_move));
         scm_c_define_gsubr("workspace", 1, 0, 0, reinterpret_cast<scm_t_subr>(workspace_action));
+        scm_c_define_gsubr("rename-workspace", 2, 0, 0, reinterpret_cast<scm_t_subr>(rename_workspace));
         scm_c_define_gsubr("workspace-next", 0, 0, 0, reinterpret_cast<scm_t_subr>(workspace_next));
         scm_c_define_gsubr("workspace-previous", 0, 0, 0, reinterpret_cast<scm_t_subr>(workspace_previous));
         scm_c_define_gsubr("workspace-back-and-forth", 0, 0, 0, reinterpret_cast<scm_t_subr>(workspace_back_and_forth));

@@ -6,6 +6,7 @@
 #include "scratchpad.hpp"
 #include "size-hints.hpp"
 #include "workspaces.hpp"
+#include "wm-selection.hpp"
 #include "keyboard.hpp"
 
 #include <xcb/xcb.h>
@@ -88,7 +89,7 @@ int main() {
     }
 
     auto screens = xcb_setup_roots_iterator(xcb_get_setup(connection.get()));
-    while (screen_number-- > 0 && screens.rem > 0) {
+    for (int i = 0; i < screen_number && screens.rem > 0; ++i) {
         xcb_screen_next(&screens);
     }
     if (screens.rem == 0) {
@@ -108,8 +109,11 @@ int main() {
         return EXIT_FAILURE;
     }
 
-    xcb_ungrab_server(connection.get());
-    xcb_flush(connection.get());
+    const auto selection = mortar::acquire_wm_selection(connection.get(), screens.data->root, screen_number);
+    if (!selection.atom) {
+        std::fputs("mortar: cannot acquire window manager selection\n", stderr);
+        return EXIT_FAILURE;
+    }
 
     std::unique_ptr<mortar::Ipc> ipc;
     try {
@@ -134,6 +138,8 @@ int main() {
     }
     struct Actions {
         std::function<void(unsigned)> workspace;
+        std::function<void(unsigned, const std::string &)> rename_workspace;
+        std::function<void(const std::string &)> workspace_name;
         std::function<void(mortar::Config::WorkspaceNavigation)> workspace_navigation;
         std::function<void(unsigned)> move;
         std::function<void(mortar::Config::WindowAction)> output_action;
@@ -173,6 +179,9 @@ int main() {
         [](void *host, mortar::Config::WorkspaceNavigation action) {
             static_cast<Actions *>(host)->workspace_navigation(action);
         });
+    config.workspace_names(
+        [](void *host, unsigned digit, const std::string &name) { static_cast<Actions *>(host)->rename_workspace(digit, name); },
+        [](void *host, const std::string &name) { static_cast<Actions *>(host)->workspace_name(name); });
     if (!config.load("/dev/null")) {
         std::fputs("mortar: cannot initialize default configuration\n", stderr);
         return EXIT_FAILURE;
@@ -1156,8 +1165,26 @@ int main() {
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_supported, XCB_ATOM_ATOM, 32, std::size(supported_atoms), supported_atoms);
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_number, XCB_ATOM_CARDINAL, 32, 1, &desktop_count);
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_current, XCB_ATOM_CARDINAL, 32, 1, &current);
-    const char names[] = "1\0" "2\0" "3\0" "4\0" "5\0" "6\0" "7\0" "8\0" "9\0" "10";
-    xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_names, utf8, 8, sizeof(names), names);
+    std::array<std::string, 10> workspace_names = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"};
+    auto publish_names = [&] {
+        std::string names;
+        for (const auto &name : workspace_names) { names += name; names += '\0'; }
+        xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_names, utf8, 8, static_cast<uint32_t>(names.size()), names.data());
+    };
+    actions.rename_workspace = [&](unsigned digit, const std::string &name) {
+        auto index = (digit + 9) % 10;
+        for (std::size_t i = 0; i < workspace_names.size(); ++i)
+            if (i != index && workspace_names[i] == name) throw std::runtime_error("duplicate workspace name");
+        workspace_names[index] = name;
+        publish_names();
+        xcb_flush(c);
+    };
+    actions.workspace_name = [&](const std::string &name) {
+        auto found = std::find(workspace_names.begin(), workspace_names.end(), name);
+        if (found == workspace_names.end()) throw std::runtime_error("unknown workspace name");
+        switch_workspace(static_cast<uint32_t>(found - workspace_names.begin()));
+    };
+    publish_names();
     try {
     auto *children = xcb_query_tree_children(tree.get());
     for (int i = 0; i < xcb_query_tree_children_length(tree.get()); ++i) {
@@ -1444,6 +1471,14 @@ int main() {
             }
         }
         if (!event) { if (ipc_dispatched) publish(); continue; }
+        if ((event->response_type & 0x80) == 0 && (event->response_type & 0x7f) == XCB_SELECTION_CLEAR) {
+            auto *clear = reinterpret_cast<xcb_selection_clear_event_t *>(event);
+            if (clear->owner == selection.window && clear->selection == selection.atom) {
+                std::fputs("mortar: window manager selection lost\n", stderr);
+                std::free(event);
+                break;
+            }
+        }
         try {
             if ((event->response_type & 0x7f) == XCB_KEY_PRESS)
                 actions.time = reinterpret_cast<xcb_key_press_event_t *>(event)->time;

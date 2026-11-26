@@ -34,6 +34,8 @@ if get_option('tests')
   test('gaps', executable('test-gaps', 'tests/gaps.cpp'))
   layout_test = executable('test-layout', 'tests/layout.cpp', 'mortar/layout.cpp')
   test('layout', layout_test)
+  restart_test = executable('test-restart', 'tests/restart.cpp', 'mortar/restart.cpp', 'mortar/layout.cpp')
+  test('restart', restart_test)
   workspaces_test = executable('test-workspaces', 'tests/workspaces.cpp', 'mortar/workspaces.cpp', 'mortar/layout.cpp')
   test('workspaces', workspaces_test)
   outputs_test = executable('test-outputs', 'tests/outputs.cpp', 'mortar/outputs.cpp')
@@ -69,6 +71,47 @@ ensure
   Process.wait(server)
 end
 ''', randr_test])
+  selection_test = executable('test-wm-selection', 'tests/wm-selection.cpp', dependencies: xcb)
+  test('wm-selection', find_program('ruby'), args: ['-e', '''
+require 'timeout'
+reader, writer = IO.pipe
+server = Process.spawn('Xvfb', '-displayfd', '3', '-screen', '0', '800x600x24', 3 => writer, out: File::NULL, err: File::NULL)
+writer.close
+begin
+  display = Timeout.timeout(10) { reader.gets }
+  abort 'Xvfb failed to start' unless display
+  exit(system({ 'DISPLAY' => ":#{Integer(display)}" }, ARGV.fetch(0)) ? 0 : 1)
+ensure
+  reader.close
+  Process.kill('TERM', server) rescue nil
+  Process.wait(server)
+end
+''', selection_test])
+  test('wm-selection-loss', find_program('ruby'), args: ['-e', '''
+require 'timeout'
+require 'tmpdir'
+reader, writer = IO.pipe
+server = Process.spawn('Xvfb', '-displayfd', '3', '-screen', '0', '800x600x24', 3 => writer, out: File::NULL, err: File::NULL)
+writer.close
+wm = nil
+begin
+  display = Timeout.timeout(10) { reader.gets }
+  abort 'Xvfb failed to start' unless display
+  Dir.mktmpdir do |dir|
+    env = { 'DISPLAY' => ":#{Integer(display)}", 'HOME' => dir, 'XDG_CONFIG_HOME' => dir, 'XDG_RUNTIME_DIR' => dir }
+    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: File::NULL)
+    abort 'selection takeover failed' unless system(env, ARGV.fetch(1), 'takeover')
+    Timeout.timeout(10) { Process.wait(wm) }
+    wm = nil
+  end
+ensure
+  Process.kill('TERM', wm) rescue nil if wm
+  Process.wait(wm) rescue nil if wm
+  reader.close
+  Process.kill('TERM', server) rescue nil
+  Process.wait(server)
+end
+''', mortar, selection_test])
   keyboard_test = executable('test-keyboard', 'tests/keyboard.cpp', 'mortar/keyboard.cpp', dependencies: [xcb, xcb_xkb, xkbcommon])
   test('keyboard', find_program('ruby'), args: ['-e', '''
 require 'timeout'

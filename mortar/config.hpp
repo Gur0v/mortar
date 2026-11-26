@@ -64,6 +64,7 @@ public:
 
     enum class WorkspaceNavigation { next, previous, back_and_forth };
     using WorkspaceNavigationCallback = void (*)(void *, WorkspaceNavigation);
+    using WorkspaceNameCallback = void (*)(void *, unsigned, const std::string &);
     enum class WindowAction { toggle_split, floating, scratch_move, scratch_show, fullscreen, exit, focus_output_next, focus_output_previous, move_output_next, move_output_previous };
     using WindowActionCallback = void (*)(void *, WindowAction);
     using SplitAction = void (*)(void *, Split);
@@ -85,6 +86,10 @@ public:
         std::string text;
     };
     static constexpr std::size_t evaluation_limit = 4096;
+    void workspace_names(WorkspaceNameCallback rename, void (*switch_name)(void *, const std::string &)) noexcept {
+        rename_workspace_ = rename;
+        switch_workspace_name_ = switch_name;
+    }
     Evaluation evaluate(const std::string &expression);
     bool load(const char *path);
     bool stage(const char *path);
@@ -119,6 +124,8 @@ private:
     SpawnAction spawn_;
     WindowActionCallback window_action_;
     WorkspaceNavigationCallback workspace_navigation_;
+    WorkspaceNameCallback rename_workspace_ = nullptr;
+    void (*switch_workspace_name_)(void *, const std::string &) = nullptr;
     std::array<SCM, 10> workspace_bindings_;
     std::array<SCM, 10> move_bindings_;
     std::vector<Binding> bindings_;

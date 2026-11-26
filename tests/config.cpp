@@ -13,6 +13,7 @@ void check(bool value) {
 struct Host {
     unsigned workspace = 99;
     unsigned move = 99;
+    std::string workspace_name;
     bool fail = false;
     mortar::Config *config = nullptr;
     const char *path = nullptr;
@@ -167,6 +168,14 @@ int main() {
     check(evaluation.success && evaluation.text == "43");
     check(config.evaluate("evaluation-value").text == "42");
     check(config.evaluate("(workspace 6)").success && host.workspace == 6);
+    config.workspace_names(
+        [](void *data, unsigned digit, const std::string &name) { auto &h = *static_cast<Host *>(data); h.workspace = digit; h.workspace_name = name; },
+        [](void *data, const std::string &name) { static_cast<Host *>(data)->workspace_name = name; });
+    check(config.evaluate("(rename-workspace 0 \"web\")").success && host.workspace == 0 && host.workspace_name == "web");
+    check(config.evaluate("(workspace \"web\")").success && host.workspace_name == "web");
+    check(!config.evaluate("(rename-workspace 10 \"bad\")").success);
+    check(!config.evaluate("(workspace \"\")").success);
+    check(!config.evaluate("(workspace (string #\\a #\\nul))").success);
     check(!config.evaluate("(bind-key 70 0 (lambda () #t))").success);
     check(!config.evaluate("(error \"evaluation failure\")").success);
     check(!config.evaluate("(").success);
