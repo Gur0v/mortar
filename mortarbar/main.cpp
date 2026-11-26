@@ -759,7 +759,11 @@ int main(int argc, char **argv) {
         if (fds[1].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) {
             std::array<char, 1024> buffer {};
             auto n = read(input_fd, buffer.data(), buffer.size());
-            auto save = [&](auto frame) { blocks = std::move(frame); dirty = true; };
+            auto save = [&](auto frame) {
+                std::erase_if(frame, [](const auto& block) { return block.full_text.empty(); });
+                blocks = std::move(frame);
+                dirty = true;
+            };
             if (n == 0) {
                 input_open = false;
                 if (!parser.finish(save)) std::cerr << "mortarbar: " << parser.error() << '\n';

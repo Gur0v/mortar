@@ -33,7 +33,7 @@ begin
   abort 'Xvfb failed to start' unless display
   reader_status, writer_status = IO.pipe
   code = 'STDERR.write(ARGV.fetch(0)); STDOUT.write(%q({"version":1,"click_events":true}
-[[{"full_text":"a very long status value that must be shortened","short_text":"S","min_width":40,"align":"right","urgent":true,"separator":false,"separator_block_width":15},{"full_text":"<span foreground=\"#ff0000\">é漢</span>","markup":"pango","name":"test","color":"#ffffff","background":"#00ff00","border":"#0000ff","border_top":2}]]
+[[{"full_text":"","background":"#ff00ff","border":"#ff00ff","min_width":200},{"full_text":"a very long status value that must be shortened","short_text":"S","min_width":40,"align":"right","urgent":true,"separator":false,"separator_block_width":15},{"full_text":"<span foreground=\"#ff0000\">é漢</span>","markup":"pango","name":"test","color":"#ffffff","background":"#00ff00","border":"#0000ff","border_top":2}]]
 )); STDOUT.flush; STDIN.read'
   pid = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, bar, RbConfig.ruby, '-e', code, 'a b', err: writer_status)
   writer_status.close
@@ -154,6 +154,7 @@ begin
   image = X11.XGetImage(connection, window, 0, 0, (multi ? 400 : 800), bar_height, -1, 2)
   abort 'cannot capture bar' if image.null?
   colors = (multi ? (200...400) : (600...800)).flat_map { |x| (0...bar_height).map { |y| X11.XGetPixel(image, x, y) & 0xffffff } }
+  abort 'empty status block drawn' if colors.include?(0xff00ff)
   abort 'urgent background missing' unless colors.include?(0x900000)
   abort 'urgent border missing' unless colors.include?(0x2f343a)
   abort 'disabled separator drawn' if colors.include?(0x666666)
