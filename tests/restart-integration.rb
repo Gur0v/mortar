@@ -181,6 +181,40 @@ Dir.mktmpdir('mortar-restart-') do |dir|
       end
     end
     raise 'Failed exec restarted process' unless File.readlines(marker).size == 3
+    request.call('(exit)') rescue nil
+    _, status = Timeout.timeout(10) { Process.wait2(wm) }
+    wm = nil
+    raise 'WM failed to exit' unless status.success?
+    if File.read(log).include?('cannot verify inherited IPC socket; leaving path on shutdown')
+      raise 'Unverified socket path was removed' unless File.socket?(socket_path)
+      File.unlink(socket_path)
+    else
+      raise 'Socket path remained after exit' if File.exist?(socket_path)
+    end
+
+    FileUtils.cp(ARGV.fetch(0), binary)
+    wm = Process.spawn(env, binary, out: File::NULL, err: log)
+    wait.call('IPC did not start again') { File.socket?(socket_path) }
+    wait.call('WM not ready again') { request.call('(+ 1 2)') == 'ok 3' }
+    request.call('(restart)') rescue nil
+    wait.call('Third restart did not execute startup config') { File.readlines(marker).size == 5 }
+    wait.call('IPC did not recover after third restart') do
+      begin
+        request.call('(+ 1 2)') == 'ok 3'
+      rescue SystemCallError, IOError, Timeout::Error
+        false
+      end
+    end
+    socket = UNIXSocket.new(socket_path)
+    File.unlink(socket_path)
+    File.write(socket_path, 'replacement')
+    text = 'eval (exit)'
+    socket.write([text.bytesize].pack('N') + text)
+    _, status = Timeout.timeout(10) { Process.wait2(wm) }
+    socket.close
+    wm = nil
+    raise 'WM failed to exit after replacement' unless status.success?
+    raise 'Replacement path was not preserved' unless File.file?(socket_path) && File.read(socket_path) == 'replacement'
   ensure
     X11.XCloseDisplay(connection) if connection && !connection.null?
     [wm, server].compact.each do |pid|

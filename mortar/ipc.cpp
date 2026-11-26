@@ -4,11 +4,17 @@
 #include <array>
 #include <cerrno>
 #include <cstring>
+#include <cstdio>
 #include <fcntl.h>
+#include <linux/netlink.h>
+#include <linux/sock_diag.h>
+#include <linux/unix_diag.h>
+#include <limits>
 #include <stdexcept>
 #include <system_error>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -16,6 +22,77 @@ namespace mortar {
 namespace {
 [[noreturn]] void fail(const char* operation) {
     throw std::system_error(errno, std::generic_category(), operation);
+}
+
+enum class Association { unknown, match, mismatch };
+
+Association listener_matches(int listener, const struct stat& path) {
+    struct stat sock {};
+    if (fstat(listener, &sock) < 0 || sock.st_ino == 0 ||
+        sock.st_ino > std::numeric_limits<std::uint32_t>::max() ||
+        path.st_ino > std::numeric_limits<std::uint32_t>::max() ||
+        major(path.st_dev) >= (1U << 12) || minor(path.st_dev) >= (1U << 20)) return Association::unknown;
+    const auto device = (major(path.st_dev) << 20) | minor(path.st_dev);
+    int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, NETLINK_SOCK_DIAG);
+    if (fd < 0) return Association::unknown;
+    struct Request { nlmsghdr header; unix_diag_req query; } request {};
+    request.header.nlmsg_len = sizeof(request);
+    request.header.nlmsg_type = SOCK_DIAG_BY_FAMILY;
+    request.header.nlmsg_flags = NLM_F_REQUEST;
+    request.header.nlmsg_seq = 1;
+    request.query.sdiag_family = AF_UNIX;
+    request.query.udiag_ino = static_cast<std::uint32_t>(sock.st_ino);
+    request.query.udiag_show = UDIAG_SHOW_VFS;
+    request.query.udiag_cookie[0] = request.query.udiag_cookie[1] = ~0U;
+    sockaddr_nl kernel {};
+    kernel.nl_family = AF_NETLINK;
+    Association result = Association::unknown;
+    if (sendto(fd, &request, sizeof(request), 0, reinterpret_cast<sockaddr*>(&kernel), sizeof(kernel)) == sizeof(request)) {
+        pollfd ready {fd, POLLIN, 0};
+        if (poll(&ready, 1, 1000) == 1 && ready.revents == POLLIN) {
+            alignas(nlmsghdr) std::array<char, 4096> buffer {};
+            sockaddr_nl sender {};
+            iovec iov {buffer.data(), buffer.size()};
+            msghdr message {};
+            message.msg_name = &sender;
+            message.msg_namelen = sizeof(sender);
+            message.msg_iov = &iov;
+            message.msg_iovlen = 1;
+            auto length = recvmsg(fd, &message, 0);
+            if (length >= static_cast<ssize_t>(NLMSG_LENGTH(sizeof(unix_diag_msg))) &&
+                !(message.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) && message.msg_namelen == sizeof(sender) &&
+                sender.nl_family == AF_NETLINK && sender.nl_pid == 0 && sender.nl_groups == 0) {
+                auto* header = reinterpret_cast<const nlmsghdr*>(buffer.data());
+                if (header->nlmsg_len == static_cast<std::size_t>(length) &&
+                    header->nlmsg_type == SOCK_DIAG_BY_FAMILY && header->nlmsg_seq == 1 &&
+                    !(header->nlmsg_flags & (NLM_F_MULTI | NLM_F_DUMP_INTR))) {
+                    auto* diag = reinterpret_cast<const unix_diag_msg*>(NLMSG_DATA(header));
+                    std::size_t offset = NLMSG_LENGTH(sizeof(*diag));
+                    bool found = false, matches = false, valid = diag->udiag_family == AF_UNIX &&
+                        diag->udiag_type == SOCK_STREAM && diag->udiag_ino == request.query.udiag_ino;
+                    while (valid && offset < header->nlmsg_len) {
+                        if (header->nlmsg_len - offset < sizeof(nlattr)) { valid = false; break; }
+                        nlattr attr {};
+                        std::memcpy(&attr, buffer.data() + offset, sizeof(attr));
+                        if (attr.nla_len < sizeof(attr) || attr.nla_len > header->nlmsg_len - offset ||
+                            static_cast<std::size_t>(NLA_ALIGN(attr.nla_len)) > header->nlmsg_len - offset) { valid = false; break; }
+                        if (attr.nla_type == UNIX_DIAG_VFS) {
+                            unix_diag_vfs vfs {};
+                            if (found || attr.nla_len != sizeof(attr) + sizeof(vfs)) { valid = false; break; }
+                            std::memcpy(&vfs, buffer.data() + offset + sizeof(attr), sizeof(vfs));
+                            found = true;
+                            matches = vfs.udiag_vfs_ino == path.st_ino && vfs.udiag_vfs_dev == device;
+                        }
+                        offset += NLA_ALIGN(attr.nla_len);
+                    }
+                    if (valid && offset == header->nlmsg_len)
+                        result = found && matches ? Association::match : Association::mismatch;
+                }
+            }
+        }
+    }
+    close(fd);
+    return result;
 }
 }
 
@@ -121,10 +198,13 @@ Ipc::Ipc(const Handoff& handoff) : path_(handoff.path) {
         if (fstatat(dir_, name_.c_str(), &st, AT_SYMLINK_NOFOLLOW) < 0) fail("stat IPC socket");
         if (!S_ISSOCK(st.st_mode) || st.st_uid != geteuid() || st.st_ino != handoff.inode)
             throw std::runtime_error("inherited IPC socket was replaced");
+        auto association = listener_matches(handoff.fd, st);
+        if (association == Association::mismatch) throw std::runtime_error("inherited IPC listener does not match socket");
         if (fcntl(handoff.fd, F_SETFD, fd_flags | FD_CLOEXEC) < 0) fail("secure IPC listener");
         socket_inode_ = handoff.inode;
         listener_ = handoff.fd;
-        owns_path_ = false;
+        owns_path_ = association == Association::match;
+        if (!owns_path_) std::fputs("mortar: cannot verify inherited IPC socket; leaving path on shutdown\n", stderr);
     } catch (...) {
         close(dir_);
         dir_ = -1;

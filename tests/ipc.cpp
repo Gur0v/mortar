@@ -13,18 +13,28 @@
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 bool fail_socket_stat = false;
+bool truncate_diag = false;
+bool ambiguous_device = false;
+extern "C" ssize_t recvmsg(int fd, struct msghdr* msg, int flags) {
+    auto result = syscall(SYS_recvmsg, fd, msg, flags);
+    if (truncate_diag && result > 0) msg->msg_flags |= MSG_TRUNC;
+    return result;
+}
 
 extern "C" int fstatat(int dirfd, const char* path, struct stat* st, int flags) noexcept {
     if (fail_socket_stat && std::strcmp(path, "socket") == 0) {
         errno = EIO;
         return -1;
     }
-    return static_cast<int>(syscall(SYS_newfstatat, dirfd, path, st, flags));
+    int result = static_cast<int>(syscall(SYS_newfstatat, dirfd, path, st, flags));
+    if (result == 0 && ambiguous_device && S_ISSOCK(st->st_mode)) st->st_dev = makedev(4096, 0);
+    return result;
 }
 
 void check(bool value) {
@@ -215,6 +225,13 @@ int main(int argc, char** argv) {
         try { mortar::Ipc adopted(invalid); } catch (const std::runtime_error&) { rejected = true; }
         check(rejected);
         close(invalid.fd);
+        for (bool* fault : {&truncate_diag, &ambiguous_device}) {
+            auto uncertain = ipc.handoff();
+            *fault = true;
+            { mortar::Ipc adopted(uncertain); }
+            *fault = false;
+            check(lstat(path.c_str(), &st) == 0 && S_ISSOCK(st.st_mode));
+        }
         pid_t child = fork();
         check(child >= 0);
         if (child == 0) {
@@ -226,6 +243,15 @@ int main(int argc, char** argv) {
         close(handoff.fd);
         int status = 0;
         check(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        if (lstat(path.c_str(), &st) == 0) {
+            check(S_ISSOCK(st.st_mode));
+            check(unlink(path.c_str()) == 0);
+        } else {
+            check(errno == ENOENT);
+        }
+    }
+    {
+        mortar::Ipc ipc(path);
         check(lstat(path.c_str(), &st) == 0 && S_ISSOCK(st.st_mode));
         int abstract_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
         check(abstract_fd >= 0);
@@ -235,9 +261,27 @@ int main(int argc, char** argv) {
         check(bind(abstract_fd, reinterpret_cast<sockaddr*>(&abstract_address),
                    offsetof(sockaddr_un, sun_path) + 16) == 0);
         check(listen(abstract_fd, 1) == 0);
-        {
-            mortar::Ipc::Handoff mismatch {abstract_fd, static_cast<std::uint64_t>(st.st_ino), path};
-            mortar::Ipc adopted(mismatch);
+        mortar::Ipc::Handoff mismatch {abstract_fd, static_cast<std::uint64_t>(st.st_ino), path};
+        bool rejected = false;
+        try { mortar::Ipc adopted(mismatch); } catch (const std::runtime_error&) { rejected = true; }
+        if (rejected) {
+            check(fcntl(abstract_fd, F_GETFD) >= 0);
+            close(abstract_fd);
+        } else {
+            check(fcntl(abstract_fd, F_GETFD) < 0 && errno == EBADF);
+        }
+        check(lstat(path.c_str(), &st) == 0 && S_ISSOCK(st.st_mode));
+        mortar::Ipc other(std::string(directory) + "/other");
+        auto wrong = other.handoff();
+        wrong.path = path;
+        wrong.inode = st.st_ino;
+        rejected = false;
+        try { mortar::Ipc adopted(wrong); } catch (const std::runtime_error&) { rejected = true; }
+        if (rejected) {
+            check(fcntl(wrong.fd, F_GETFD) >= 0);
+            close(wrong.fd);
+        } else {
+            check(fcntl(wrong.fd, F_GETFD) < 0 && errno == EBADF);
         }
         check(lstat(path.c_str(), &st) == 0 && S_ISSOCK(st.st_mode));
     }
