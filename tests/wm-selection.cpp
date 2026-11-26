@@ -1,7 +1,9 @@
 #include "../mortar/wm-selection.hpp"
 
-#include <cassert>
 #include <cstdlib>
+
+#undef assert
+#define assert(condition) ((condition) ? static_cast<void>(0) : std::abort())
 #include <memory>
 #include <chrono>
 #include <thread>
