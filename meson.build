@@ -154,6 +154,7 @@ end
   test('restart-integration', find_program('ruby'), args: [files('tests/restart-integration.rb'), mortar])
   test('click-focus', find_program('ruby'), args: [files('tests/click-focus.rb'), mortar])
   test('multimonitor-resize', find_program('ruby'), args: [files('tests/multimonitor-resize.rb'), mortar])
+  test('drag-burst', find_program('ruby'), args: [files('tests/drag-burst.rb'), mortar])
   ewmh_test = executable('test-ewmh', 'tests/ewmh.cpp', dependencies: xcb)
   test('ewmh', find_program('ruby'), args: ['-e', '''
 require 'timeout'

@@ -1395,24 +1395,33 @@ int main(int argc, char **argv) {
     std::vector<xcb_window_t> published_clients, published_stack;
     xcb_window_t published_active = XCB_NONE;
     bool published = false;
-    bool stack_pending = false, stack_dirty = false, stack_published = false;
-    xcb_query_tree_cookie_t stack_cookie{};
+    bool stack_dirty = true, stack_published = false, stack_valid = true;
+    std::vector<xcb_window_t> root_children;
+    uint32_t stack_sequence = 0;
     auto stack_retry = std::chrono::steady_clock::time_point{};
     std::vector<uint32_t> published_outputs, published_urgent, published_workareas;
-    auto publish = [&] {
+    auto publish = [&](bool update_workareas = true) {
         std::vector<uint32_t> workareas;
-        for (size_t i = 0; i < workspaces.size(); ++i) {
+        std::vector<std::pair<std::string, mortar::Rect>> output_workareas;
+        if (update_workareas) for (size_t i = 0; i < workspaces.size(); ++i) {
             auto output = std::find_if(outputs.outputs().begin(), outputs.outputs().end(), [&](const auto &item) {
                 return outputs.owners()[i] && item.name == *outputs.owners()[i];
             });
             if (output == outputs.outputs().end())
                 output = std::find_if(outputs.outputs().begin(), outputs.outputs().end(), [&](const auto &item) { return item.workspace == current; });
             if (output == outputs.outputs().end()) continue;
-            auto area = usable(output->bounds);
+            auto found = std::find_if(output_workareas.begin(), output_workareas.end(), [&](const auto &entry) {
+                return entry.first == output->name;
+            });
+            if (found == output_workareas.end()) {
+                output_workareas.emplace_back(output->name, usable(output->bounds));
+                found = std::prev(output_workareas.end());
+            }
+            auto area = found->second;
             workareas.insert(workareas.end(), {static_cast<uint32_t>(area.x), static_cast<uint32_t>(area.y),
                 static_cast<uint32_t>(area.width), static_cast<uint32_t>(area.height)});
         }
-        if (workareas != published_workareas) {
+        if (update_workareas && workareas != published_workareas) {
             xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_workarea, XCB_ATOM_CARDINAL, 32, workareas.size(), workareas.data());
             published_workareas = std::move(workareas);
         }
@@ -1438,11 +1447,11 @@ int main(int argc, char **argv) {
             xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, output_workspaces, XCB_ATOM_CARDINAL, 32, metadata.size(), metadata.data());
             published_outputs = std::move(metadata);
         }
-        stack_dirty = true;
         auto active = workspaces[current].focused;
         if (!published || clients != published_clients) {
             xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_clients, XCB_ATOM_WINDOW, 32, clients.size(), clients.data());
             published_clients = clients;
+            stack_dirty = true;
         }
         if (!published || active != published_active) {
             xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_active, XCB_ATOM_WINDOW, 32, 1, &active);
@@ -1453,48 +1462,49 @@ int main(int argc, char **argv) {
         xcb_flush(c);
     };
     auto poll_stack = [&] {
-        if (!stack_pending) {
-            if (stack_dirty && std::chrono::steady_clock::now() >= stack_retry) {
-                stack_dirty = false;
-                stack_cookie = xcb_query_tree(c, root);
-                stack_pending = true;
+        if (!stack_valid && std::chrono::steady_clock::now() >= stack_retry) {
+            xcb_grab_server(c);
+            auto cookie = xcb_query_tree(c, root);
+            auto barrier = xcb_get_input_focus(c);
+            xcb_ungrab_server(c);
+            std::unique_ptr<xcb_query_tree_reply_t, decltype(&std::free)> reply{
+                xcb_query_tree_reply(c, cookie, nullptr), &std::free};
+            std::free(xcb_get_input_focus_reply(c, barrier, nullptr));
+            if (!reply) {
+                std::fputs("mortar: cannot query stacking order\n", stderr);
+                stack_retry = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                return;
             }
-            return;
-        }
-        void *raw = nullptr;
-        xcb_generic_error_t *error = nullptr;
-        if (!xcb_poll_for_reply(c, stack_cookie.sequence, &raw, &error)) return;
-        std::unique_ptr<xcb_query_tree_reply_t, decltype(&std::free)> reply{
-            static_cast<xcb_query_tree_reply_t *>(raw), &std::free};
-        std::free(error);
-        stack_pending = false;
-        if (reply) {
-            std::vector<xcb_window_t> stack;
             auto *children = xcb_query_tree_children(reply.get());
-            for (int i = 0; i < xcb_query_tree_children_length(reply.get()); ++i)
-                if (std::find(clients.begin(), clients.end(), children[i]) != clients.end()) stack.push_back(children[i]);
-            if (!stack_published || stack != published_stack) {
-                xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_stacking, XCB_ATOM_WINDOW, 32, stack.size(), stack.data());
-                published_stack = std::move(stack);
-                stack_published = true;
-            }
-        } else {
-            std::fputs("mortar: cannot query stacking order\n", stderr);
+            root_children.assign(children, children + xcb_query_tree_children_length(reply.get()));
+            stack_sequence = barrier.sequence;
+            stack_valid = true;
             stack_dirty = true;
-            stack_retry = std::chrono::steady_clock::now() + std::chrono::seconds(1);
         }
-        if (stack_dirty && std::chrono::steady_clock::now() >= stack_retry) {
-            stack_dirty = false;
-            stack_cookie = xcb_query_tree(c, root);
-            stack_pending = true;
+        if (!stack_valid || !stack_dirty) return;
+        std::vector<xcb_window_t> stack;
+        for (auto window : root_children)
+            if (std::find(clients.begin(), clients.end(), window) != clients.end()) stack.push_back(window);
+        if (!stack_published || stack != published_stack) {
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_stacking, XCB_ATOM_WINDOW, 32, stack.size(), stack.data());
+            published_stack = std::move(stack);
+            stack_published = true;
         }
+        stack_dirty = false;
     };
     auto tree_cookie = xcb_query_tree(c, root);
+    auto tree_barrier = xcb_get_input_focus(c);
     std::unique_ptr<xcb_query_tree_reply_t, decltype(&std::free)> tree{
         xcb_query_tree_reply(c, tree_cookie, nullptr), &std::free};
+    std::free(xcb_get_input_focus_reply(c, tree_barrier, nullptr));
     if (!tree) {
         std::fputs("mortar: cannot query root windows\n", stderr);
         return EXIT_FAILURE;
+    }
+    {
+        auto *children = xcb_query_tree_children(tree.get());
+        root_children.assign(children, children + xcb_query_tree_children_length(tree.get()));
+        stack_sequence = tree_barrier.sequence;
     }
     xcb_create_window(c, XCB_COPY_FROM_PARENT, support, root, 0, 0, 1, 1, 0,
                       XCB_WINDOW_CLASS_INPUT_OUTPUT, screens.data->root_visual, 0, nullptr);
@@ -2028,7 +2038,7 @@ int main(int argc, char **argv) {
             poll_stack();
         } catch (const std::bad_alloc &) {
             std::fputs("mortar: cannot allocate stacking order\n", stderr);
-            stack_dirty = true;
+            stack_valid = false;
             stack_retry = std::chrono::steady_clock::now() + std::chrono::seconds(1);
         }
         if (!event) event = xcb_poll_for_queued_event(c);
@@ -2163,6 +2173,60 @@ int main(int argc, char **argv) {
                 if (old_outputs != outputs.outputs()) output_event();
             } catch (const std::exception &error) {
                 std::fprintf(stderr, "mortar: output update failed: %s; keeping previous outputs\n", error.what());
+            }
+        }
+        if (stack_valid && !(event->response_type & 0x80) &&
+            static_cast<int32_t>(event->full_sequence - stack_sequence) >= 0) {
+            auto remove_child = [&](xcb_window_t window) {
+                auto it = std::find(root_children.begin(), root_children.end(), window);
+                if (it == root_children.end()) { stack_valid = false; return; }
+                root_children.erase(it);
+                stack_dirty = true;
+            };
+            try {
+                if (type == XCB_CREATE_NOTIFY) {
+                    auto *e = reinterpret_cast<xcb_create_notify_event_t *>(event);
+                    if (e->parent == root) {
+                        if (std::find(root_children.begin(), root_children.end(), e->window) != root_children.end()) stack_valid = false;
+                        else { root_children.push_back(e->window); stack_dirty = true; }
+                    }
+                } else if (type == XCB_DESTROY_NOTIFY) {
+                    auto *e = reinterpret_cast<xcb_destroy_notify_event_t *>(event);
+                    if (e->event == root) remove_child(e->window);
+                } else if (type == XCB_REPARENT_NOTIFY) {
+                    auto *e = reinterpret_cast<xcb_reparent_notify_event_t *>(event);
+                    if (e->event == root) {
+                        auto it = std::find(root_children.begin(), root_children.end(), e->window);
+                        if (it != root_children.end()) root_children.erase(it);
+                        else if (e->parent != root) stack_valid = false;
+                        if (e->parent == root) root_children.push_back(e->window);
+                        stack_dirty = true;
+                    }
+                } else if (type == XCB_CONFIGURE_NOTIFY) {
+                    auto *e = reinterpret_cast<xcb_configure_notify_event_t *>(event);
+                    if (e->event == root) {
+                        auto it = std::find(root_children.begin(), root_children.end(), e->window);
+                        if (it == root_children.end()) stack_valid = false;
+                        else {
+                            auto previous = it == root_children.begin() ? XCB_NONE : *std::prev(it);
+                            if (previous != e->above_sibling) {
+                                auto sibling = e->above_sibling == XCB_NONE ? root_children.end() :
+                                    std::find(root_children.begin(), root_children.end(), e->above_sibling);
+                                if (e->above_sibling == e->window || (e->above_sibling != XCB_NONE && sibling == root_children.end())) stack_valid = false;
+                                else {
+                                    root_children.erase(it);
+                                    sibling = e->above_sibling == XCB_NONE ? root_children.begin() :
+                                        std::next(std::find(root_children.begin(), root_children.end(), e->above_sibling));
+                                    root_children.insert(sibling, e->window);
+                                    stack_dirty = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (const std::bad_alloc &) {
+                stack_valid = false;
+                stack_retry = std::chrono::steady_clock::now() + std::chrono::seconds(1);
             }
         }
         switch (type) {
@@ -2529,12 +2593,21 @@ int main(int argc, char **argv) {
             break;
         }
         }
-        if (ipc_dispatched || type == XCB_KEY_PRESS || type == XCB_BUTTON_PRESS || type == XCB_ENTER_NOTIFY ||
+        bool dock_property = type == XCB_PROPERTY_NOTIFY && !(event->response_type & 0x80) && [&] {
+            auto *property = reinterpret_cast<xcb_property_notify_event_t *>(event);
+            return (property->atom == strut || property->atom == strut_partial || property->atom == local_bar) &&
+                std::find(docks.begin(), docks.end(), property->window) != docks.end();
+        }();
+        bool dock_configure = type == XCB_CONFIGURE_NOTIFY && !(event->response_type & 0x80) && [&] {
+            auto *notify = reinterpret_cast<xcb_configure_notify_event_t *>(event);
+            return std::find(docks.begin(), docks.end(), notify->window) != docks.end();
+        }();
+        if (ipc_dispatched || dock_property || type == XCB_KEY_PRESS || type == XCB_BUTTON_PRESS || type == XCB_ENTER_NOTIFY ||
             type == XCB_MAP_REQUEST || type == XCB_UNMAP_NOTIFY || type == XCB_DESTROY_NOTIFY ||
             type == XCB_CLIENT_MESSAGE || type == XCB_CONFIGURE_REQUEST || type == XCB_CONFIGURE_NOTIFY ||
             (type == XCB_PROPERTY_NOTIFY && (reinterpret_cast<xcb_property_notify_event_t *>(event)->atom == focus_time || reinterpret_cast<xcb_property_notify_event_t *>(event)->atom == XCB_ATOM_WM_HINTS)) ||
             (randr && randr->present && (type == randr->first_event + XCB_RANDR_SCREEN_CHANGE_NOTIFY ||
-             type == randr->first_event + XCB_RANDR_NOTIFY))) publish();
+             type == randr->first_event + XCB_RANDR_NOTIFY))) publish(type != XCB_CONFIGURE_NOTIFY || dock_configure || ipc_dispatched);
         std::free(event);
     }
     stop_bar();

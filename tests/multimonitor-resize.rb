@@ -16,6 +16,8 @@ module X
   extern 'int XGetGeometry(void *, unsigned long, void *, void *, void *, void *, void *, void *, void *)'
   extern 'unsigned long XInternAtom(void *, char *, int)'
   extern 'int XChangeProperty(void *, unsigned long, unsigned long, unsigned long, int, int, void *, int)'
+  extern 'int XGetWindowProperty(void *, unsigned long, unsigned long, long, long, int, unsigned long, void *, void *, void *, void *, void *)'
+  extern 'int XFree(void *)'
   extern 'unsigned int XKeysymToKeycode(void *, unsigned long)'
   extern 'int XTestFakeKeyEvent(void *, unsigned int, int, unsigned long)'
   extern 'int XTestFakeButtonEvent(void *, unsigned int, int, unsigned long)'
@@ -90,6 +92,29 @@ Dir.mktmpdir('mortar-multimonitor-') do |dir|
     X.XMapWindow(display, right)
     X.XSync(display, 0)
     right_before = wait_for { g = geometry(display, right); g if g[0] >= 800 && g[2] > 100 }
+    workarea_atom = X.XInternAtom(display, '_NET_WORKAREA', 0)
+    workarea = lambda do
+      type, format, items, remaining, data = [Fiddle::SIZEOF_LONG, Fiddle::SIZEOF_INT, Fiddle::SIZEOF_LONG, Fiddle::SIZEOF_LONG, Fiddle::SIZEOF_VOIDP].map { |size| Fiddle::Pointer.malloc(size) }
+      raise 'XGetWindowProperty failed' unless X.XGetWindowProperty(display, root, workarea_atom, 0, 8, 0, 6, type, format, items, remaining, data) == 0
+      count = items[0, Fiddle::SIZEOF_LONG].unpack1('L!')
+      pointer = data[0, Fiddle::SIZEOF_VOIDP].unpack1('J')
+      values = pointer.zero? ? [] : Fiddle::Pointer.new(pointer)[0, count * Fiddle::SIZEOF_LONG].unpack('L!*')
+      X.XFree(pointer) unless pointer.zero?
+      values
+    end
+    wait_for { workarea.call[0, 8] == [0, 30, 800, 570, 800, 0, 800, 600] }
+    [60, 30].each do |height|
+      previous = windows.map { |w| geometry(display, w) }
+      X.XChangeProperty(display, dock, strut, 6, 32, 0, [0, 0, height, 0, 0, 0, 0, 0, 0, 799, 0, 0].pack('L!*'), 12)
+      X.XSync(display, 0)
+      wait_for { workarea.call[0, 8] == [0, height, 800, 600 - height, 800, 0, 800, 600] }
+      wait_for do
+        current = windows.map { |w| geometry(display, w) }
+        current != previous && current.all? { |g| g[1] >= height && g[1] <= height + 20 }
+      end
+      raise 'strut change moved dock' unless geometry(display, dock)[0, 4] == [0, 0, 800, 30]
+      raise 'strut change affected right output' unless geometry(display, right) == right_before
+    end
     before = windows.map { |w| geometry(display, w) }
     target = before.min_by(&:first)
     x = target[0] + target[2] - 20

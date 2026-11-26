@@ -1,5 +1,6 @@
 #include <xcb/xcb.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -86,6 +87,22 @@ int main() {
     xcb_configure_window(c, second, XCB_CONFIG_WINDOW_STACK_MODE, &below);
     xcb_flush(c);
     if (!wait([&] { return property(stacking) == actual_stack(); }, "stacking change not published")) return EXIT_FAILURE;
+    auto container = xcb_generate_id(c);
+    xcb_create_window(c, XCB_COPY_FROM_PARENT, container, screen->root, 0, 0, 10, 10, 0,
+                      XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, XCB_CW_OVERRIDE_REDIRECT, &override_redirect);
+    xcb_reparent_window(c, unmanaged, container, 0, 0);
+    xcb_reparent_window(c, unmanaged, screen->root, 0, 0);
+    const uint32_t sibling_values[] = {unmanaged, XCB_STACK_MODE_BELOW};
+    xcb_configure_window(c, second, XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE, sibling_values);
+    xcb_flush(c);
+    if (!wait([&] { return property(stacking) == actual_stack(); }, "reparent or sibling restack left stale stacking")) return EXIT_FAILURE;
+    for (uint32_t i = 0; i < 50; ++i) {
+        const uint32_t x = i;
+        xcb_configure_window(c, unmanaged, XCB_CONFIG_WINDOW_X, &x);
+    }
+    xcb_flush(c);
+    if (!wait([&] { return property(stacking) == actual_stack(); }, "geometry changes left stale stacking")) return EXIT_FAILURE;
+    xcb_destroy_window(c, container);
     xcb_destroy_window(c, unmanaged);
     xcb_client_message_event_t request{};
     request.response_type = XCB_CLIENT_MESSAGE;
@@ -109,6 +126,23 @@ int main() {
     xcb_flush(c);
     if (!wait([&] { return property(clients) == std::vector<xcb_window_t>{first, second, third}; },
               "third window missing from client list")) return EXIT_FAILURE;
+    for (auto mode : {XCB_STACK_MODE_BELOW, XCB_STACK_MODE_ABOVE}) {
+        const uint32_t values[] = {first, static_cast<uint32_t>(mode)};
+        xcb_configure_window(c, third, XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE, values);
+        xcb_flush(c);
+        if (!wait([&] {
+            std::unique_ptr<xcb_query_tree_reply_t, decltype(&std::free)> reply{
+                xcb_query_tree_reply(c, xcb_query_tree(c, screen->root), nullptr), &std::free};
+            if (!reply) return false;
+            std::vector<xcb_window_t> stack;
+            auto *children = xcb_query_tree_children(reply.get());
+            for (int i = 0; i < xcb_query_tree_children_length(reply.get()); ++i)
+                if (children[i] == first || children[i] == second || children[i] == third) stack.push_back(children[i]);
+            auto a = std::find(stack.begin(), stack.end(), first);
+            auto b = std::find(stack.begin(), stack.end(), third);
+            return stack.size() == 3 && (mode == XCB_STACK_MODE_BELOW ? b < a : b > a) && property(stacking) == stack;
+        }, "sibling restack not published")) return EXIT_FAILURE;
+    }
     for (int i = 0; i < 100; ++i) {
         const uint32_t mode = i % 2 ? XCB_STACK_MODE_BELOW : XCB_STACK_MODE_ABOVE;
         xcb_configure_window(c, third, XCB_CONFIG_WINDOW_STACK_MODE, &mode);
