@@ -129,6 +129,27 @@ begin
   colors = (0...100).map { |x| X11.XGetPixel(image, x, 1) & 0xffffff }
   abort 'inactive workspace background missing' unless colors.include?(0x222222)
   X11.XDestroyImage(image)
+  unless multi
+    metadata = X11.XInternAtom(connection, '_MORTAR_OUTPUT_WORKSPACES', 0)
+    values = [1, 1, 0, 0, 800, 600, 0, 1, 0, 0xffffffff]
+    X11.XChangeProperty(connection, root, metadata, 6, 32, 0, values.pack('L!*'), values.size)
+    X11.XSync(connection, 0)
+    sleep 0.2
+    image = X11.XGetImage(connection, window, 0, 0, 100, bar_height, -1, 2)
+    colors = (0...100).map { |x| X11.XGetPixel(image, x, 1) & 0xffffff }
+    X11.XDestroyImage(image)
+    abort 'single-output metadata did not hide empty workspace' unless colors.include?(0x285577) && !colors.include?(0x222222)
+    values = [1, 1, 0, 0, 800, 600, 1, 1, 0, 1, 0xffffffff]
+    X11.XChangeProperty(connection, root, metadata, 6, 32, 0, values.pack('L!*'), values.size)
+    X11.XSync(connection, 0)
+    sleep 0.2
+    image = X11.XGetImage(connection, window, 0, 0, 100, bar_height, -1, 2)
+    colors = (0...100).map { |x| X11.XGetPixel(image, x, 1) & 0xffffff }
+    X11.XDestroyImage(image)
+    abort 'single-output workspace update ignored' unless colors.include?(0x285577) && colors.include?(0x222222)
+    X11.XChangeProperty(connection, root, metadata, 6, 32, 0, [2].pack('L!'), 1)
+    X11.XSync(connection, 0)
+  end
   if multi
     metadata = X11.XInternAtom(connection, '_MORTAR_OUTPUT_WORKSPACES', 0)
     values = [1, 2, 0, 0, 400, 600, 0, 1, 0, 0xffffffff,
@@ -163,7 +184,9 @@ begin
   abort 'empty status block drawn' if colors.include?(0xff00ff)
   abort 'urgent background missing' unless colors.include?(0x900000)
   abort 'urgent border missing' unless colors.include?(0x2f343a)
-  abort 'zero-width separator antialiasing incorrect' unless colors.include?(0x333333) && !colors.include?(0x666666)
+  edge = (multi ? 400 : 800) - 1
+  boundary = (1..edge).find { |x| (X11.XGetPixel(image, x - 1, 2) & 0xffffff) == 0x2f343a && (X11.XGetPixel(image, x, 2) & 0xffffff) == 0x0000ff }
+  abort 'zero-width separator antialiasing incorrect' unless boundary && (X11.XGetPixel(image, boundary, 3) & 0xffffff) == 0x3636ae
   abort 'status background missing' unless colors.include?(0x00ff00)
   abort 'status border missing' unless colors.include?(0x0000ff)
   abort 'status foreground missing' unless colors.any? { |pixel| ((pixel >> 16) & 0xff) > ((pixel >> 8) & 0xff) + 32 }

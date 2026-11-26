@@ -477,7 +477,7 @@ int main(int argc, char **argv) {
             ++pos;
             if (match) { matched = true; allowed = std::move(ids); selected = visible; bar_focused = focused; }
         }
-        valid = valid && pos == metadata.size() && focus_count == 1 && matched && metadata[1] > 1;
+        valid = valid && pos == metadata.size() && focus_count == 1 && matched;
         if (!valid) {
             allowed.clear();
             selected = 0;
