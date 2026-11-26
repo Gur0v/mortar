@@ -121,18 +121,25 @@ begin
   abort 'focused border incorrect' unless X11.XGetPixel(image, 0, 0) & 0xffffff == 0x4c7899
   abort 'workspace inset incorrect' unless X11.XGetPixel(image, 1, 1) & 0xffffff == 0x285577
   abort 'bar background incorrect' unless X11.XGetPixel(image, 99, 0) & 0xffffff == 0
-  X11.XDestroyImage(image)
-  seen = []
-  1000.times do |i|
-    X11.XChangeProperty(connection, root, current, 6, 32, 0, [i % 2].pack('L!'), 1)
-    image = X11.XGetImage(connection, window, 1, 1, 1, 1, -1, 2)
-    abort 'cannot capture workspace redraw' if image.null?
-    pixel = X11.XGetPixel(image, 0, 0) & 0xffffff
-    X11.XDestroyImage(image)
-    abort "workspace flickered: #{format('#%06x', pixel)}" unless [0x285577, 0x222222].include?(pixel)
-    seen |= [pixel]
+  text_rows = (0...bar_height).select do |y|
+    (1...20).any? { |x| (X11.XGetPixel(image, x, y) & 0xffffff) != 0x285577 && (X11.XGetPixel(image, x, y) & 0xffffff) != 0x4c7899 }
   end
-  abort 'workspace switches not drawn' unless seen.size == 2
+  abort 'workspace text not vertically centered' if text_rows.empty? || (text_rows.first + text_rows.last - (bar_height - 1)).abs > 1
+  X11.XDestroyImage(image)
+  100.times do |i|
+    selected = (i + 1) % 2
+    X11.XChangeProperty(connection, root, current, 6, 32, 0, [selected].pack('L!'), 1)
+    Timeout.timeout(10) do
+      loop do
+        image = X11.XGetImage(connection, window, 1, 1, 1, 1, -1, 2)
+        abort 'cannot capture workspace redraw' if image.null?
+        pixel = X11.XGetPixel(image, 0, 0) & 0xffffff
+        X11.XDestroyImage(image)
+        abort "workspace flickered: #{format('#%06x', pixel)}" unless [0x285577, 0x222222].include?(pixel)
+        break if pixel == (selected == 0 ? 0x285577 : 0x222222)
+      end
+    end
+  end
   X11.XChangeProperty(connection, root, current, 6, 32, 0, [0].pack('L!'), 1)
   X11.XChangeProperty(connection, window, desktop, 6, 32, 0, [0].pack('L!'), 1)
   X11.XSync(connection, 0)
@@ -231,7 +238,8 @@ begin
     Process.wait(pid)
 
     pid = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, bar, '--mortar-settings', 'bottom', 'monospace 30',
-                        '2236962', '16777215', '2643319', '3355443', '--height', '40', '--status-padding', '4',
+                        '2236962', '16777215', '2643319', '3355443', '--workspace-colors',
+                        '0', '16777215', '0', '16777215', '0', '8947848', '0', '16711680', '--height', '40', '--status-padding', '4',
                         '--status-edge-padding', '20', '--', RbConfig.ruby, '-e', code, 'a b', err: File::NULL)
     sleep 0.3
     connection = X11.XOpenDisplay(":#{Integer(display)}")
@@ -258,9 +266,62 @@ begin
         sleep 0.02
       end
     end
+    X11.XChangeProperty(connection, root, names, utf8, 8, 0, "1\0".b, 2)
+    X11.XChangeProperty(connection, root, current, 6, 32, 0, [0].pack('L!'), 1)
+    X11.XSync(connection, 0)
+    sleep 0.2
+    image = X11.XGetImage(connection, configured, 0, 0, 50, 40, -1, 2)
+    abort 'custom workspace background incorrect' unless (X11.XGetPixel(image, 0, 0) & 0xffffff) == 0
+    pixels = (0...50).flat_map { |x| (0...40).map { |y| X11.XGetPixel(image, x, y) & 0xffffff } }
+    abort 'custom workspace text missing' unless pixels.include?(0xffffff)
+    X11.XDestroyImage(image)
+    urgent = X11.XInternAtom(connection, '_MORTAR_URGENT_WORKSPACES', 0)
+    X11.XChangeProperty(connection, root, urgent, 6, 32, 0, [0].pack('L!'), 1)
+    X11.XSync(connection, 0)
+    sleep 0.2
+    image = X11.XGetImage(connection, configured, 0, 0, 50, 40, -1, 2)
+    pixels = (0...50).flat_map { |x| (0...40).map { |y| X11.XGetPixel(image, x, y) & 0xffffff } }
+    abort 'custom urgent text missing' unless pixels.include?(0xff0000)
+    X11.XDestroyImage(image)
+    X11.XChangeProperty(connection, root, urgent, 6, 32, 0, '', 0)
+    X11.XSync(connection, 0)
     X11.XCloseDisplay(connection)
     Process.kill('TERM', pid)
     Process.wait(pid)
+  end
+
+  unless multi
+    [40, 41].each do |height|
+      ['Hg', 'xy'].each do |label|
+        status = "STDOUT.write(%q({\"version\":1}\n[[{\"full_text\":\"#{label}\"}]]\n)); STDOUT.flush; STDIN.read"
+        pid = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, bar, '--mortar-settings', 'bottom', 'monospace 10',
+                            '0', '16777215', '0', '0', '--workspace-colors',
+                            '0', '16777215', '0', '16777215', '0', '16777215', '0', '16777215',
+                            '--height', height.to_s, '--', RbConfig.ruby, '-e', status)
+        sleep 0.3
+        connection = X11.XOpenDisplay(":#{Integer(display)}")
+        root = X11.XDefaultRootWindow(connection)
+        X11.XChangeProperty(connection, root, names, utf8, 8, 0, "#{label}\0".b, label.bytesize + 1)
+        X11.XChangeProperty(connection, root, current, 6, 32, 0, [0].pack('L!'), 1)
+        X11.XSync(connection, 0)
+        sleep 0.2
+        X11.XQueryTree(connection, root, root_return, parent, children, count)
+        abort 'alignment bar missing' unless count[0, Fiddle::SIZEOF_INT].unpack1('I') == 1
+        list = Fiddle::Pointer.new(children[0, Fiddle::SIZEOF_VOIDP].unpack1('J'))
+        aligned = list[0, Fiddle::SIZEOF_LONG].unpack1('L!')
+        X11.XFree(list)
+        image = X11.XGetImage(connection, aligned, 0, 0, 800, height, -1, 2)
+        rows = [(0...100), (700...800)].map do |columns|
+          (0...height).select { |y| columns.any? { |x| (X11.XGetPixel(image, x, y) & 0xffffff) != 0 } }
+        end
+        abort "workspace/status baseline mismatch at height #{height}: #{rows.inspect}" unless !rows[0].empty? && rows[0] == rows[1]
+        abort "text outside center at height #{height}: #{rows[0].inspect}" unless (rows[0].first + rows[0].last - (height - 1)).abs <= 10
+        X11.XDestroyImage(image)
+        X11.XCloseDisplay(connection)
+        Process.kill('TERM', pid)
+        Process.wait(pid)
+      end
+    end
   end
 
   if multi

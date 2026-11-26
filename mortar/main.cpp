@@ -12,6 +12,7 @@
 
 #include <xcb/xcb.h>
 #include <xcb/randr.h>
+#include <xcb/render.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 
 #include <algorithm>
@@ -567,8 +568,21 @@ int main(int argc, char **argv) {
         std::fputs("mortar: cannot initialize focus atoms\n", stderr);
         return EXIT_FAILURE;
     }
+    const auto *render = xcb_get_extension_data(c, &xcb_render_id);
+    if (!render || !render->present) {
+        std::fputs("mortar: X Render extension unavailable; borders may be transparent\n", stderr);
+    }
+    xcb_generic_error_t *render_error = nullptr;
+    std::unique_ptr<xcb_render_query_pict_formats_reply_t, decltype(&std::free)> formats{
+        render && render->present ? xcb_render_query_pict_formats_reply(c,
+            xcb_render_query_pict_formats(c), &render_error) : nullptr, &std::free};
+    std::unique_ptr<xcb_generic_error_t, decltype(&std::free)> format_error{render_error, &std::free};
+    if (render && render->present && !formats)
+        std::fprintf(stderr, "mortar: cannot query X Render formats (X error %u); borders may be transparent\n",
+            format_error ? format_error->error_code : 0);
     struct BorderColors {
         xcb_connection_t *connection;
+        const xcb_render_query_pict_formats_reply_t *formats;
         std::vector<std::tuple<xcb_window_t, xcb_colormap_t, uint32_t, uint32_t>> colors;
         void remove(xcb_window_t window) {
             auto found = std::find_if(colors.begin(), colors.end(), [&](const auto &entry) {
@@ -606,9 +620,23 @@ int main(int argc, char **argv) {
                     return;
                 }
                 const auto pixel = reply->pixel;
+                uint32_t border_pixel = pixel;
+                if (formats) {
+                    for (auto screen = xcb_render_query_pict_formats_screens_iterator(formats); screen.rem; xcb_render_pictscreen_next(&screen))
+                        for (auto depth = xcb_render_pictscreen_depths_iterator(screen.data); depth.rem; xcb_render_pictdepth_next(&depth))
+                            for (auto visual = xcb_render_pictdepth_visuals_iterator(depth.data); visual.rem; xcb_render_pictvisual_next(&visual))
+                                if (visual.data->visual == attributes->visual)
+                                    for (auto format = xcb_render_query_pict_formats_formats_iterator(formats); format.rem; xcb_render_pictforminfo_next(&format))
+                                        if (format.data->id == visual.data->format && format.data->type == XCB_RENDER_PICT_TYPE_DIRECT) {
+                                            const auto shift = format.data->direct.alpha_shift;
+                                            const uint32_t mask = format.data->direct.alpha_mask;
+                                            if (shift < 32 && mask <= (UINT32_MAX >> shift)) border_pixel |= mask << shift;
+                                            else std::fputs("mortar: invalid X Render alpha mask\n", stderr);
+                                        }
+                }
                 std::unique_ptr<xcb_generic_error_t, decltype(&std::free)> change_error{
                     xcb_request_check(connection, xcb_change_window_attributes_checked(connection, window,
-                        XCB_CW_BORDER_PIXEL, &pixel)), &std::free};
+                        XCB_CW_BORDER_PIXEL, &border_pixel)), &std::free};
                 if (change_error) {
                     std::fprintf(stderr, "mortar: cannot set border color (X error %u)\n", change_error->error_code);
                     xcb_free_colors(connection, colormap, 0, 1, &pixel);
@@ -622,7 +650,7 @@ int main(int argc, char **argv) {
                 } else colors.emplace_back(window, colormap, rgb, pixel);
             }
         }
-    } border_colors{c, {}};
+    } border_colors{c, formats.get(), {}};
     std::function<void(std::string_view, xcb_window_t)> window_event = [](std::string_view, xcb_window_t) {};
     std::vector<xcb_window_t> urgent;
     auto set_urgent = [&](xcb_window_t window, bool value) {
@@ -1591,6 +1619,10 @@ int main(int argc, char **argv) {
                 std::vector<std::string> options{"--mortar-settings", settings.bottom ? "bottom" : "top", settings.font,
                     std::to_string(settings.background), std::to_string(settings.foreground),
                     std::to_string(settings.focused), std::to_string(settings.unfocused)};
+                if (settings.workspace_colors) {
+                    options.emplace_back("--workspace-colors");
+                    for (auto color : *settings.workspace_colors) options.push_back(std::to_string(color));
+                }
                 if (settings.height) options.insert(options.end(), {"--height", std::to_string(settings.height)});
                 options.insert(options.end(), {"--status-padding", std::to_string(settings.status_padding), "--status-edge-padding", std::to_string(settings.status_edge_padding)});
                 if (settings.hidden) options.emplace_back("--hidden");

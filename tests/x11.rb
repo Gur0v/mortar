@@ -219,6 +219,7 @@ Dir.mktmpdir('mortar-test-') do |dir|
     File.write(config, "(border 3 #x123456 #x654321)\n")
     wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: error_path)
     abort 'Border checks failed' unless system(env, ARGV.fetch(1), 'borders')
+    abort 'ARGB border check failed' unless system(env, ARGV.fetch(1), 'argb-border')
     Process.kill('TERM', wm)
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
     wm = nil

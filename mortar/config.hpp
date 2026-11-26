@@ -68,6 +68,7 @@ public:
         std::uint32_t foreground = 0xffffff;
         std::uint32_t focused = 0x285577;
         std::uint32_t unfocused = 0x333333;
+        std::optional<std::array<std::uint32_t, 8>> workspace_colors;
         bool operator==(const Bar &) const = default;
     };
 

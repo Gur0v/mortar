@@ -1,3 +1,4 @@
+#include <xcb/composite.h>
 #include <xcb/xcb.h>
 #include <xcb/xtest.h>
 
@@ -55,6 +56,56 @@ int main(int argc, char **argv) {
                 geometry->height == screen->height_in_pixels - 30)) return EXIT_SUCCESS;
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
+        return EXIT_FAILURE;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "argb-border") == 0) {
+        xcb_visualid_t visual = 0;
+        for (auto depths = xcb_screen_allowed_depths_iterator(screen); depths.rem; xcb_depth_next(&depths)) {
+            if (depths.data->depth != 32) continue;
+            for (auto visuals = xcb_depth_visuals_iterator(depths.data); visuals.rem; xcb_visualtype_next(&visuals)) {
+                auto *v = visuals.data;
+                if (v->_class == XCB_VISUAL_CLASS_TRUE_COLOR && v->red_mask == 0xff0000 &&
+                    v->green_mask == 0xff00 && v->blue_mask == 0xff) visual = v->visual_id;
+            }
+        }
+        auto *extension = xcb_get_extension_data(c, &xcb_composite_id);
+        if (!visual || !extension || !extension->present || xcb_get_setup(c)->image_byte_order != XCB_IMAGE_ORDER_LSB_FIRST) {
+            std::fprintf(stderr, "argb-border: missing 32-bit visual or Composite extension\n");
+            return EXIT_FAILURE;
+        }
+        auto colormap = xcb_generate_id(c);
+        xcb_create_colormap(c, XCB_COLORMAP_ALLOC_NONE, colormap, screen->root, visual);
+        auto window = xcb_generate_id(c);
+        const uint32_t values[] = {0, 0, colormap};
+        auto *error = xcb_request_check(c, xcb_create_window_checked(c, 32, window, screen->root, 100, 100, 100, 100, 0,
+            XCB_WINDOW_CLASS_INPUT_OUTPUT, visual, XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL | XCB_CW_COLORMAP, values));
+        if (error) { std::free(error); return EXIT_FAILURE; }
+        error = xcb_request_check(c, xcb_composite_redirect_window_checked(c, window, XCB_COMPOSITE_REDIRECT_AUTOMATIC));
+        if (error) { std::free(error); return EXIT_FAILURE; }
+        xcb_map_window(c, window);
+        xcb_flush(c);
+        for (int i = 0; i < 100; ++i) {
+            std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
+            if (geometry && geometry->border_width == 3) {
+                auto pixmap = xcb_generate_id(c);
+                error = xcb_request_check(c, xcb_composite_name_window_pixmap_checked(c, window, pixmap));
+                if (!error) {
+                    std::unique_ptr<xcb_get_image_reply_t, decltype(&std::free)> image{
+                        xcb_get_image_reply(c, xcb_get_image(c, XCB_IMAGE_FORMAT_Z_PIXMAP, pixmap,
+                                                          0, 0, 1, 1, ~uint32_t{0}), nullptr), &std::free};
+                    xcb_free_pixmap(c, pixmap);
+                    if (image && image->depth == 32 && xcb_get_image_data_length(image.get()) >= 4) {
+                        auto *data = xcb_get_image_data(image.get());
+                        if (data[0] == 0x56 && data[1] == 0x34 && data[2] == 0x12 && data[3] == 0xff)
+                            return EXIT_SUCCESS;
+                    }
+                }
+                std::free(error);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        std::fprintf(stderr, "argb-border: focused border pixel is not opaque #123456\n");
         return EXIT_FAILURE;
     }
     if (argc == 2 && std::strcmp(argv[1], "borders") == 0) {

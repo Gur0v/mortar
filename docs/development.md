@@ -1,11 +1,11 @@
 # Development
 
-mortar builds on Linux with a C++23 compiler, Meson, Ninja and pkg-config. Build dependencies are XCB, XCB RandR, XCB XKB, xkbcommon-x11, Guile 3.0, PCRE2 (8-bit), jq, PangoCairo and Fontconfig development libraries. Meson looks for `libjq` through pkg-config, then falls back to the `jq` library.
+mortar builds on Linux with a C++23 compiler, Meson, Ninja and pkg-config. Build dependencies are XCB, XCB RandR, XCB Render, XCB XKB, xkbcommon-x11, Guile 3.0, PCRE2 (8-bit), jq, PangoCairo and Fontconfig development libraries. Meson looks for `libjq` through pkg-config, then falls back to the `jq` library.
 
-Tests are enabled by default. They also require XCB XTest development files, Ruby, Xvfb and XKB data and utilities. On Debian trixie, CI installs these packages:
+Tests are enabled by default. They also require XCB Composite and XTest development files, Ruby, Xvfb and XKB data and utilities. On Debian trixie, CI installs these packages:
 
 ```sh
-apt-get install g++ clang meson ninja-build pkg-config guile-3.0-dev libxcb1-dev libxcb-randr0-dev libxcb-xkb-dev libxkbcommon-x11-dev libxcb-xtest0-dev libxtst-dev libjq-dev libpango1.0-dev libpcre2-dev ruby xvfb x11-xkb-utils xkb-data
+apt-get install g++ clang meson ninja-build pkg-config guile-3.0-dev libxcb1-dev libxcb-randr0-dev libxcb-render0-dev libxcb-composite0-dev libxcb-xkb-dev libxkbcommon-x11-dev libxcb-xtest0-dev libxtst-dev libjq-dev libpango1.0-dev libpcre2-dev ruby xvfb x11-xkb-utils xkb-data
 ```
 
 ## Build and test

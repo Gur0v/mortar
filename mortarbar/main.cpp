@@ -77,6 +77,7 @@ int main(int argc, char **argv) {
     bool wrap_scroll = false;
     std::string font_name = "monospace 10";
     std::array<std::uint32_t, 4> colors{0x000000, 0xffffff, 0x285577, 0x222222};
+    std::optional<std::array<std::uint32_t, 8>> workspace_colors;
     std::vector<std::string_view> selected_outputs;
     int command = 1;
     if (argc > 1 && std::string_view(argv[1]) == "--mortar-settings") {
@@ -96,6 +97,18 @@ int main(int argc, char **argv) {
             }
         }
         int index = 8;
+        if (index < argc && std::string_view(argv[index]) == "--workspace-colors") {
+            ++index;
+            workspace_colors.emplace();
+            for (auto &color : *workspace_colors) {
+                if (index >= argc) { std::cerr << "mortarbar: invalid color\n"; return 1; }
+                std::string_view value(argv[index++]);
+                auto result = std::from_chars(value.data(), value.data() + value.size(), color);
+                if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || color > 0xffffff) {
+                    std::cerr << "mortarbar: invalid color\n"; return 1;
+                }
+            }
+        }
         for (auto [name, target, minimum, maximum] : {std::tuple{"--height", static_cast<int*>(nullptr), 1, 65535},
                 std::tuple{"--status-padding", &status_padding, 0, 32767}, std::tuple{"--status-edge-padding", &status_edge_padding, 0, 65535}}) {
             if (index < argc && std::string_view(argv[index]) == name) {
@@ -437,6 +450,11 @@ int main(int argc, char **argv) {
         pango_layout_get_pixel_size(layout, &width, &text_height);
         return std::pair{width, text_height};
     };
+    auto text_y = [&] {
+        PangoRectangle logical;
+        pango_layout_get_pixel_extents(layout, nullptr, &logical);
+        return (static_cast<double>(height) - logical.height) / 2.0 - logical.y;
+    };
         cairo_push_group(cr);
         cairo_set_source_rgb(cr, ((colors[0] >> 16) & 255) / 255.0, ((colors[0] >> 8) & 255) / 255.0,
                              (colors[0] & 255) / 255.0);
@@ -533,22 +551,29 @@ int main(int argc, char **argv) {
                 continue;
             }
             std::string label(reinterpret_cast<const char*>(raw.data() + start), i - start);
-            auto [text_width, text_height] = measure(label);
+            int text_width = measure(label).first;
             int width = text_width + 12;
             bool is_urgent = std::find(urgent.begin(), urgent.end(), index) != urgent.end();
             bool focused = index == selected && (!valid || bar_focused);
             bool visible = index == selected && valid && !bar_focused;
-            set_color({}, is_urgent ? "#900000" : focused ? color_names[2].c_str() : visible ? "#5f676a" : color_names[3].c_str());
+            std::size_t color_index = is_urgent ? 6 : focused ? 0 : visible ? 2 : 4;
+            char custom_background[8];
+            char custom_text[8];
+            if (workspace_colors) {
+                std::snprintf(custom_background, sizeof(custom_background), "#%06x", (*workspace_colors)[color_index]);
+                std::snprintf(custom_text, sizeof(custom_text), "#%06x", (*workspace_colors)[color_index + 1]);
+            }
+            set_color({}, workspace_colors ? custom_background : is_urgent ? "#900000" : focused ? color_names[2].c_str() : visible ? "#5f676a" : color_names[3].c_str());
             cairo_rectangle(cr, workspace_right, 0, width, height);
             cairo_fill(cr);
-            set_color({}, is_urgent ? "#2f343a" : focused ? "#4c7899" : "#333333");
+            set_color({}, workspace_colors ? custom_background : is_urgent ? "#2f343a" : focused ? "#4c7899" : "#333333");
             cairo_rectangle(cr, workspace_right, 0, width, height);
             cairo_rectangle(cr, workspace_right + 1, 1, std::max(0, width - 2), std::max(0, static_cast<int>(height) - 2));
             cairo_set_fill_rule(cr, CAIRO_FILL_RULE_EVEN_ODD);
             cairo_fill(cr);
             cairo_set_fill_rule(cr, CAIRO_FILL_RULE_WINDING);
-            set_color({}, is_urgent || focused || visible ? color_names[1].c_str() : "#888888");
-            cairo_move_to(cr, workspace_right + 6, (height - text_height) / 2);
+            set_color({}, workspace_colors ? custom_text : is_urgent || focused || visible ? color_names[1].c_str() : "#888888");
+            cairo_move_to(cr, workspace_right + 6, text_y());
             pango_cairo_show_layout(cr, layout);
             workspace_bounds.emplace_back(workspace_right, std::min(workspace_right + width, status_left));
             bar.workspace_ids.push_back(index);
@@ -563,7 +588,7 @@ int main(int argc, char **argv) {
             const auto& block = blocks[i - 1];
             const auto& text = use_short && block.short_text && !block.short_text->empty() ? *block.short_text : block.full_text;
             int width = block_width(block, use_short);
-            auto [text_width, text_height] = measure(text, block.markup == "pango");
+            int text_width = measure(text, block.markup == "pango").first;
             int gap = i < blocks.size() ? std::clamp(block.separator_block_width.value_or(9), 0, static_cast<int>(bar.width) + 1) : 0;
             right -= gap;
             int left = right - width;
@@ -603,7 +628,7 @@ int main(int argc, char **argv) {
             int right_border = (block.border || block.urgent) && block.border_right.value_or(1) > 0 ? std::min(block.border_right.value_or(1), bar.width + 1) + 3 : 0;
             int extra = std::max(0, width - left_border - right_border - text_width);
             int offset = block.align == "right" ? extra : block.align == "center" ? extra / 2 : 0;
-            cairo_move_to(cr, left + left_border + offset, (height - text_height) / 2);
+            cairo_move_to(cr, left + left_border + offset, text_y());
             pango_cairo_show_layout(cr, layout);
             cairo_restore(cr);
             right = left;

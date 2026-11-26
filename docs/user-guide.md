@@ -124,6 +124,8 @@ mortarbar appears at the bottom by default and shows workspace buttons. Click a 
 (bar-status "status-program" "argument")
 ```
 
+`bar-workspace-colors` optionally sets background and text pairs for focused, visible on another output, inactive, and urgent workspaces, in that order. It also sets each button's border to its background color. For example, `(bar-workspace-colors #x000000 #xffffff #x000000 #xffffff #x000000 #x888888 #x000000 #xff0000)` uses black backgrounds and white, gray, or red text. Without it, the existing workspace colors and borders remain unchanged.
+
 In hide mode, hold Mod4 to reveal the bar without reserving space. An urgent workspace also reveals it. Colors are 24-bit RGB integers: background, foreground, focused workspace, and unfocused workspace. Hiding workspace buttons also disables workspace scrolling; wrap-scroll controls wrapping between displayed workspaces. Status block scrolling is unaffected. Height is 1–65535 pixels; status padding is 0–32767 and edge padding is 0–65535. Without a height override, font determines the height. Status padding defaults to 1 and is clamped to half the bar height; edge padding defaults to 3. No status producer runs by default. `bar-status` starts its program directly and reads stdout as an i3bar status stream; click events go to stdin when enabled by the producer. Events include scroll buttons 4–7, geometry, modifiers, and X11 scale 1, including for unnamed blocks. Bar setting changes restart mortarbar on successful reload. If the restart fails, the committed configuration remains active.
 
 ## Multiple monitors

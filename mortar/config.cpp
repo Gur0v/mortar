@@ -613,6 +613,20 @@ struct ConfigRuntime {
         return SCM_UNSPECIFIED;
     }
 
+    static SCM bar_workspace_colors(SCM focused_background, SCM focused_text, SCM visible_background, SCM visible_text,
+                                    SCM inactive_background, SCM inactive_text, SCM urgent_background, SCM urgent_text) {
+        if (!active || !active->path) scm_misc_error("bar-workspace-colors", "only allowed while loading", SCM_EOL);
+        std::array<SCM, 8> values{focused_background, focused_text, visible_background, visible_text,
+                                  inactive_background, inactive_text, urgent_background, urgent_text};
+        std::array<std::uint32_t, 8> colors;
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            if (!scm_is_unsigned_integer(values[i], 0, 0xffffff)) scm_out_of_range("bar-workspace-colors", values[i]);
+            colors[i] = scm_to_uint32(values[i]);
+        }
+        active->bar.workspace_colors = colors;
+        return SCM_UNSPECIFIED;
+    }
+
     static SCM load_body(void *data) {
         auto *runtime = static_cast<ConfigRuntime *>(data);
         SCM module = scm_c_eval_string("(make-fresh-user-module)");
@@ -662,6 +676,7 @@ struct ConfigRuntime {
         scm_c_define_gsubr("bar-font", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_font));
         scm_c_define_gsubr("bar-output", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_output));
         scm_c_define_gsubr("bar-colors", 4, 0, 0, reinterpret_cast<scm_t_subr>(bar_colors));
+        scm_c_define_gsubr("bar-workspace-colors", 8, 0, 0, reinterpret_cast<scm_t_subr>(bar_workspace_colors));
         scm_c_define_gsubr("window-rule", 3, 2, 0, reinterpret_cast<scm_t_subr>(window_rule));
         scm_c_define_gsubr("window-rule-regex", 3, 2, 0, reinterpret_cast<scm_t_subr>(window_rule_regex));
         scm_c_define_gsubr("gaps", 2, 0, 0, reinterpret_cast<scm_t_subr>(set_gaps));

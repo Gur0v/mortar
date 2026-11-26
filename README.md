@@ -6,7 +6,7 @@ Arrange windows in split containers, organize them across named workspaces and m
 
 ## Build
 
-You need a C++23 compiler, Meson, Ninja, pkg-config, Guile 3.0, XCB (including RandR and XKB), xkbcommon-x11, PCRE2, libjq, PangoCairo, and Fontconfig. To run integration tests, also install Ruby, Xvfb, XTEST, and XKB utilities and data.
+You need a C++23 compiler, Meson, Ninja, pkg-config, Guile 3.0, XCB (including RandR, Render, and XKB), xkbcommon-x11, PCRE2, libjq, PangoCairo, and Fontconfig. To run integration tests, also install Ruby, Xvfb, XCB Composite, XTEST, and XKB utilities and data.
 
 ```sh
 meson setup build --buildtype=release
