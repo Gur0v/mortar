@@ -372,6 +372,7 @@ int main(int argc, char **argv) {
     std::signal(SIGPIPE, SIG_IGN);
     int flags = fcntl(output_fd, F_GETFL);
     if (flags >= 0 && fcntl(output_fd, F_SETFL, flags | O_NONBLOCK) == 0) output_open = true;
+    else if (output_fd >= 0) { close(output_fd); output_fd = -1; }
     bool input_open = input_fd >= 0;
     std::vector<xcb_window_t> watched_clients;
     auto watch_clients = [&] {
@@ -436,6 +437,7 @@ int main(int argc, char **argv) {
         pango_layout_get_pixel_size(layout, &width, &text_height);
         return std::pair{width, text_height};
     };
+        cairo_push_group(cr);
         cairo_set_source_rgb(cr, ((colors[0] >> 16) & 255) / 255.0, ((colors[0] >> 8) & 255) / 255.0,
                              (colors[0] & 255) / 255.0);
         cairo_paint(cr);
@@ -504,9 +506,9 @@ int main(int argc, char **argv) {
             const auto& text = short_text && block.short_text && !block.short_text->empty() ? *block.short_text : block.full_text;
             int width = measure(text, block.markup == "pango").first;
             int minimum = block.min_width_text ? measure(*block.min_width_text, block.markup == "pango").first : block.min_width.value_or(0);
+            auto border_width = [&](int value) { return value > 0 ? std::min(value, bar.width + 1) + 3 : 0; };
             int borders = (block.border || block.urgent) ?
-                (block.border_left.value_or(1) > 0 ? block.border_left.value_or(1) + 3 : 0) +
-                (block.border_right.value_or(1) > 0 ? block.border_right.value_or(1) + 3 : 0) : 0;
+                border_width(block.border_left.value_or(1)) + border_width(block.border_right.value_or(1)) : 0;
             return std::min<int>(bar.width + 1, std::max(std::min<int>(width, bar.width + 1), std::clamp(minimum, 0, static_cast<int>(bar.width) + 1)) + borders);
         };
         auto total_width = [&](bool short_text) {
@@ -597,8 +599,8 @@ int main(int argc, char **argv) {
                 cairo_fill(cr);
             }
             set_color(block.urgent ? std::optional<std::string>{"#ffffff"} : block.color, color_names[1].c_str());
-            int left_border = (block.border || block.urgent) && block.border_left.value_or(1) > 0 ? block.border_left.value_or(1) + 3 : 0;
-            int right_border = (block.border || block.urgent) && block.border_right.value_or(1) > 0 ? block.border_right.value_or(1) + 3 : 0;
+            int left_border = (block.border || block.urgent) && block.border_left.value_or(1) > 0 ? std::min(block.border_left.value_or(1), bar.width + 1) + 3 : 0;
+            int right_border = (block.border || block.urgent) && block.border_right.value_or(1) > 0 ? std::min(block.border_right.value_or(1), bar.width + 1) + 3 : 0;
             int extra = std::max(0, width - left_border - right_border - text_width);
             int offset = block.align == "right" ? extra : block.align == "center" ? extra / 2 : 0;
             cairo_move_to(cr, left + left_border + offset, (height - text_height) / 2);
@@ -606,6 +608,8 @@ int main(int argc, char **argv) {
             cairo_restore(cr);
             right = left;
         }
+        cairo_pop_group_to_source(cr);
+        cairo_paint(cr);
         cairo_surface_flush(surface);
         xcb_flush(c);
     };
@@ -616,7 +620,9 @@ int main(int argc, char **argv) {
     while (running && !stopping && !xcb_connection_has_error(c)) {
         if (watchdog > 0) {
             siginfo_t info {};
-            if (waitid(P_PID, static_cast<id_t>(watchdog), &info, WEXITED | WNOHANG | WNOWAIT) < 0 || info.si_pid != 0) {
+            int result;
+            do { result = waitid(P_PID, static_cast<id_t>(watchdog), &info, WEXITED | WNOHANG | WNOWAIT); } while (result < 0 && errno == EINTR);
+            if (result < 0 || info.si_pid != 0) {
                 std::cerr << "mortarbar: status watchdog exited unexpectedly\n";
                 kill(-watchdog, SIGKILL);
                 if (watchdog_fd >= 0) { close(watchdog_fd); watchdog_fd = -1; }
@@ -660,6 +666,7 @@ int main(int argc, char **argv) {
                            (changed->atom == desktop && std::find(watched_clients.begin(), watched_clients.end(), changed->window) != watched_clients.end())) dirty = true;
             }
             if (event_type == XCB_BUTTON_PRESS) {
+                if (dirty) { draw_all(); dirty = false; }
                 auto* button = reinterpret_cast<xcb_button_press_event_t*>(event);
                 auto found = std::find_if(bars.begin(), bars.end(), [&](const auto& bar) { return bar.window == button->event; });
                 if (found == bars.end()) { free(event); continue; }
@@ -683,6 +690,7 @@ int main(int argc, char **argv) {
                             auto message = mortarbar::click_event_json(click, first_click);
                             if (message.size() > 65536 || output.size() > 65536 - message.size()) {
                                 output_open = false;
+                                close(output_fd); output_fd = -1;
                                 output.clear();
                             } else {
                                 output += message;
@@ -732,12 +740,14 @@ int main(int argc, char **argv) {
         if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
         if (fds[2].revents & (POLLERR | POLLHUP | POLLNVAL)) {
             output_open = false;
+            close(output_fd); output_fd = -1;
             output.clear();
         } else if (fds[2].revents & POLLOUT) {
             auto n = write(output_fd, output.data(), output.size());
             if (n > 0) output.erase(0, static_cast<std::size_t>(n));
             else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
                 output_open = false;
+                close(output_fd); output_fd = -1;
                 output.clear();
             }
         }

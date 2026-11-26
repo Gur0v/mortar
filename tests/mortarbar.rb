@@ -122,6 +122,18 @@ begin
   abort 'workspace inset incorrect' unless X11.XGetPixel(image, 1, 1) & 0xffffff == 0x285577
   abort 'bar background incorrect' unless X11.XGetPixel(image, 99, 0) & 0xffffff == 0
   X11.XDestroyImage(image)
+  seen = []
+  1000.times do |i|
+    X11.XChangeProperty(connection, root, current, 6, 32, 0, [i % 2].pack('L!'), 1)
+    image = X11.XGetImage(connection, window, 1, 1, 1, 1, -1, 2)
+    abort 'cannot capture workspace redraw' if image.null?
+    pixel = X11.XGetPixel(image, 0, 0) & 0xffffff
+    X11.XDestroyImage(image)
+    abort "workspace flickered: #{format('#%06x', pixel)}" unless [0x285577, 0x222222].include?(pixel)
+    seen |= [pixel]
+  end
+  abort 'workspace switches not drawn' unless seen.size == 2
+  X11.XChangeProperty(connection, root, current, 6, 32, 0, [0].pack('L!'), 1)
   X11.XChangeProperty(connection, window, desktop, 6, 32, 0, [0].pack('L!'), 1)
   X11.XSync(connection, 0)
   sleep 0.2
@@ -326,6 +338,13 @@ begin
     Process.kill('TERM', pid)
     Process.wait(pid)
   end
+
+  pid = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, bar, RbConfig.ruby, '-e',
+                      'STDOUT.write(%Q({"version":1}\n[[{"full_text":"overflow","border":"#ffffff","border_left":2147483647,"border_right":2147483647}]]\n)); STDOUT.flush; sleep 1')
+  sleep 0.5
+  abort 'bar exited on extreme border widths' unless Process.waitpid(pid, Process::WNOHANG).nil?
+  Process.kill('TERM', pid)
+  Process.wait(pid)
 
   [false, true].each do |leader_exits|
     child_reader, child_writer = IO.pipe
