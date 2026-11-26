@@ -135,6 +135,12 @@ int main() {
         bool rejected = false;
         try { tree.geometry(invalid); } catch (const std::invalid_argument &) { rejected = true; }
         check(rejected);
+        auto before = tree.snapshot();
+        rejected = false;
+        try { tree.resize(1, mortar::Direction::right, 1, invalid); }
+        catch (const std::invalid_argument &) { rejected = true; }
+        check(rejected);
+        check(tree.snapshot() == before);
     }
     auto toggle = Layout::split(Split::horizontal);
     check(toggle.toggle_split(0));

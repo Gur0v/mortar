@@ -466,7 +466,11 @@ bool Layout::move(std::uint32_t window, Direction direction) {
 bool Layout::resize(std::uint32_t window, Direction direction, int pixels, Rect bounds) {
     if (pixels == 0 || (direction != Direction::left && direction != Direction::right &&
                         direction != Direction::up && direction != Direction::down)) return false;
-    geometry(bounds);
+    if (bounds.width < 0 || bounds.height < 0 ||
+        bounds.x > std::numeric_limits<int>::max() - bounds.width ||
+        bounds.y > std::numeric_limits<int>::max() - bounds.height) {
+        throw std::invalid_argument("invalid layout bounds");
+    }
     const bool previous = direction == Direction::left || direction == Direction::up;
     const Split axis = direction == Direction::left || direction == Direction::right
                            ? Split::horizontal : Split::vertical;
