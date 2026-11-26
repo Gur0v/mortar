@@ -70,7 +70,7 @@ std::vector<std::uint8_t> property(xcb_connection_t* c, xcb_window_t window, xcb
 int main(int argc, char **argv) {
     std::uint16_t height = 0;
     int status_padding = 1;
-    int status_edge_padding = 3;
+    int status_edge_padding = 6;
     bool bottom = true;
     bool hidden = false;
     bool workspace_buttons = true;

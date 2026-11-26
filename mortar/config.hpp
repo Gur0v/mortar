@@ -57,7 +57,7 @@ public:
     struct Bar {
         std::uint16_t height = 0;
         std::uint16_t status_padding = 1;
-        std::uint16_t status_edge_padding = 3;
+        std::uint16_t status_edge_padding = 6;
         bool bottom = true;
         bool hidden = false;
         bool workspace_buttons = true;

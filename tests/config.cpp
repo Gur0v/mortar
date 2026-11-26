@@ -106,7 +106,7 @@ int main() {
           config.bar().background == 0x000000 && config.bar().foreground == 0xffffff &&
           config.bar().focused == 0x285577 && config.bar().unfocused == 0x333333);
     check(config.bar().workspace_buttons && !config.bar().wrap_scroll && !config.bar().workspace_colors);
-    check(config.bar().height == 0 && config.bar().status_padding == 1 && config.bar().status_edge_padding == 3);
+    check(config.bar().height == 0 && config.bar().status_padding == 1 && config.bar().status_edge_padding == 6);
     write("(bar-height 40) (bar-status-padding 4) (bar-status-edge-padding 12) (bar-workspace-buttons #f) (bar-wrap-scroll #t) (bar-mode 'hide) (bar-position 'top) (bar-font \"sans 12\") (bar-colors 1 2 3 4) (bar-output \"left\") (bar-output \"right\")");
     check(config.stage(path) && config.staged_bar().hidden && !config.bar().hidden && !config.staged_bar().bottom && config.staged_bar().font == "sans 12" &&
           config.staged_bar().background == 1 && config.staged_bar().foreground == 2 &&
