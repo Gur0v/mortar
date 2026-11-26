@@ -157,11 +157,24 @@ bool Layout::set_split(std::uint32_t focused, Split direction) {
     if (direction != Split::horizontal && direction != Split::vertical) return false;
     if (selected_path_) {
         Layout *node = this;
+        Layout *parent = nullptr;
         for (auto index : *selected_path_) {
             if (index >= node->children_.size()) return false;
+            parent = node;
             node = &node->children_[index];
         }
-        node->direction_ = direction;
+        if (!parent) {
+            if (node->children_.size() > 1) {
+                Layout inner = std::move(*node);
+                inner.selected_path_.reset();
+                *node = Layout::split(direction, {std::move(inner)});
+                node->selected_path_ = std::vector<std::size_t>{0};
+            } else node->direction_ = direction;
+        } else if (parent->children_.size() == 1) parent->direction_ = direction;
+        else {
+            *node = Layout::split(direction, {std::move(*node)});
+            selected_path_->push_back(0);
+        }
         return true;
     }
     if (!focused && !leaf_ && children_.empty()) {

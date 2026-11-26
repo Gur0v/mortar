@@ -52,7 +52,30 @@ int main() {
         check(selected.set_split(2, Split::horizontal));
         check(selected.insert_after(2, Layout::leaf(8)));
         check(!selected.selected_path());
-        check(selected.window_path(8) == (std::vector<std::size_t>{1, 2}));
+        check(selected.window_path(8) == (std::vector<std::size_t>{1, 0, 2}));
+    }
+    {
+        auto selected = Layout::split(Split::horizontal, {
+            Layout::split(Split::vertical, {Layout::leaf(1), Layout::leaf(2)}), Layout::leaf(3)});
+        check(selected.focus(1));
+        check(selected.select_parent(1));
+        check(selected.set_split(1, Split::horizontal));
+        check(selected.selected_path() == (std::vector<std::size_t>{0, 0}));
+        check(selected.insert_after(1, Layout::leaf(4)));
+        check(selected.geometry({0, 0, 100, 100}) ==
+              (std::vector<Placement>{{1, {0, 0, 50, 33}}, {4, {0, 33, 50, 33}},
+                                      {2, {0, 66, 50, 34}}, {3, {50, 0, 50, 100}}}));
+    }
+    {
+        auto selected = Layout::split(Split::horizontal, {Layout::leaf(1), Layout::leaf(2)});
+        check(selected.focus(1));
+        check(selected.select_parent(1));
+        check(selected.set_split(1, Split::vertical));
+        check(selected.selected_path() == std::vector<std::size_t>{0});
+        check(selected.insert_after(1, Layout::leaf(3)));
+        check(selected.geometry({0, 0, 100, 100}) ==
+              (std::vector<Placement>{{1, {0, 0, 33, 100}}, {3, {33, 0, 33, 100}},
+                                      {2, {66, 0, 34, 100}}}));
     }
     {
         auto selected = Layout::split(Split::horizontal, {Layout::leaf(1), Layout::leaf(2), Layout::leaf(3)});
