@@ -108,7 +108,14 @@ bool Layout::insert_after(std::uint32_t focused, Layout child) {
             if (index >= node->children_.size()) return false;
             node = &node->children_[index];
         }
+        const auto index = node->focus_order_.empty() ? 0 : node->focus_order_.front() + 1;
         if (!node->insert(std::move(child))) return false;
+        std::rotate(node->children_.begin() + index, node->children_.end() - 1, node->children_.end());
+        std::rotate(node->weights_.begin() + index, node->weights_.end() - 1, node->weights_.end());
+        for (auto &entry : node->focus_order_) {
+            if (entry == node->children_.size() - 1) entry = index;
+            else if (entry >= index) ++entry;
+        }
         selected_path_.reset();
         return true;
     }

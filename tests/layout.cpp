@@ -55,6 +55,15 @@ int main() {
         check(selected.window_path(8) == (std::vector<std::size_t>{1, 2}));
     }
     {
+        auto selected = Layout::split(Split::horizontal, {Layout::leaf(1), Layout::leaf(2), Layout::leaf(3)});
+        check(selected.focus(1));
+        check(selected.select_parent(1));
+        check(selected.insert_after(1, Layout::leaf(4)));
+        check(selected.window_path(4) == std::vector<std::size_t>{1});
+        check(selected.window_path(2) == std::vector<std::size_t>{2});
+        check(selected.neighbor(3, mortar::Direction::right) == 1);
+    }
+    {
         auto nested = Layout::split(Split::horizontal, {
             Layout::split(Split::vertical, {Layout::split(Split::horizontal, {Layout::leaf(10), Layout::leaf(11)}), Layout::leaf(12)}),
             Layout::leaf(13)});
