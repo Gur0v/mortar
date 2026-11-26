@@ -587,7 +587,7 @@ int main(int argc, char **argv) {
             cairo_save(cr);
             cairo_rectangle(cr, workspace_right, 0, bar.width - workspace_right, height);
             cairo_clip(cr);
-            if (gap && block.separator) {
+            if (i < blocks.size() && block.separator) {
                 set_color({}, "#666666");
                 cairo_rectangle(cr, right + gap / 2, std::min<int>(3, height / 2), 1, std::max<int>(0, height - 6));
                 cairo_fill(cr);

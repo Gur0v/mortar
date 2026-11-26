@@ -33,7 +33,7 @@ begin
   abort 'Xvfb failed to start' unless display
   reader_status, writer_status = IO.pipe
   code = 'STDERR.write(ARGV.fetch(0)); STDOUT.write(%q({"version":1,"click_events":true}
-[[{"full_text":"","background":"#ff00ff","border":"#ff00ff","min_width":200},{"full_text":"a very long status value that must be shortened","short_text":"S","min_width":40,"align":"right","urgent":true,"separator":false,"separator_block_width":15},{"full_text":"<span foreground=\"#ff0000\">é漢</span>","markup":"pango","name":"test","color":"#ffffff","background":"#00ff00","border":"#0000ff","border_top":2}]]
+[[{"full_text":"","background":"#ff00ff","border":"#ff00ff","min_width":200},{"full_text":"no separator","separator":false},{"full_text":"a very long status value that must be shortened","short_text":"S","min_width":40,"align":"right","urgent":true,"separator":true,"separator_block_width":0},{"full_text":"<span foreground=\"#ff0000\">é漢</span>","markup":"pango","name":"test","color":"#ffffff","background":"#00ff00","border":"#0000ff","border_top":2}]]
 )); STDOUT.flush; STDIN.read'
   pid = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}" }, bar, RbConfig.ruby, '-e', code, 'a b', err: writer_status)
   writer_status.close
@@ -157,7 +157,7 @@ begin
   abort 'empty status block drawn' if colors.include?(0xff00ff)
   abort 'urgent background missing' unless colors.include?(0x900000)
   abort 'urgent border missing' unless colors.include?(0x2f343a)
-  abort 'disabled separator drawn' if colors.include?(0x666666)
+  abort 'zero-width separator missing' unless colors.include?(0x666666)
   abort 'status background missing' unless colors.include?(0x00ff00)
   abort 'status border missing' unless colors.include?(0x0000ff)
   abort 'status foreground missing' unless colors.any? { |pixel| ((pixel >> 16) & 0xff) > ((pixel >> 8) & 0xff) + 32 }
