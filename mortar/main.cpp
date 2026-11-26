@@ -147,8 +147,9 @@ int main() {
         std::function<void(mortar::Direction)> focus;
         std::function<void(mortar::Direction)> move_direction;
         std::function<void(mortar::Direction, int)> resize;
-        std::function<void()> close;
-        std::function<void()> scratch_send, scratch_toggle, toggle_fullscreen, toggle_floating, toggle_split;
+        std::function<void(xcb_window_t)> close;
+        std::function<void()> scratch_send, scratch_toggle, toggle_split;
+        std::function<void(xcb_window_t)> toggle_fullscreen, toggle_floating;
         std::function<void(const std::vector<std::string> &)> spawn;
         xcb_timestamp_t time = XCB_CURRENT_TIME;
     } actions;
@@ -157,18 +158,18 @@ int main() {
         [](void *host, unsigned digit) { static_cast<Actions *>(host)->move(digit); },
         [](void *host, mortar::Split value) { static_cast<Actions *>(host)->split(value); },
         [](void *host, mortar::Direction value) { static_cast<Actions *>(host)->focus(value); },
-        [](void *host) { static_cast<Actions *>(host)->close(); },
+        [](void *host, std::uint32_t window) { static_cast<Actions *>(host)->close(window); },
         [](void *host, const std::vector<std::string> &args) { static_cast<Actions *>(host)->spawn(args); },
         [](void *host, mortar::Direction value) { static_cast<Actions *>(host)->move_direction(value); },
         [](void *host, mortar::Direction value, int pixels) { static_cast<Actions *>(host)->resize(value, pixels); },
-        [](void *host, mortar::Config::WindowAction action) {
+        [](void *host, mortar::Config::WindowAction action, std::uint32_t window) {
             auto &actions = *static_cast<Actions *>(host);
             switch (action) {
             case mortar::Config::WindowAction::toggle_split: actions.toggle_split(); break;
-            case mortar::Config::WindowAction::floating: actions.toggle_floating(); break;
+            case mortar::Config::WindowAction::floating: actions.toggle_floating(window); break;
             case mortar::Config::WindowAction::scratch_move: actions.scratch_send(); break;
             case mortar::Config::WindowAction::scratch_show: actions.scratch_toggle(); break;
-            case mortar::Config::WindowAction::fullscreen: actions.toggle_fullscreen(); break;
+            case mortar::Config::WindowAction::fullscreen: actions.toggle_fullscreen(window); break;
             case mortar::Config::WindowAction::exit: stopping = 1; break;
             case mortar::Config::WindowAction::focus_output_next:
             case mortar::Config::WindowAction::focus_output_previous:
@@ -940,8 +941,9 @@ int main() {
     actions.resize = [&](mortar::Direction direction, int pixels) {
         resize_window(workspaces[current].focused, direction, pixels);
     };
-    actions.close = [&] {
-        auto window = workspaces[current].focused;
+    actions.close = [&](xcb_window_t window) {
+        if (window && owner(window) < 0) throw std::runtime_error("unmanaged window");
+        if (!window) window = workspaces[current].focused;
         if (window && mortar::close_window(c, window, protocols, delete_window, actions.time) != mortar::CloseResult::sent)
             std::fputs("mortar: cannot close focused window\n", stderr);
     };
@@ -1402,14 +1404,16 @@ int main() {
             }
         }
     };
-    actions.toggle_fullscreen = [&] {
-        auto window = workspaces[current].focused;
+    actions.toggle_fullscreen = [&](xcb_window_t window) {
+        if (window && owner(window) < 0) throw std::runtime_error("unmanaged window");
+        if (!window) window = workspaces[current].focused;
         set_fullscreen(window, is_fullscreen(window) == fullscreen.end());
     };
-    actions.toggle_floating = [&] {
-        if (is_fullscreen(workspaces[current].focused) != fullscreen.end()) return;
-        auto &ws = workspaces[current];
-        auto window = ws.focused;
+    actions.toggle_floating = [&](xcb_window_t window) {
+        if (window && owner(window) < 0) throw std::runtime_error("unmanaged window");
+        if (!window) window = workspaces[current].focused;
+        if (!window || is_fullscreen(window) != fullscreen.end()) return;
+        auto &ws = workspaces[owner(window)];
         if (window && !ws.layout.contains(window)) {
             std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
                 xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
@@ -1423,7 +1427,9 @@ int main() {
             if (!ws.layout.contains(window)) {
                 auto saved = std::find_if(floating_geometry.begin(), floating_geometry.end(),
                     [&](const auto &entry) { return entry.first == window; });
-                auto area = bounds();
+                auto output = std::find_if(outputs.outputs().begin(), outputs.outputs().end(),
+                    [&](const auto &item) { return item.workspace == static_cast<unsigned>(owner(window)); });
+                auto area = output == outputs.outputs().end() ? bounds() : output->bounds;
                 const std::array<uint32_t, 5> centered{static_cast<uint32_t>(area.x + area.width / 4), static_cast<uint32_t>(area.y + area.height / 4),
                     static_cast<uint32_t>(std::max(1, area.width / 2)), static_cast<uint32_t>(std::max(1, area.height / 2)), 0};
                 xcb_configure_window(c, window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
@@ -1564,15 +1570,15 @@ int main() {
                     if (*id <= move_right) actions.move_direction(directions[*id - move_left]);
                     else actions.resize(directions[*id - resize_left], 10);
                 } else if (*id == close_focused) {
-                    actions.close();
+                    actions.close(0);
                 } else if (*id == scratch_send) {
                     actions.scratch_send();
                 } else if (*id == scratch_toggle) {
                     actions.scratch_toggle();
                 } else if (*id == toggle_fullscreen) {
-                    actions.toggle_fullscreen();
+                    actions.toggle_fullscreen(0);
                 } else if (*id == toggle_floating) {
-                    actions.toggle_floating();
+                    actions.toggle_floating(0);
                 } else if (*id == terminal || *id == launcher) {
                     actions.spawn({*id == terminal ? "x-terminal-emulator" : "dmenu_run"});
                 } else if (config.run_binding(*id) != mortar::Config::Result::success) {

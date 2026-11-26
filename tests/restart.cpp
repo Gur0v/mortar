@@ -57,6 +57,13 @@ int main() {
     workspaces.current = 1;
     workspaces.previous = 0;
     RestartSnapshot state{workspaces.snapshot(), {{7, 2, Rect{-10, 20, 300, 200}, 0}, {9, 3, std::nullopt, std::nullopt}}};
+    state.outputs = {{"left", {0, 0, 800, 600}, 0}, {"right", {800, 0, 800, 600}, 1}};
+    state.owners[0] = "left";
+    state.owners[1] = "right";
+    state.owners[2] = "left";
+    state.focused_output = "right";
+    state.floating_geometry = {{7, {-10, 20, 300, 200}, 2}, {9, {10, 20, 50, 60}, 1}};
+    state.fullscreen_geometry = {{42, {0, 0, 400, 300}, 2}};
     auto encoded = encode_restart_snapshot(state);
     assert(decode_restart_snapshot(encoded) == state);
     assert(Workspaces::restore(state.workspaces).snapshot() == state.workspaces);
@@ -91,4 +98,22 @@ int main() {
     invalid_state.scratchpad[0].geometry->width = 0;
     rejects([&] { encode_restart_snapshot(invalid_state); });
     rejects([&] { Scratchpad::restore(invalid_state.scratchpad); });
+    invalid_state = state;
+    invalid_state.owners[0] = "right";
+    rejects([&] { encode_restart_snapshot(invalid_state); });
+    invalid_state = state;
+    invalid_state.focused_output = "left";
+    rejects([&] { encode_restart_snapshot(invalid_state); });
+    invalid_state = state;
+    invalid_state.outputs[1].name = "left";
+    rejects([&] { encode_restart_snapshot(invalid_state); });
+    invalid_state = state;
+    invalid_state.floating_geometry[0].geometry.width = 0;
+    rejects([&] { encode_restart_snapshot(invalid_state); });
+    invalid_state = state;
+    invalid_state.fullscreen_geometry.push_back({7, {0, 0, 1, 1}, 0});
+    rejects([&] { encode_restart_snapshot(invalid_state); });
+    invalid_state = state;
+    invalid_state.fullscreen_geometry[0].window = 9;
+    rejects([&] { encode_restart_snapshot(invalid_state); });
 }

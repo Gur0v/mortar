@@ -115,6 +115,14 @@ Dir.mktmpdir('mortar-ipc') do |dir|
     Timeout.timeout(5) do
       events << read_frame.call until events.include?("event window new #{window}") && events.include?("event window focus #{window}")
     end
+    ['close', 'floating-toggle', 'fullscreen-toggle'].each do |action|
+      send_frame.call("eval (#{action} 4294967295)")
+      raise "unmanaged target accepted by #{action}" unless read_frame.call.start_with?('error ')
+    end
+    ['floating-toggle', 'floating-toggle', 'fullscreen-toggle', 'fullscreen-toggle'].each do |action|
+      send_frame.call("eval (#{action} #{window})")
+      raise "targeted #{action} failed" unless read_frame.call.start_with?('ok ')
+    end
     send_frame.call('eval (move-to-workspace 3)')
     frames = [read_frame.call, read_frame.call]
     raise "window move missing: #{frames.inspect}" unless frames.include?("event window move #{window}") && frames.any? { |f| f.start_with?('ok ') }

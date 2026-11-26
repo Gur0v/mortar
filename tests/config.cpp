@@ -21,6 +21,7 @@ struct Host {
     mortar::Split split = mortar::Split::horizontal;
     mortar::Direction direction = mortar::Direction::left;
     bool closed = false;
+    std::uint32_t target = 0;
     std::vector<mortar::Config::WindowAction> window_actions;
     std::vector<mortar::Config::WorkspaceNavigation> navigation;
     std::vector<std::string> arguments;
@@ -42,17 +43,18 @@ void move(void *data, unsigned digit) { static_cast<Host *>(data)->move = digit;
 
 void split(void *data, mortar::Split value) { static_cast<Host *>(data)->split = value; }
 void focus(void *data, mortar::Direction value) { static_cast<Host *>(data)->direction = value; }
-void close_action(void *data) { static_cast<Host *>(data)->closed = true; }
+void close_action(void *data, std::uint32_t target) { auto &host = *static_cast<Host *>(data); host.closed = true; host.target = target; }
 void spawn(void *data, const std::vector<std::string> &args) {
     auto &host = *static_cast<Host *>(data);
     if (host.fail) throw std::runtime_error("failure");
     host.arguments = args;
 }
 
-void window_action(void *data, mortar::Config::WindowAction action) {
+void window_action(void *data, mortar::Config::WindowAction action, std::uint32_t target) {
     auto &host = *static_cast<Host *>(data);
     if (host.fail) throw std::runtime_error("failure");
     host.window_actions.push_back(action);
+    host.target = target;
 }
 
 void navigate(void *data, mortar::Config::WorkspaceNavigation action) {
@@ -333,6 +335,11 @@ int main() {
     host.fail = true;
     check(config.run_binding(0) == Result::failure);
     host.fail = false;
+    for (const char *action : {"close", "floating-toggle", "fullscreen-toggle"}) {
+        check(config.evaluate(std::string("(") + action + " 42)").success && host.target == 42);
+        for (const char *value : {"0", "-1", "4294967296", "#f", "'bad"})
+            check(!config.evaluate(std::string("(") + action + " " + value + ")").success);
+    }
     for (const char *action : {"(toggle-split)", "(floating-toggle)", "(scratchpad-move)", "(scratchpad-show)", "(fullscreen-toggle)", "(exit)"}) {
         write(action);
         check(!config.load(path));

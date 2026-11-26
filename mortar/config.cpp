@@ -277,22 +277,30 @@ struct ConfigRuntime {
         return SCM_UNSPECIFIED;
     }
 
-    static SCM close_action() {
+    static std::uint32_t target(SCM value, const char *name) {
+        if (SCM_UNBNDP(value)) return 0;
+        if (!scm_is_unsigned_integer(value, 1, UINT32_MAX)) scm_out_of_range(name, value);
+        return scm_to_uint32(value);
+    }
+
+    static SCM close_action(SCM value) {
         require_action("close");
+        auto window = target(value, "close");
         bool failed = false;
         try {
-            if (active->config->close_) active->config->close_(active->config->host_);
+            if (active->config->close_) active->config->close_(active->config->host_, window);
             else failed = true;
         } catch (...) { failed = true; }
         if (failed) scm_misc_error("close", "native action failed", SCM_EOL);
         return SCM_UNSPECIFIED;
     }
 
-    static SCM window_action(const char *name, Config::WindowAction action) {
+    static SCM window_action(const char *name, Config::WindowAction action, SCM value = SCM_UNDEFINED) {
         require_action(name);
+        auto window = target(value, name);
         bool failed = false;
         try {
-            if (active->config->window_action_) active->config->window_action_(active->config->host_, action);
+            if (active->config->window_action_) active->config->window_action_(active->config->host_, action, window);
             else failed = true;
         } catch (...) { failed = true; }
         if (failed) scm_misc_error(name, "native action failed", SCM_EOL);
@@ -300,10 +308,10 @@ struct ConfigRuntime {
     }
 
     static SCM toggle_split() { return window_action("toggle-split", Config::WindowAction::toggle_split); }
-    static SCM floating_toggle() { return window_action("floating-toggle", Config::WindowAction::floating); }
+    static SCM floating_toggle(SCM value) { return window_action("floating-toggle", Config::WindowAction::floating, value); }
     static SCM scratchpad_move() { return window_action("scratchpad-move", Config::WindowAction::scratch_move); }
     static SCM scratchpad_show() { return window_action("scratchpad-show", Config::WindowAction::scratch_show); }
-    static SCM fullscreen_toggle() { return window_action("fullscreen-toggle", Config::WindowAction::fullscreen); }
+    static SCM fullscreen_toggle(SCM value) { return window_action("fullscreen-toggle", Config::WindowAction::fullscreen, value); }
     static SCM exit_action() { return window_action("exit", Config::WindowAction::exit); }
     static SCM focus_output_next() { return window_action("focus-output-next", Config::WindowAction::focus_output_next); }
     static SCM focus_output_previous() { return window_action("focus-output-previous", Config::WindowAction::focus_output_previous); }
@@ -555,17 +563,17 @@ struct ConfigRuntime {
         scm_c_define_gsubr("move", 1, 0, 0, reinterpret_cast<scm_t_subr>(move_direction_action));
         scm_c_define_gsubr("resize", 2, 0, 0, reinterpret_cast<scm_t_subr>(resize_action));
         scm_c_define_gsubr("focus", 1, 0, 0, reinterpret_cast<scm_t_subr>(focus_action));
-        scm_c_define_gsubr("close", 0, 0, 0, reinterpret_cast<scm_t_subr>(close_action));
+        scm_c_define_gsubr("close", 0, 1, 0, reinterpret_cast<scm_t_subr>(close_action));
         scm_c_define_gsubr("exit", 0, 0, 0, reinterpret_cast<scm_t_subr>(exit_action));
         scm_c_define_gsubr("focus-output-next", 0, 0, 0, reinterpret_cast<scm_t_subr>(focus_output_next));
         scm_c_define_gsubr("focus-output-previous", 0, 0, 0, reinterpret_cast<scm_t_subr>(focus_output_previous));
         scm_c_define_gsubr("move-to-output-next", 0, 0, 0, reinterpret_cast<scm_t_subr>(move_output_next));
         scm_c_define_gsubr("move-to-output-previous", 0, 0, 0, reinterpret_cast<scm_t_subr>(move_output_previous));
-        scm_c_define_gsubr("floating-toggle", 0, 0, 0, reinterpret_cast<scm_t_subr>(floating_toggle));
+        scm_c_define_gsubr("floating-toggle", 0, 1, 0, reinterpret_cast<scm_t_subr>(floating_toggle));
         scm_c_define_gsubr("scratchpad-move", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_move));
         scm_c_define_gsubr("scratchpad-show", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_show));
         scm_c_define_gsubr("toggle-split", 0, 0, 0, reinterpret_cast<scm_t_subr>(toggle_split));
-        scm_c_define_gsubr("fullscreen-toggle", 0, 0, 0, reinterpret_cast<scm_t_subr>(fullscreen_toggle));
+        scm_c_define_gsubr("fullscreen-toggle", 0, 1, 0, reinterpret_cast<scm_t_subr>(fullscreen_toggle));
         scm_c_define_gsubr("bar-status", 0, 0, 1, reinterpret_cast<scm_t_subr>(bar_status_action));
         scm_c_define_gsubr("bar-height", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_height));
         scm_c_define_gsubr("bar-status-padding", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_status_padding));

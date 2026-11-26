@@ -66,11 +66,11 @@ public:
     using WorkspaceNavigationCallback = void (*)(void *, WorkspaceNavigation);
     using WorkspaceNameCallback = void (*)(void *, unsigned, const std::string &);
     enum class WindowAction { toggle_split, floating, scratch_move, scratch_show, fullscreen, exit, focus_output_next, focus_output_previous, move_output_next, move_output_previous };
-    using WindowActionCallback = void (*)(void *, WindowAction);
+    using WindowActionCallback = void (*)(void *, WindowAction, std::uint32_t);
     using SplitAction = void (*)(void *, Split);
     using FocusAction = void (*)(void *, Direction);
     using ResizeAction = void (*)(void *, Direction, int);
-    using CloseAction = void (*)(void *);
+    using CloseAction = void (*)(void *, std::uint32_t);
     using SpawnAction = void (*)(void *, const std::vector<std::string> &);
 
     Config(void *host, Action workspace, Action move_workspace, SplitAction split = nullptr,

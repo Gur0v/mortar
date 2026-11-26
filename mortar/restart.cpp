@@ -161,13 +161,50 @@ void validate_restart_snapshot(const RestartSnapshot &snapshot) {
             if (std::find(floating.begin(), floating.end(), entry.window) == floating.end()) invalid();
         } else if (all.contains(entry.window)) invalid();
     }
+    std::unordered_set<std::string> names;
+    std::unordered_set<std::uint32_t> visible;
+    if (snapshot.outputs.size() > state.workspaces.size()) invalid();
+    for (const auto &output : snapshot.outputs) {
+        const auto &r = output.bounds;
+        if (output.name.empty() || output.name.size() > 255 || !names.insert(output.name).second ||
+            r.width <= 0 || r.height <= 0 || r.x > std::numeric_limits<int>::max() - r.width ||
+            r.y > std::numeric_limits<int>::max() - r.height || output.workspace >= state.workspaces.size() ||
+            !visible.insert(output.workspace).second || snapshot.owners[output.workspace] != output.name) invalid();
+    }
+    for (const auto &owner : snapshot.owners)
+        if (owner && !names.contains(*owner)) invalid();
+    if (snapshot.outputs.empty() != !snapshot.focused_output ||
+        (snapshot.focused_output && !names.contains(*snapshot.focused_output))) invalid();
+    if (snapshot.focused_output) {
+        auto focused = std::find_if(snapshot.outputs.begin(), snapshot.outputs.end(), [&](const auto &output) {
+            return output.name == *snapshot.focused_output;
+        });
+        if (focused->workspace != state.current) invalid();
+    }
+    auto validate_geometry = [&](const auto &entries, bool fullscreen) {
+        std::unordered_set<std::uint32_t> seen;
+        std::unordered_set<std::uint32_t> fullscreen_workspaces;
+        if (entries.size() > restart_max_nodes) invalid();
+        for (const auto &entry : entries) {
+            if (!entry.window || !seen.insert(entry.window).second ||
+                (!all.contains(entry.window) && (!scratch.contains(entry.window) || fullscreen)) ||
+                entry.geometry.width <= 0 || entry.geometry.height <= 0 || entry.border > 65535) invalid();
+            if (fullscreen) {
+                for (std::size_t i = 0; i < state.workspaces.size(); ++i)
+                    if (std::find(state.workspaces[i].windows.begin(), state.workspaces[i].windows.end(), entry.window) !=
+                        state.workspaces[i].windows.end() && !fullscreen_workspaces.insert(i).second) invalid();
+            }
+        }
+    };
+    validate_geometry(snapshot.floating_geometry, false);
+    validate_geometry(snapshot.fullscreen_geometry, true);
 }
 
 std::vector<std::uint8_t> encode_restart_snapshot(const RestartSnapshot &snapshot) {
     validate_restart_snapshot(snapshot);
     Codec codec;
     codec.put(0x3154524d, 4);
-    codec.put(2, 4);
+    codec.put(3, 4);
     codec.put(snapshot.workspaces.current, 4);
     codec.put(snapshot.workspaces.previous ? *snapshot.workspaces.previous + 1 : 0, 4);
     for (const auto &workspace : snapshot.workspaces.workspaces) {
@@ -191,6 +228,32 @@ std::vector<std::uint8_t> encode_restart_snapshot(const RestartSnapshot &snapsho
             codec.put(std::bit_cast<std::uint32_t>(entry.geometry->height), 4);
         }
     }
+    auto put_string = [&](const std::optional<std::string> &value) {
+        codec.put(value ? value->size() : 0, 4);
+        if (value) for (unsigned char c : *value) codec.put(c, 1);
+    };
+    auto put_rect = [&](const Rect &rect) {
+        for (int value : {rect.x, rect.y, rect.width, rect.height})
+            codec.put(std::bit_cast<std::uint32_t>(value), 4);
+    };
+    codec.put(snapshot.outputs.size(), 4);
+    for (const auto &output : snapshot.outputs) {
+        put_string(output.name);
+        put_rect(output.bounds);
+        codec.put(output.workspace, 4);
+    }
+    for (const auto &owner : snapshot.owners) put_string(owner);
+    put_string(snapshot.focused_output);
+    auto put_geometry = [&](const auto &entries) {
+        codec.put(entries.size(), 4);
+        for (const auto &entry : entries) {
+            codec.put(entry.window, 4);
+            put_rect(entry.geometry);
+            codec.put(entry.border, 4);
+        }
+    };
+    put_geometry(snapshot.floating_geometry);
+    put_geometry(snapshot.fullscreen_geometry);
     return codec.output;
 }
 
@@ -198,7 +261,7 @@ RestartSnapshot decode_restart_snapshot(std::span<const std::uint8_t> bytes) {
     if (bytes.size() > restart_max_bytes) invalid();
     Codec codec;
     codec.input = bytes;
-    if (codec.get(4) != 0x3154524d || codec.get(4) != 2) invalid();
+    if (codec.get(4) != 0x3154524d || codec.get(4) != 3) invalid();
     RestartSnapshot result{};
     result.workspaces.current = static_cast<std::uint32_t>(codec.get(4));
     auto previous = codec.get(4);
@@ -234,6 +297,43 @@ RestartSnapshot decode_restart_snapshot(std::span<const std::uint8_t> bytes) {
         }
         result.scratchpad.push_back(entry);
     }
+    auto read_string = [&]() -> std::optional<std::string> {
+        auto size = codec.get(4);
+        if (size > 255 || size > bytes.size() - codec.position) invalid();
+        if (!size) return std::nullopt;
+        std::string value;
+        value.reserve(size);
+        for (std::size_t i = 0; i < size; ++i) value.push_back(static_cast<char>(codec.get(1)));
+        return value;
+    };
+    auto read_rect = [&] {
+        auto read_int = [&] { return std::bit_cast<int>(static_cast<std::uint32_t>(codec.get(4))); };
+        return Rect{read_int(), read_int(), read_int(), read_int()};
+    };
+    auto output_count = codec.get(4);
+    if (output_count > result.owners.size()) invalid();
+    for (std::size_t i = 0; i < output_count; ++i) {
+        auto name = read_string();
+        if (!name) invalid();
+        auto bounds = read_rect();
+        auto workspace = static_cast<std::uint32_t>(codec.get(4));
+        result.outputs.push_back({*name, bounds, workspace});
+    }
+    for (auto &owner : result.owners) owner = read_string();
+    result.focused_output = read_string();
+    auto read_geometry = [&](auto &entries) {
+        auto size = codec.get(4);
+        if (size > restart_max_nodes || size > (bytes.size() - codec.position) / 24) invalid();
+        entries.reserve(size);
+        for (std::size_t i = 0; i < size; ++i) {
+            auto window = static_cast<std::uint32_t>(codec.get(4));
+            auto geometry = read_rect();
+            auto border = static_cast<std::uint32_t>(codec.get(4));
+            entries.push_back({window, geometry, border});
+        }
+    };
+    read_geometry(result.floating_geometry);
+    read_geometry(result.fullscreen_geometry);
     if (codec.position != bytes.size()) invalid();
     validate_restart_snapshot(result);
     return result;
