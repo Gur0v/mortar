@@ -306,6 +306,7 @@ bool Layout::resize(std::uint32_t window, Direction direction, int pixels, Rect 
     const bool previous = direction == Direction::left || direction == Direction::up;
     const Split axis = direction == Direction::left || direction == Direction::right
                            ? Split::horizontal : Split::vertical;
+    bool found = false;
     auto resize_in = [&](auto &&self, Layout &node, Rect area) -> bool {
         if (node.leaf_) return false;
         double total = 0;
@@ -327,8 +328,9 @@ bool Layout::resize(std::uint32_t window, Direction direction, int pixels, Rect 
             }
             if (!node.children_[i].contains(window)) continue;
             if (self(self, node.children_[i], child_area)) return true;
-            if (node.direction_ != axis || extent == 0 ||
+            if (found || node.direction_ != axis || extent == 0 ||
                 (previous ? i == 0 : i + 1 == node.children_.size())) return false;
+            found = true;
             const auto other = previous ? i - 1 : i + 1;
             const double delta = static_cast<double>(pixels) * total / extent;
             if (node.weights_[i] + delta <= 0 || node.weights_[other] - delta <= 0) return false;

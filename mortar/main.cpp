@@ -157,7 +157,7 @@ int main() {
         std::function<void(mortar::Direction)> move_direction;
         std::function<void(mortar::Direction, int)> resize;
         std::function<void(xcb_window_t)> close;
-        std::function<void()> scratch_send, scratch_toggle, toggle_split;
+        std::function<void()> scratch_send, scratch_toggle, toggle_split, focus_mode_toggle;
         std::function<void(xcb_window_t)> toggle_fullscreen, toggle_floating;
         std::function<void(const std::vector<std::string> &)> spawn;
         xcb_timestamp_t time = XCB_CURRENT_TIME;
@@ -175,6 +175,7 @@ int main() {
             auto &actions = *static_cast<Actions *>(host);
             switch (action) {
             case mortar::Config::WindowAction::toggle_split: actions.toggle_split(); break;
+            case mortar::Config::WindowAction::focus_mode_toggle: actions.focus_mode_toggle(); break;
             case mortar::Config::WindowAction::floating: actions.toggle_floating(window); break;
             case mortar::Config::WindowAction::scratch_move: actions.scratch_send(); break;
             case mortar::Config::WindowAction::scratch_show: actions.scratch_toggle(); break;
@@ -223,9 +224,9 @@ int main() {
         std::fprintf(stderr, "mortar: keyboard setup failed: %s\n", error.what());
         return EXIT_FAILURE;
     }
-    enum : uint32_t { split_horizontal = UINT32_MAX - 22, split_vertical, toggle_split, focus_left, focus_down,
+    enum : uint32_t { split_horizontal = UINT32_MAX - 23, split_vertical, toggle_split, focus_left, focus_down,
         focus_up, focus_right, move_left, move_down, move_up, move_right,
-        resize_left, resize_down, resize_up, resize_right, close_focused, terminal, launcher, toggle_floating, toggle_fullscreen, scratch_send, scratch_toggle, reload_config };
+        resize_left, resize_down, resize_up, resize_right, close_focused, terminal, launcher, toggle_floating, toggle_fullscreen, scratch_send, scratch_toggle, reload_config, focus_mode_toggle };
     std::vector<mortar::KeyboardBinding> defaults{
         {XKB_KEY_h, 0, split_horizontal, true}, {XKB_KEY_v, 0, split_vertical, true},
         {XKB_KEY_e, 0, toggle_split, true},
@@ -240,7 +241,8 @@ int main() {
         {XKB_KEY_Left, XCB_MOD_MASK_CONTROL, resize_left, true}, {XKB_KEY_Down, XCB_MOD_MASK_CONTROL, resize_down, true},
         {XKB_KEY_Up, XCB_MOD_MASK_CONTROL, resize_up, true}, {XKB_KEY_Right, XCB_MOD_MASK_CONTROL, resize_right, true},
         {XKB_KEY_q, XCB_MOD_MASK_SHIFT, close_focused, true},
-        {XKB_KEY_space, XCB_MOD_MASK_SHIFT, toggle_floating, true}, {XKB_KEY_f, 0, toggle_fullscreen, true},
+        {XKB_KEY_space, XCB_MOD_MASK_SHIFT, toggle_floating, true}, {XKB_KEY_space, 0, focus_mode_toggle, true},
+        {XKB_KEY_f, 0, toggle_fullscreen, true},
         {XKB_KEY_minus, XCB_MOD_MASK_SHIFT, scratch_send, true}, {XKB_KEY_minus, 0, scratch_toggle, true},
         {XKB_KEY_Return, 0, terminal, true}, {XKB_KEY_d, 0, launcher, true},
         {XKB_KEY_c, XCB_MOD_MASK_SHIFT, reload_config, true}
@@ -576,6 +578,9 @@ int main() {
                     border_colors.apply(managed, output.workspace == current && managed == window
                         ? config.border().focused : config.border().unfocused);
             workspaces[current].focused = window;
+            auto &history = workspaces[current].focus_history;
+            std::erase(history, window);
+            history.push_back(window);
             workspaces[current].layout.focus(window);
             if (!workspaces[current].layout.contains(window) || is_fullscreen(window) != fullscreen.end()) {
                 const uint32_t above = XCB_STACK_MODE_ABOVE;
@@ -905,6 +910,13 @@ int main() {
     actions.toggle_split = [&] {
         auto &ws = workspaces[current];
         if (ws.layout.toggle_split(ws.tiled_focus())) tile();
+    };
+    actions.focus_mode_toggle = [&] {
+        auto target = workspaces[current].focus_mode_target();
+        if (target) {
+            std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
+            focus(target, actions.time);
+        }
     };
     actions.focus = [&](mortar::Direction direction) {
         auto &ws = workspaces[current];
@@ -1432,6 +1444,7 @@ int main() {
                     if (!ws.remove_floating(window)) {
                         ws.layout.remove(window);
                         std::erase(ws.windows, window);
+                        std::erase(ws.focus_history, window);
                     }
                     if (ws.focused == window) ws.focused = ws.windows.empty() ? XCB_NONE : ws.windows.back();
                     unmap(window);
@@ -1665,6 +1678,8 @@ int main() {
                     actions.toggle_fullscreen(0);
                 } else if (*id == toggle_floating) {
                     actions.toggle_floating(0);
+                } else if (*id == focus_mode_toggle) {
+                    actions.focus_mode_toggle();
                 } else if (*id == terminal || *id == launcher) {
                     actions.spawn({*id == terminal ? "x-terminal-emulator" : "dmenu_run"});
                 } else if (config.run_binding(*id) != mortar::Config::Result::success) {
@@ -1887,6 +1902,7 @@ int main() {
                 if (!workspaces[workspace].remove_floating(message->window)) {
                     workspaces[workspace].layout.remove(message->window);
                     std::erase(workspaces[workspace].windows, message->window);
+                    std::erase(workspaces[workspace].focus_history, message->window);
                 }
                 if (workspaces[workspace].focused == message->window)
                     workspaces[workspace].focused = workspaces[workspace].windows.empty() ? XCB_NONE : workspaces[workspace].windows.back();
@@ -1929,6 +1945,7 @@ int main() {
                 if (!ws.remove_floating(window)) {
                     ws.layout.remove(window);
                     std::erase(ws.windows, window);
+                    std::erase(ws.focus_history, window);
                 }
                 if (ws.focused == window) ws.focused = ws.windows.empty() ? XCB_NONE : ws.windows.back();
                 xcb_delete_property(c, window, net_desktop);

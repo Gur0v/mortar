@@ -343,10 +343,10 @@ int main() {
         check(!config.load(path) && config.border().width == 65535);
     }
     check(!config.evaluate("(border 1 0 0)").success);
-    write("(bind-key 1 0 (lambda () (toggle-split) (floating-toggle) (scratchpad-move) (scratchpad-show) (fullscreen-toggle)))");
+    write("(bind-key 1 0 (lambda () (toggle-split) (focus-mode-toggle) (floating-toggle) (scratchpad-move) (scratchpad-show) (fullscreen-toggle)))");
     check(config.load(path) && config.run_binding(0) == Result::success);
     check(host.window_actions == std::vector<mortar::Config::WindowAction>({
-        mortar::Config::WindowAction::toggle_split, mortar::Config::WindowAction::floating, mortar::Config::WindowAction::scratch_move,
+        mortar::Config::WindowAction::toggle_split, mortar::Config::WindowAction::focus_mode_toggle, mortar::Config::WindowAction::floating, mortar::Config::WindowAction::scratch_move,
         mortar::Config::WindowAction::scratch_show, mortar::Config::WindowAction::fullscreen}));
     host.fail = true;
     check(config.run_binding(0) == Result::failure);
@@ -356,7 +356,7 @@ int main() {
         for (const char *value : {"0", "-1", "4294967296", "#f", "'bad"})
             check(!config.evaluate(std::string("(") + action + " " + value + ")").success);
     }
-    for (const char *action : {"(toggle-split)", "(floating-toggle)", "(scratchpad-move)", "(scratchpad-show)", "(fullscreen-toggle)", "(exit)"}) {
+    for (const char *action : {"(toggle-split)", "(focus-mode-toggle)", "(floating-toggle)", "(scratchpad-move)", "(scratchpad-show)", "(fullscreen-toggle)", "(exit)"}) {
         write(action);
         check(!config.load(path));
         check(config.evaluate(action).success);

@@ -143,6 +143,16 @@ int main() {
     check(nested.geometry({0, 0, 100, 100}) ==
           (std::vector<Placement>{{41, {0, 0, 50, 60}}, {42, {50, 0, 50, 60}},
                                   {43, {0, 60, 100, 40}}}));
+    auto constrained = Layout::split(Split::horizontal, {
+        Layout::split(Split::horizontal, {Layout::leaf(81), Layout::leaf(82)}),
+        Layout::leaf(83)});
+    auto before_resize = constrained.snapshot();
+    check(!constrained.resize(81, Direction::right, 30, {0, 0, 100, 20}));
+    check(constrained.snapshot() == before_resize);
+    check(constrained.resize(82, Direction::right, 10, {0, 0, 100, 20}));
+    check(constrained.geometry({0, 0, 100, 20}) ==
+          (std::vector<Placement>{{81, {0, 0, 30, 20}}, {82, {30, 0, 30, 20}},
+                                  {83, {60, 0, 40, 20}}}));
     check(nested.move(41, Direction::down));
     check(nested.geometry({0, 0, 100, 100}) ==
           (std::vector<Placement>{{42, {0, 0, 100, 60}}, {43, {0, 60, 100, 20}},

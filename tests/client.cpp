@@ -683,8 +683,14 @@ int main(int argc, char **argv) {
                                     XCB_ATOM_WINDOW, 32, 1, &tiled);
                 xcb_map_window(c, dialog); xcb_flush(c);
                 if (!wait_property(dialog, desktop, 0) || !focus_is(dialog) || !above(dialog, window)) return EXIT_FAILURE;
+                xcb_warp_pointer(c, XCB_NONE, screen->root, 0, 0, 0, 0, 10, 10); xcb_flush(c);
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 xcb_warp_pointer(c, XCB_NONE, screen->root, 0, 0, 0, 0, 500, 400); xcb_flush(c);
                 if (!focus_is(window) || !above(window, dialog) || !above(window, tiled)) return EXIT_FAILURE;
+                press(alt, true); tap(space); press(alt, false); xcb_flush(c);
+                if (!focus_is(tiled)) return EXIT_FAILURE;
+                press(alt, true); tap(space); press(alt, false); xcb_flush(c);
+                if (!focus_is(window)) return EXIT_FAILURE;
                 press(alt, true); tap(left); press(alt, false); xcb_flush(c);
                 return focus_is(tiled) ? EXIT_SUCCESS : EXIT_FAILURE;
             }

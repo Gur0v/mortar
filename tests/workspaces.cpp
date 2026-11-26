@@ -111,4 +111,21 @@ int main() {
     check(!b.remove_floating(30));
     check(b.toggle_floating(31) && b.remove_floating(31));
     check(b.windows.empty() && b.focused == 0);
+
+    mortar::Workspace modes;
+    check(modes.focus_mode_target() == 0);
+    check(modes.add_floating(40));
+    check(modes.focus_mode_target() == 0);
+    check(modes.add_floating(41) && modes.toggle_floating(41));
+    modes.focused = 41;
+    check(modes.focus_mode_target() == 40);
+    check(modes.add_floating(42));
+    check(modes.focus_mode_target() == 42);
+    modes.focused = 42;
+    check(modes.focus_mode_target() == 41);
+    modes.focused = 41;
+    modes.focus_history = {42, 40, 41};
+    check(modes.focus_mode_target() == 40);
+    check(modes.remove_floating(40));
+    check(modes.focus_mode_target() == 42);
 }
