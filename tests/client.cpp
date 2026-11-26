@@ -619,9 +619,10 @@ int main(int argc, char **argv) {
             xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 410, 310, 0);
             press(alt, true);
             xcb_test_fake_input(c, XCB_BUTTON_PRESS, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
-            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 450, 340, 0);
+            for (int i = 1; i <= 40; ++i)
+                xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 410 + i, 310 + i * 3 / 4, 0);
             xcb_flush(c);
-            if (!wait([&] { return geometry(third, 440, 330, 360, 270); }, "live diagonal tiled mouse resize")) return EXIT_FAILURE;
+            if (!wait([&] { return geometry(third, 440, 330, 360, 270); }, "rapid diagonal tiled mouse resize")) return EXIT_FAILURE;
             uint32_t tiled_hints[18]{};
             tiled_hints[0] = 64;
             tiled_hints[9] = 100; tiled_hints[10] = 100;
@@ -632,10 +633,27 @@ int main(int argc, char **argv) {
             xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 470, 350, 0);
             xcb_flush(c);
             if (!wait([&] { return geometry(third, 460, 340, 300, 200); }, "tiled drag preserves changed hints")) return EXIT_FAILURE;
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 790, 590, 0);
+            xcb_flush(c);
+            if (!wait([&] { return geometry(third, 780, 580, 20, 20); }, "tiled resize reaches minimum")) return EXIT_FAILURE;
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 690, 490, 0);
+            xcb_flush(c);
+            if (!wait([&] { return geometry(third, 680, 480, 100, 100); }, "tiled resize reverses at minimum")) return EXIT_FAILURE;
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 650, 450, 0);
             xcb_test_fake_input(c, XCB_BUTTON_RELEASE, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
-            press(alt, false);
-            xcb_destroy_window(c, third); xcb_flush(c);
-            if (!wait([&] { return focus(other); }, "restore second window focus")) return EXIT_FAILURE;
+            press(alt, false); xcb_flush(c);
+            if (!wait([&] { return geometry(third, 640, 440, 100, 100); }, "final tiled release position")) return EXIT_FAILURE;
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 650, 450, 0);
+            press(alt, true);
+            xcb_test_fake_input(c, XCB_BUTTON_PRESS, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 630, 430, 0);
+            xcb_flush(c);
+            if (!wait([&] { return geometry(third, 620, 420, 100, 100); }, "resize before tiled client disappears")) return EXIT_FAILURE;
+            xcb_destroy_window(c, third);
+            xcb_test_fake_input(c, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, screen->root, 610, 410, 0);
+            xcb_test_fake_input(c, XCB_BUTTON_RELEASE, 3, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
+            press(alt, false); xcb_flush(c);
+            if (!wait([&] { return focus(other); }, "focus after tiled client disappears")) return EXIT_FAILURE;
             shortcut(true);
             if (!wait([&] { return mapped(other, XCB_MAP_STATE_UNMAPPED) && focus(window) &&
                                   geometry(window, 0, 0, 800, 600); }, "send tiled window")) return EXIT_FAILURE;

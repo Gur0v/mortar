@@ -228,6 +228,57 @@ int main() {
           (std::vector<Placement>{{31, {0, 0, 60, 20}}, {32, {60, 0, 40, 20}}}));
     check(!changed.resize(31, Direction::right, 40, {0, 0, 100, 20}));
     check(!changed.resize(31, Direction::left, 1, {0, 0, 100, 20}));
+    auto clamped = Layout::split(Split::horizontal, {Layout::leaf(71), Layout::leaf(72)});
+    check(clamped.resize(71, Direction::right, 1000, {0, 0, 100, 20}, true));
+    check(clamped.geometry({0, 0, 100, 20}) ==
+          (std::vector<Placement>{{71, {0, 0, 99, 20}}, {72, {99, 0, 1, 20}}}));
+    check(!clamped.resize(71, Direction::right, 1, {0, 0, 100, 20}, true));
+    check(clamped.resize(71, Direction::right, -2, {0, 0, 100, 20}, true));
+    check(clamped.geometry({0, 0, 100, 20}) ==
+          (std::vector<Placement>{{71, {0, 0, 97, 20}}, {72, {97, 0, 3, 20}}}));
+    check(clamped.resize(72, Direction::left, 1000, {0, 0, 100, 20}, true));
+    check(clamped.geometry({0, 0, 100, 20}) ==
+          (std::vector<Placement>{{71, {0, 0, 1, 20}}, {72, {1, 0, 99, 20}}}));
+    check(!clamped.resize(72, Direction::left, 1, {0, 0, 100, 20}, true));
+    check(clamped.resize(72, Direction::left, -2, {0, 0, 100, 20}, true));
+    check(clamped.geometry({0, 0, 100, 20}) ==
+          (std::vector<Placement>{{71, {0, 0, 3, 20}}, {72, {3, 0, 97, 20}}}));
+    auto deep = Layout::split(Split::horizontal, {Layout::leaf(76),
+        Layout::split(Split::horizontal, {Layout::leaf(77), Layout::leaf(78)})});
+    check(deep.resize(76, Direction::right, 1000, {0, 0, 100, 20}, true));
+    check(deep.geometry({0, 0, 100, 20}) ==
+          (std::vector<Placement>{{76, {0, 0, 98, 20}}, {77, {98, 0, 1, 20}},
+                                  {78, {99, 0, 1, 20}}}));
+    auto zero_snapshot = Layout::split(Split::horizontal, {Layout::leaf(88), Layout::leaf(89), Layout::leaf(90)}).snapshot();
+    zero_snapshot.weights = {0.1, 3, 3};
+    auto zero = Layout::restore(zero_snapshot);
+    check(zero.resize(89, Direction::right, 1, {0, 0, 10, 10}, true));
+    check(zero.geometry({0, 0, 10, 10}) ==
+          (std::vector<Placement>{{88, {0, 0, 0, 10}}, {89, {0, 0, 6, 10}}, {90, {6, 0, 4, 10}}}));
+    auto uneven_snapshot = Layout::split(Split::horizontal, {Layout::leaf(84),
+        Layout::split(Split::horizontal, {Layout::leaf(85), Layout::leaf(86), Layout::leaf(87)})}).snapshot();
+    uneven_snapshot.weights = {3, 7};
+    uneven_snapshot.children[1].weights = {3, 1, 2};
+    auto uneven = Layout::restore(uneven_snapshot);
+    check(uneven.resize(84, Direction::right, 5, {0, 0, 10, 10}, true));
+    check(uneven.geometry({0, 0, 10, 10}) ==
+          (std::vector<Placement>{{84, {0, 0, 5, 10}}, {85, {5, 0, 2, 10}},
+                                  {86, {7, 0, 1, 10}}, {87, {8, 0, 2, 10}}}));
+    auto huge_snapshot = Layout::split(Split::horizontal, {Layout::leaf(79), Layout::leaf(80)}).snapshot();
+    huge_snapshot.weights = {std::numeric_limits<double>::max() / 4, std::numeric_limits<double>::max() / 4};
+    auto huge = Layout::restore(huge_snapshot);
+    check(huge.resize(79, Direction::right, 1000, {0, 0, 100, 20}, true));
+    check(huge.geometry({0, 0, 100, 20}) ==
+          (std::vector<Placement>{{79, {0, 0, 99, 20}}, {80, {99, 0, 1, 20}}}));
+    auto thirds = Layout::split(Split::vertical, {Layout::leaf(73), Layout::leaf(74), Layout::leaf(75)});
+    check(thirds.resize(74, Direction::down, 1000, {0, 0, 20, 100}, true));
+    check(thirds.geometry({0, 0, 20, 100}) ==
+          (std::vector<Placement>{{73, {0, 0, 20, 33}}, {74, {0, 33, 20, 66}},
+                                  {75, {0, 99, 20, 1}}}));
+    check(thirds.resize(74, Direction::down, -1000, {0, 0, 20, 100}, true));
+    check(thirds.geometry({0, 0, 20, 100}) ==
+          (std::vector<Placement>{{73, {0, 0, 20, 33}}, {74, {0, 33, 20, 1}},
+                                  {75, {0, 34, 20, 66}}}));
     check(changed.move(31, Direction::right));
     check(changed.geometry({0, 0, 100, 20}) ==
           (std::vector<Placement>{{32, {0, 0, 40, 20}}, {31, {40, 0, 60, 20}}}));

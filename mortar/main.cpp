@@ -1968,7 +1968,7 @@ int main(int argc, char **argv) {
             return reaped || error;
         });
         auto *event = deferred_event ? deferred_event.release() : xcb_poll_for_event(c);
-        if (event && drag && drag->floating && (event->response_type & 0x7f) == XCB_MOTION_NOTIFY) {
+        if (event && drag && (event->response_type & 0x7f) == XCB_MOTION_NOTIFY) {
             for (int count = 0; count < 64; ++count) {
                 auto *next = xcb_poll_for_queued_event(c);
                 if (!next) break;
@@ -1991,14 +1991,15 @@ int main(int argc, char **argv) {
         if (xcb_connection_has_error(c)) { std::free(event); break; }
         auto fds = ipc ? ipc->poll_fds() : std::vector<pollfd>{};
         fds.push_back({xcb_get_file_descriptor(c), POLLIN, 0});
+        xcb_flush(c);
         int ready = poll(fds.data(), fds.size(), event ? 0 : 100);
         if (ready < 0 && errno != EINTR) {
             std::fprintf(stderr, "mortar: poll failed: %s\n", std::strerror(errno));
             std::free(event);
             break;
         }
-        bool ipc_dispatched = ipc && ready >= 0;
-        if (ipc_dispatched) {
+        bool ipc_dispatched = false;
+        if (ipc && ready >= 0) {
             fds.pop_back();
             if (drag && std::any_of(fds.begin(), fds.end(), [](const auto &fd) { return fd.revents != 0; })) {
                 drag->valid = false;
@@ -2006,6 +2007,7 @@ int main(int argc, char **argv) {
             }
             try {
                 ipc->dispatch(fds, [&](int client, std::string_view frame) {
+                    ipc_dispatched = true;
                     if (frame == "subscribe workspace") {
                         if (std::find(subscribers.begin(), subscribers.end(), client) == subscribers.end())
                             subscribers.push_back(client);
@@ -2259,17 +2261,17 @@ int main(int argc, char **argv) {
                 }
             } else {
                 auto &layout = workspaces[drag->workspace].layout;
+                if (!drag_gap_bounds) {
+                    drag_hints.clear();
+                    drag_gap_bounds = mortar::outer_gap(usable(bounds()), config.gaps().outer);
+                }
                 bool horizontal = layout.resize(drag->window, drag->left ? mortar::Direction::left : mortar::Direction::right,
-                                                drag->left ? -dx : dx, bounds());
+                                                drag->left ? -dx : dx, *drag_gap_bounds, true);
                 bool vertical = layout.resize(drag->window, drag->top ? mortar::Direction::up : mortar::Direction::down,
-                                              drag->top ? -dy : dy, bounds());
-                if (horizontal) drag->x = motion->root_x;
-                if (vertical) drag->y = motion->root_y;
+                                              drag->top ? -dy : dy, *drag_gap_bounds, true);
+                drag->x = motion->root_x;
+                drag->y = motion->root_y;
                 if (horizontal || vertical) {
-                    if (!drag_gap_bounds) {
-                        drag_hints.clear();
-                        drag_gap_bounds = mortar::outer_gap(usable(bounds()), config.gaps().outer);
-                    }
                     tile_placements(drag->workspace, *drag_gap_bounds, true);
                     xcb_flush(c);
                 }

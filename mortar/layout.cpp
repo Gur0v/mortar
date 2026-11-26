@@ -460,7 +460,7 @@ bool Layout::move(std::uint32_t window, Direction direction) {
     return move_in(move_in, *this);
 }
 
-bool Layout::resize(std::uint32_t window, Direction direction, int pixels, Rect bounds) {
+bool Layout::resize(std::uint32_t window, Direction direction, int pixels, Rect bounds, bool clamp) {
     if (pixels == 0 || (direction != Direction::left && direction != Direction::right &&
                         direction != Direction::up && direction != Direction::down)) return false;
     if (bounds.width < 0 || bounds.height < 0 ||
@@ -480,6 +480,7 @@ bool Layout::resize(std::uint32_t window, Direction direction, int pixels, Rect 
         double accumulated = 0;
         const int extent = node.direction_ == Split::horizontal ? area.width : area.height;
         for (std::size_t i = 0; i < node.children_.size(); ++i) {
+            const double before = accumulated;
             const int start = static_cast<int>(extent * (accumulated / total));
             accumulated += node.weights_[i];
             const int end = i + 1 == node.children_.size() ? extent :
@@ -502,10 +503,59 @@ bool Layout::resize(std::uint32_t window, Direction direction, int pixels, Rect 
                 (previous ? i == 0 : i + 1 == node.children_.size())) return false;
             found = true;
             const auto other = previous ? i - 1 : i + 1;
-            const double delta = static_cast<double>(pixels) * total / extent;
-            if (node.weights_[i] + delta <= 0 || node.weights_[other] - delta <= 0) return false;
-            node.weights_[i] += delta;
-            node.weights_[other] -= delta;
+            if (clamp) {
+                const int boundary = previous ? start : end;
+                const auto requested = static_cast<std::int64_t>(boundary) +
+                    (previous ? -static_cast<std::int64_t>(pixels) : pixels);
+                const int wanted = static_cast<int>(std::clamp(requested, std::int64_t{0}, static_cast<std::int64_t>(extent)));
+                const auto original_i = node.weights_[i];
+                const auto original_other = node.weights_[other];
+                const auto original_geometry = node.geometry(area);
+                auto valid = [&](int target) {
+                    const double boundary_weight = previous ? before : accumulated;
+                    const double shift = ((static_cast<double>(target) + 0.5) / extent - boundary_weight / total) * total;
+                    const double delta = previous ? -shift : shift;
+                    node.weights_[i] = original_i + delta;
+                    node.weights_[other] = original_other - delta;
+                    if (!(node.weights_[i] > 0 && node.weights_[other] > 0 &&
+                          node.weights_[i] <= std::numeric_limits<double>::max() &&
+                          node.weights_[other] <= std::numeric_limits<double>::max())) return false;
+                    double sum = 0;
+                    double pos = 0;
+                    for (std::size_t j = 0; j < node.weights_.size(); ++j) {
+                        if (j == (previous ? i : i + 1)) pos = sum;
+                        sum += node.weights_[j];
+                    }
+                    if (!(sum <= std::numeric_limits<double>::max())) return false;
+                    const auto placements = node.geometry(area);
+                    for (std::size_t j = 0; j < placements.size(); ++j) {
+                        const int size = axis == Split::horizontal ? placements[j].bounds.width : placements[j].bounds.height;
+                        const int original = axis == Split::horizontal ? original_geometry[j].bounds.width : original_geometry[j].bounds.height;
+                        if (size < std::min(1, original)) return false;
+                    }
+                    return static_cast<int>(extent * (pos / sum)) == target;
+                };
+                int low = 0;
+                int high = wanted > boundary ? wanted - boundary : boundary - wanted;
+                if (high == 0 || !valid(wanted)) {
+                    while (low < high) {
+                        const int middle = low + (high - low) / 2 + (high - low) % 2;
+                        if (valid(boundary + (wanted > boundary ? middle : -middle))) low = middle;
+                        else high = middle - 1;
+                    }
+                    const int step = wanted > boundary ? 1 : -1;
+                    if (low == 0 || !valid(boundary + step * low)) {
+                        node.weights_[i] = original_i;
+                        node.weights_[other] = original_other;
+                        return false;
+                    }
+                }
+            } else {
+                const double delta = (static_cast<double>(pixels) / extent) * total;
+                if (node.weights_[i] + delta <= 0 || node.weights_[other] - delta <= 0) return false;
+                node.weights_[i] += delta;
+                node.weights_[other] -= delta;
+            }
             node.resized_ = true;
             return true;
         }

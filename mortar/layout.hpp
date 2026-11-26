@@ -55,7 +55,7 @@ public:
     std::optional<std::vector<std::size_t>> parent_path(const std::vector<std::size_t> &path) const;
     bool remove(std::uint32_t window);
     bool move(std::uint32_t window, Direction direction);
-    bool resize(std::uint32_t window, Direction direction, int pixels, Rect bounds);
+    bool resize(std::uint32_t window, Direction direction, int pixels, Rect bounds, bool clamp = false);
     bool contains(std::uint32_t window) const;
     std::vector<Placement> geometry(Rect bounds) const;
 
