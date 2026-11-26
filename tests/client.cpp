@@ -191,6 +191,42 @@ int main(int argc, char **argv) {
             std::fprintf(stderr, "bar-workspaces: _NET_DESKTOP_NAMES not advertised\n");
             return EXIT_FAILURE;
         }
+        auto desktop = atom("_NET_WM_DESKTOP");
+        if (!desktop) return EXIT_FAILURE;
+        for (uint32_t workspace = 1; workspace < 10; ++workspace) {
+            xcb_client_message_event_t message{};
+            message.response_type = XCB_CLIENT_MESSAGE;
+            message.format = 32;
+            message.window = screen->root;
+            message.type = current;
+            message.data.data32[0] = workspace;
+            xcb_send_event(c, false, screen->root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                           reinterpret_cast<const char *>(&message));
+            xcb_flush(c);
+            bool switched = false;
+            for (int i = 0; i < 250 && !switched; ++i) {
+                property.reset(xcb_get_property_reply(c, xcb_get_property(c, false, screen->root, current, XCB_ATOM_CARDINAL, 0, 1), nullptr));
+                switched = property && property->type == XCB_ATOM_CARDINAL && property->format == 32 &&
+                           xcb_get_property_value_length(property.get()) == 4 &&
+                           *static_cast<uint32_t *>(xcb_get_property_value(property.get())) == workspace;
+                if (!switched) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            if (!switched) return EXIT_FAILURE;
+            auto window = xcb_generate_id(c);
+            xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, 100, 100, 0,
+                              XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+            xcb_map_window(c, window);
+            xcb_flush(c);
+            bool mapped = false;
+            for (int i = 0; i < 250 && !mapped; ++i) {
+                property.reset(xcb_get_property_reply(c, xcb_get_property(c, false, window, desktop, XCB_ATOM_CARDINAL, 0, 1), nullptr));
+                mapped = property && property->type == XCB_ATOM_CARDINAL && property->format == 32 &&
+                         xcb_get_property_value_length(property.get()) == 4 &&
+                         *static_cast<uint32_t *>(xcb_get_property_value(property.get())) == workspace;
+                if (!mapped) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            if (!mapped) return EXIT_FAILURE;
+        }
         int x = 8;
         for (int workspace = 1; workspace < 10; ++workspace) {
             bool changed = false;
@@ -786,17 +822,17 @@ int main(int argc, char **argv) {
             if (!shortcut(scheme ? 'z' : 'e')) return EXIT_FAILURE;
             auto second = create();
             if (!tiled(window, 0, 0, 800, 300) || !tiled(second, 0, 300, 800, 300) || !focused_on(second)) return EXIT_FAILURE;
-            if (!shortcut(scheme ? 'c' : 0xff52) || !focused_on(window) || !shortcut(scheme ? 'e' : 0xff54) || !focused_on(second)) return EXIT_FAILURE;
-            if (!shortcut(scheme ? 'f' : 'h')) return EXIT_FAILURE;
+            if (!shortcut(scheme ? 'c' : 'k') || !focused_on(window) || !shortcut(scheme ? 'e' : 'j') || !focused_on(second)) return EXIT_FAILURE;
+            if (!shortcut(scheme ? 'f' : 'b')) return EXIT_FAILURE;
             auto third = create();
             if (!tiled(second, 0, 300, 400, 300) || !tiled(third, 400, 300, 400, 300) || !focused_on(third)) return EXIT_FAILURE;
-            if (!shortcut(scheme ? 'g' : 0xff51) || !focused_on(second) || !shortcut(scheme ? 'i' : 0xff53) || !focused_on(third)) return EXIT_FAILURE;
-            if (!shortcut(scheme ? 'p' : 0xff51, !scheme) ||
+            if (!shortcut(scheme ? 'g' : 'h') || !focused_on(second) || !shortcut(scheme ? 'i' : 'l') || !focused_on(third)) return EXIT_FAILURE;
+            if (!shortcut(scheme ? 'p' : 'h', !scheme) ||
                 !tiled(third, 0, 300, 400, 300) || !tiled(second, 400, 300, 400, 300)) return EXIT_FAILURE;
             if (!shortcut(scheme ? 'g' : 0xff51) || !focused_on(third)) return EXIT_FAILURE;
             if (!shortcut(scheme ? 'u' : 0xff53, false, !scheme) ||
                 !tiled(third, 0, 300, 409, 300) || !tiled(second, 409, 300, 391, 300)) return EXIT_FAILURE;
-            if (!shortcut(scheme ? 'y' : 0xff53, !scheme) ||
+            if (!shortcut(scheme ? 'y' : 'l', !scheme) ||
                 !tiled(second, 0, 300, 390, 300) || !tiled(third, 390, 300, 410, 300)) return EXIT_FAILURE;
             auto protocols = intern_key("WM_PROTOCOLS");
             auto delete_window = intern_key("WM_DELETE_WINDOW");
