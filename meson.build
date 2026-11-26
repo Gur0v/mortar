@@ -148,6 +148,7 @@ end
   xcb_xtest = dependency('xcb-xtest')
   client = executable('test-client', 'tests/client.cpp', dependencies: [xcb, xcb_xtest])
   test('ipc-integration', find_program('ruby'), args: [files('tests/ipc-integration.rb'), mortar, client])
+  test('restart-integration', find_program('ruby'), args: [files('tests/restart-integration.rb'), mortar])
   ewmh_test = executable('test-ewmh', 'tests/ewmh.cpp', dependencies: xcb)
   test('ewmh', find_program('ruby'), args: ['-e', '''
 require 'timeout'

@@ -30,6 +30,10 @@
 #include <spawn.h>
 #include <fcntl.h>
 #include <chrono>
+#include <charconv>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
 #include <thread>
 #include <memory>
 #include <tuple>
@@ -88,7 +92,77 @@ static std::pair<uint32_t, uint32_t> hinted_size(uint32_t width, uint32_t height
     return bestw ? std::pair{bestw, besth} : std::pair{maxw, maxh};
 }
 
-int main() {
+int main(int argc, char **argv) {
+    std::error_code executable_error;
+    auto executable = std::filesystem::canonical("/proc/self/exe", executable_error);
+    std::optional<mortar::RestartSnapshot> restart_state;
+    int restart_fd = -1, inherited_bar = -1, inherited_ipc = -1;
+    std::uint64_t inherited_inode = 0;
+    std::string inherited_path;
+    std::vector<pid_t> inherited_children;
+    auto parse = [](const char *text, auto &value) {
+        auto end = text + std::strlen(text);
+        auto result = std::from_chars(text, end, value);
+        return result.ec == std::errc{} && result.ptr == end;
+    };
+    if (argc >= 7 && std::strcmp(argv[1], "--restart-handoff") == 0 &&
+        parse(argv[2], restart_fd) && parse(argv[3], inherited_bar) &&
+        parse(argv[4], inherited_ipc) && parse(argv[5], inherited_inode) && restart_fd >= 3) {
+        auto is_child = [](pid_t pid) {
+            siginfo_t info{};
+            return pid > 0 && waitid(P_PID, static_cast<id_t>(pid), &info, WEXITED | WNOHANG | WNOWAIT) == 0;
+        };
+        if ((inherited_bar != -1 && !is_child(inherited_bar)) ||
+            (inherited_ipc != -1 && (inherited_ipc < 3 || inherited_ipc == restart_fd))) {
+            std::fputs("mortar: invalid restart handoff\n", stderr);
+            return EXIT_FAILURE;
+        }
+        if (inherited_bar > 0) {
+            siginfo_t info{};
+            if (waitid(P_PID, static_cast<id_t>(inherited_bar), &info, WEXITED | WNOHANG | WNOWAIT) == 0 && info.si_pid) {
+                waitpid(inherited_bar, nullptr, WNOHANG);
+                inherited_bar = -1;
+            }
+        }
+        inherited_path = argv[6];
+        for (int i = 7; i < argc; ++i) {
+            pid_t child = -1;
+            if (!parse(argv[i], child) || !is_child(child) || child == inherited_bar ||
+                std::find(inherited_children.begin(), inherited_children.end(), child) != inherited_children.end()) {
+                std::fputs("mortar: invalid inherited child\n", stderr);
+                return EXIT_FAILURE;
+            }
+            inherited_children.push_back(child);
+        }
+        struct stat st{};
+        try {
+            const int seals = fcntl(restart_fd, F_GET_SEALS);
+            const int required_seals = F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL;
+            if (fstat(restart_fd, &st) || !S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
+                seals < 0 || (seals & required_seals) != required_seals || st.st_size <= 0 ||
+                static_cast<std::uint64_t>(st.st_size) > mortar::restart_max_bytes)
+                throw std::runtime_error("invalid restart descriptor");
+            std::vector<std::uint8_t> bytes(static_cast<std::size_t>(st.st_size));
+            std::size_t offset = 0;
+            while (offset < bytes.size()) {
+                auto n = pread(restart_fd, bytes.data() + offset, bytes.size() - offset, offset);
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) throw std::runtime_error("cannot read restart snapshot");
+                offset += static_cast<std::size_t>(n);
+            }
+            restart_state = mortar::decode_restart_snapshot(bytes);
+        } catch (const std::exception &error) {
+            std::fprintf(stderr, "mortar: restart state unavailable: %s\n", error.what());
+            close(restart_fd);
+            if (inherited_ipc >= 0) close(inherited_ipc);
+            return EXIT_FAILURE;
+        }
+        close(restart_fd);
+    } else if (argc != 1) {
+        std::fputs("mortar: invalid arguments\n", stderr);
+        return EXIT_FAILURE;
+    }
+
     int screen_number = 0;
     using Connection = std::unique_ptr<xcb_connection_t, decltype(&xcb_disconnect)>;
     Connection connection{xcb_connect(nullptr, &screen_number), &xcb_disconnect};
@@ -126,6 +200,16 @@ int main() {
 
     std::unique_ptr<mortar::Ipc> ipc;
     try {
+        if (inherited_ipc >= 3) {
+            try {
+                ipc = std::make_unique<mortar::Ipc>(mortar::Ipc::Handoff{inherited_ipc, inherited_inode, inherited_path});
+                inherited_ipc = -1;
+            } catch (const std::exception &error) {
+                close(inherited_ipc);
+                inherited_ipc = -1;
+                std::fprintf(stderr, "mortar: cannot adopt IPC socket: %s\n", error.what());
+            }
+        }
         const char *override_path = std::getenv("MORTARSOCK");
         std::string socket_path;
         if (override_path && *override_path) socket_path = override_path;
@@ -137,7 +221,7 @@ int main() {
                           std::to_string(getpid()) + ".sock";
         }
         try {
-            ipc = std::make_unique<mortar::Ipc>(socket_path);
+            if (!ipc) ipc = std::make_unique<mortar::Ipc>(socket_path);
         } catch (const std::system_error &error) {
             if (!override_path || !*override_path || error.code().value() != EEXIST) throw;
             const char *runtime = std::getenv("XDG_RUNTIME_DIR");
@@ -153,6 +237,7 @@ int main() {
         std::fprintf(stderr, "mortar: IPC socket %s\n", ipc->path().c_str());
     } catch (const std::exception &error) {
         ipc.reset();
+        if (inherited_ipc >= 0) close(inherited_ipc);
         unsetenv("MORTARSOCK");
         std::fprintf(stderr, "mortar: IPC unavailable: %s\n", error.what());
     }
@@ -173,6 +258,7 @@ int main() {
         std::function<void(xcb_window_t)> scratch_send;
         std::function<void(xcb_window_t)> toggle_fullscreen, toggle_floating;
         std::function<void(const std::vector<std::string> &)> spawn;
+        bool restart = false;
         xcb_timestamp_t time = XCB_CURRENT_TIME;
     } actions;
     mortar::Config config(&actions,
@@ -198,6 +284,7 @@ int main() {
             case mortar::Config::WindowAction::scratch_show: actions.scratch_toggle(); break;
             case mortar::Config::WindowAction::fullscreen: actions.toggle_fullscreen(window); break;
             case mortar::Config::WindowAction::exit: stopping = 1; break;
+            case mortar::Config::WindowAction::restart: actions.restart = true; break;
             case mortar::Config::WindowAction::focus_output_next:
             case mortar::Config::WindowAction::focus_output_previous:
             case mortar::Config::WindowAction::move_output_next:
@@ -319,7 +406,7 @@ int main() {
         mouse_grabs = std::move(next);
     };
     grab_mouse(config.mouse_modifier());
-    std::vector<pid_t> children;
+    std::vector<pid_t> children = std::move(inherited_children);
     mortar::Workspaces workspace_state;
     mortar::Scratchpad scratchpad;
     std::vector<xcb_window_t> scratch_windows;
@@ -395,6 +482,13 @@ int main() {
         return fallback;
     };
     current = cardinal(root, net_current, 0);
+    if (restart_state) {
+        workspace_state = mortar::Workspaces::restore(restart_state->workspaces);
+        scratchpad = mortar::Scratchpad::restore(restart_state->scratchpad);
+        restored_names = restart_state->workspace_names;
+        iconic = restart_state->iconic;
+        for (const auto &entry : restart_state->scratchpad) scratch_windows.push_back(entry.window);
+    }
     auto support = xcb_generate_id(c);
     auto set_desktop = [&](xcb_window_t window, uint32_t desktop) {
         xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, net_desktop, XCB_ATOM_CARDINAL, 32, 1, &desktop);
@@ -406,6 +500,16 @@ int main() {
     auto is_fullscreen = [&](xcb_window_t window) {
         return std::find_if(fullscreen.begin(), fullscreen.end(), [&](const auto &entry) { return entry.first == window; });
     };
+    if (restart_state) {
+        auto convert = [](const auto &entries, auto &destination) {
+            for (const auto &entry : entries)
+                destination.push_back({entry.window, {static_cast<uint32_t>(entry.geometry.x),
+                    static_cast<uint32_t>(entry.geometry.y), static_cast<uint32_t>(entry.geometry.width),
+                    static_cast<uint32_t>(entry.geometry.height), entry.border}});
+        };
+        convert(restart_state->floating_geometry, floating_geometry);
+        convert(restart_state->fullscreen_geometry, fullscreen);
+    }
     bool starting = true;
     auto unmap = [&](xcb_window_t window) {
         if (!starting) xcb_grab_server(c);
@@ -425,7 +529,13 @@ int main() {
     try {
         if (!outputs.update(mortar::discover_outputs(c, root)) || outputs.outputs().empty())
             throw std::runtime_error("invalid output configuration");
-        outputs.switch_workspace(current);
+        if (restart_state) {
+            auto discovered = mortar::discover_outputs(c, root);
+            outputs = mortar::Outputs::restore(restart_state->outputs, restart_state->owners,
+                restart_state->focused_output, current);
+            if (!outputs.update(discovered)) throw std::runtime_error("cannot restore outputs");
+            current = outputs.focused_workspace();
+        } else outputs.switch_workspace(current);
     } catch (const std::exception &error) {
         std::fprintf(stderr, "mortar: output discovery failed: %s; using root geometry\n", error.what());
         if (!outputs.update({{"root", {0, 0, screens.data->width_in_pixels, screens.data->height_in_pixels}}}))
@@ -1052,6 +1162,7 @@ int main() {
             }
             return;
         }
+        if (existing && std::find(iconic.begin(), iconic.end(), window) != iconic.end()) return;
         auto cookie = xcb_get_window_attributes(c, window);
         std::unique_ptr<xcb_get_window_attributes_reply_t, decltype(&std::free)> attributes{
             xcb_get_window_attributes_reply(c, cookie, nullptr), &std::free};
@@ -1344,13 +1455,68 @@ int main() {
     publish_names();
     try {
     auto *children = xcb_query_tree_children(tree.get());
+    if (restart_state) {
+        auto exists = [&](xcb_window_t window) {
+            return std::find(children, children + xcb_query_tree_children_length(tree.get()), window) !=
+                children + xcb_query_tree_children_length(tree.get());
+        };
+        for (auto &ws : workspaces) {
+            auto old = ws.windows;
+            for (auto window : old) {
+                if (!exists(window)) {
+                    if (!ws.remove_floating(window)) {
+                        ws.layout.remove(window);
+                        std::erase(ws.windows, window);
+                        std::erase(ws.focus_history, window);
+                    }
+                    if (ws.focused == window) ws.focused = ws.recent_focus();
+                    continue;
+                }
+                const uint32_t mask = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_COLOR_MAP_CHANGE;
+                xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &mask);
+                clients.push_back(window);
+                bool attention = hints_urgent(window);
+                Property state{xcb_get_property_reply(c, xcb_get_property(c, false, window, net_state,
+                    XCB_ATOM_ATOM, 0, 1024), nullptr), &std::free};
+                if (state && !state->bytes_after && state->type == XCB_ATOM_ATOM && state->format == 32) {
+                    auto *values = static_cast<const xcb_atom_t *>(xcb_get_property_value(state.get()));
+                    attention = attention || std::find(values, values + xcb_get_property_value_length(state.get()) / 4,
+                        attention_atom) != values + xcb_get_property_value_length(state.get()) / 4;
+                }
+                set_urgent(window, attention);
+                set_desktop(window, static_cast<uint32_t>(&ws - workspaces.data()));
+                if (visible(static_cast<uint32_t>(&ws - workspaces.data()))) xcb_map_window(c, window);
+                else unmap(window);
+            }
+        }
+        for (auto window : scratch_windows) {
+            if (!exists(window)) scratchpad.remove(window);
+            else if (std::find(clients.begin(), clients.end(), window) == clients.end()) {
+                const uint32_t mask = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_COLOR_MAP_CHANGE;
+                xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &mask);
+                clients.push_back(window);
+            }
+        }
+        std::erase_if(scratch_windows, [&](auto window) { return !exists(window); });
+        std::erase_if(iconic, [&](auto window) { return !exists(window); });
+        std::erase_if(fullscreen, [&](const auto &entry) { return !exists(entry.first); });
+        std::erase_if(floating_geometry, [&](const auto &entry) { return !exists(entry.first); });
+        for (auto window : iconic) {
+            const uint32_t mask = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_COLOR_MAP_CHANGE;
+            xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &mask);
+            clients.push_back(window);
+        }
+    }
     for (int i = 0; i < xcb_query_tree_children_length(tree.get()); ++i) {
         manage(children[i], true);
     }
 
     std::unique_ptr<xcb_query_pointer_reply_t, decltype(&std::free)> pointer{
         xcb_query_pointer_reply(c, xcb_query_pointer(c, root), nullptr), &std::free};
-    if (pointer && owner(pointer->child) == static_cast<int>(current)) {
+    if (restart_state) {
+        tile();
+        restore_focus();
+    } else if (pointer && owner(pointer->child) == static_cast<int>(current)) {
         std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
         pending_focus.push_back(pointer->child);
         focus_sequence = static_cast<uint16_t>(xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, focus_time, XCB_ATOM_WINDOW, 32, 0, nullptr).sequence);
@@ -1412,7 +1578,7 @@ int main() {
         auto targets = output_subscribers;
         for (int client : targets) ipc->send(client, "event output unspecified");
     };
-    pid_t bar = -1;
+    pid_t bar = inherited_bar;
     auto start_bar = [&] {
         posix_spawn_file_actions_t bar_actions;
         int bar_error = posix_spawn_file_actions_init(&bar_actions);
@@ -1464,7 +1630,7 @@ int main() {
         std::fputs("mortar: mortarbar did not exit; cannot restart it\n", stderr);
         return false;
     };
-    start_bar();
+    if (bar <= 0) start_bar();
     actions.scratch_send = [&](xcb_window_t window) {
         if (window && owner(window) < 0) throw std::runtime_error("unmanaged window");
         if (!window) window = workspaces[current].focused;
@@ -1582,7 +1748,77 @@ int main() {
         }
     };
 
+    auto restart = [&] {
+        int fd = -1, ipc_fd = -1, xflags = -1;
+        try {
+            if (executable_error) throw std::runtime_error("cannot resolve executable path");
+            if (outputs.outputs().empty()) throw std::runtime_error("no outputs to restore");
+            mortar::RestartSnapshot state{workspace_state.snapshot(), scratchpad.snapshot()};
+            state.outputs = outputs.outputs();
+            state.owners = outputs.owners();
+            state.focused_output = outputs.focused_output();
+            state.workspace_names = workspace_names;
+            state.iconic = iconic;
+            for (auto window : scratch_windows) {
+                auto entry = scratchpad.get(window);
+                if (entry && entry->visible_workspace) {
+                    std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                        xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
+                    auto previous = is_fullscreen(window);
+                    for (auto &saved : state.scratchpad) if (saved.window == window) {
+                        if (previous != fullscreen.end()) {
+                            const auto &g = previous->second;
+                            saved.geometry = mortar::Rect{static_cast<int32_t>(g[0]), static_cast<int32_t>(g[1]),
+                                static_cast<int>(g[2]), static_cast<int>(g[3])};
+                        } else if (geometry) {
+                            saved.geometry = mortar::Rect{geometry->x, geometry->y, geometry->width, geometry->height};
+                        }
+                    }
+                }
+            }
+            auto convert = [](const auto &source, auto &destination) {
+                for (const auto &[window, g] : source)
+                    destination.push_back({window, {static_cast<int32_t>(g[0]), static_cast<int32_t>(g[1]),
+                        static_cast<int>(g[2]), static_cast<int>(g[3])}, g[4]});
+            };
+            convert(floating_geometry, state.floating_geometry);
+            convert(fullscreen, state.fullscreen_geometry);
+            auto bytes = mortar::encode_restart_snapshot(state);
+            fd = static_cast<int>(syscall(SYS_memfd_create, "mortar-restart", MFD_ALLOW_SEALING));
+            if (fd < 0) throw std::system_error(errno, std::generic_category(), "memfd_create");
+            std::size_t offset = 0;
+            while (offset < bytes.size()) {
+                auto n = write(fd, bytes.data() + offset, bytes.size() - offset);
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) throw std::runtime_error("cannot write restart snapshot");
+                offset += static_cast<std::size_t>(n);
+            }
+            if (fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL) < 0)
+                throw std::system_error(errno, std::generic_category(), "seal restart snapshot");
+            mortar::Ipc::Handoff handoff{-1, 0, ""};
+            if (ipc) { handoff = ipc->handoff(); ipc_fd = handoff.fd; }
+            auto fd_arg = std::to_string(fd), bar_arg = std::to_string(bar);
+            auto ipc_arg = std::to_string(handoff.fd), inode_arg = std::to_string(handoff.inode);
+            xflags = fcntl(xcb_get_file_descriptor(c), F_GETFD);
+            if (xflags < 0 || fcntl(xcb_get_file_descriptor(c), F_SETFD, xflags | FD_CLOEXEC) < 0)
+                throw std::system_error(errno, std::generic_category(), "protect X descriptor");
+            std::vector<std::string> args{"mortar", "--restart-handoff", fd_arg, bar_arg, ipc_arg, inode_arg, handoff.path};
+            for (auto child : children) args.push_back(std::to_string(child));
+            std::vector<char *> pointers;
+            for (auto &arg : args) pointers.push_back(arg.data());
+            pointers.push_back(nullptr);
+            execv(executable.c_str(), pointers.data());
+            throw std::system_error(errno, std::generic_category(), "exec restart");
+        } catch (const std::exception &error) {
+            if (xflags >= 0 && fcntl(xcb_get_file_descriptor(c), F_SETFD, xflags) < 0)
+                std::fprintf(stderr, "mortar: cannot restore X descriptor flags: %s\n", std::strerror(errno));
+            if (fd >= 0) close(fd);
+            if (ipc_fd >= 0) close(ipc_fd);
+            std::fprintf(stderr, "mortar: restart failed: %s\n", error.what());
+        }
+    };
     while (!stopping) {
+        if (actions.restart) { actions.restart = false; restart(); }
         if (bar > 0) {
             bool reaped = false;
             int error = mortar::reap_child(bar, reaped);

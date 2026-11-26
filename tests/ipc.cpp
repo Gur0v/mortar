@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 bool fail_socket_stat = false;
@@ -30,7 +31,23 @@ void check(bool value) {
     if (!value) std::abort();
 }
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 4) {
+        mortar::Ipc::Handoff inherited {std::stoi(argv[1]), std::stoull(argv[2]), argv[3]};
+        mortar::Ipc ipc(inherited);
+        check((fcntl(inherited.fd, F_GETFD) & FD_CLOEXEC) != 0);
+        int client = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        sockaddr_un address {};
+        address.sun_family = AF_UNIX;
+        std::strcpy(address.sun_path, argv[3]);
+        check(client >= 0 && connect(client, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0);
+        auto fds = ipc.poll_fds();
+        check(poll(fds.data(), fds.size(), 1000) > 0);
+        ipc.dispatch(fds, [](int, std::string_view) {});
+        check(ipc.poll_fds().size() == 2);
+        close(client);
+        return 0;
+    }
     char directory[] = "/tmp/mortar-ipc-test-XXXXXX";
     check(mkdtemp(directory));
     std::string path;
@@ -182,6 +199,49 @@ int main() {
     }
     struct stat st {};
     check(lstat(path.c_str(), &st) < 0);
+    {
+        mortar::Ipc ipc(path);
+        auto handoff = ipc.handoff();
+        check((fcntl(handoff.fd, F_GETFD) & FD_CLOEXEC) == 0);
+        auto invalid = handoff;
+        ++invalid.inode;
+        bool rejected = false;
+        try { mortar::Ipc adopted(invalid); } catch (const std::runtime_error&) { rejected = true; }
+        check(rejected && fcntl(handoff.fd, F_GETFD) >= 0);
+        invalid = handoff;
+        invalid.fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+        check(invalid.fd >= 0);
+        rejected = false;
+        try { mortar::Ipc adopted(invalid); } catch (const std::runtime_error&) { rejected = true; }
+        check(rejected);
+        close(invalid.fd);
+        pid_t child = fork();
+        check(child >= 0);
+        if (child == 0) {
+            auto fd = std::to_string(handoff.fd);
+            auto inode = std::to_string(handoff.inode);
+            execl("/proc/self/exe", "ipc-test", fd.c_str(), inode.c_str(), path.c_str(), nullptr);
+            _exit(127);
+        }
+        close(handoff.fd);
+        int status = 0;
+        check(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        check(lstat(path.c_str(), &st) == 0 && S_ISSOCK(st.st_mode));
+        int abstract_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        check(abstract_fd >= 0);
+        sockaddr_un abstract_address {};
+        abstract_address.sun_family = AF_UNIX;
+        std::memcpy(abstract_address.sun_path + 1, "mortar-ipc-test", 15);
+        check(bind(abstract_fd, reinterpret_cast<sockaddr*>(&abstract_address),
+                   offsetof(sockaddr_un, sun_path) + 16) == 0);
+        check(listen(abstract_fd, 1) == 0);
+        {
+            mortar::Ipc::Handoff mismatch {abstract_fd, static_cast<std::uint64_t>(st.st_ino), path};
+            mortar::Ipc adopted(mismatch);
+        }
+        check(lstat(path.c_str(), &st) == 0 && S_ISSOCK(st.st_mode));
+    }
+    check(lstat(path.c_str(), &st) < 0 && errno == ENOENT);
     {
         std::string existing = std::string(directory) + "/existing";
         FILE* file = std::fopen(existing.c_str(), "w");

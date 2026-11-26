@@ -76,12 +76,68 @@ Ipc::Ipc(const std::string& path) : path_(path) {
     }
 }
 
+Ipc::Handoff Ipc::handoff() const {
+    struct stat st {};
+    if (fstatat(dir_, name_.c_str(), &st, AT_SYMLINK_NOFOLLOW) < 0) fail("stat IPC socket");
+    if (!S_ISSOCK(st.st_mode) || st.st_uid != geteuid() || st.st_ino != socket_inode_)
+        throw std::runtime_error("IPC socket was replaced");
+    int fd = fcntl(listener_, F_DUPFD, 3);
+    if (fd < 0) fail("duplicate IPC listener");
+    return {fd, socket_inode_, path_};
+}
+
+Ipc::Ipc(const Handoff& handoff) : path_(handoff.path) {
+    const auto separator = path_.rfind('/');
+    sockaddr_un address {};
+    if (path_.empty() || path_[0] != '/' || separator == std::string::npos ||
+        separator + 1 == path_.size() || path_.find('\0') != std::string::npos ||
+        path_.size() >= sizeof(address.sun_path))
+        throw std::runtime_error("invalid inherited IPC path");
+    directory_ = separator == 0 ? "/" : path_.substr(0, separator);
+    name_ = path_.substr(separator + 1);
+    if (name_ == "." || name_ == "..") throw std::runtime_error("invalid inherited IPC socket name");
+    struct stat st {};
+    int type = 0, accepting = 0;
+    socklen_t size = sizeof(type);
+    int flags = fcntl(handoff.fd, F_GETFL);
+    int fd_flags = fcntl(handoff.fd, F_GETFD);
+    if (flags < 0 || fd_flags < 0 || !(flags & O_NONBLOCK) ||
+        fstat(handoff.fd, &st) < 0 || !S_ISSOCK(st.st_mode) || st.st_uid != geteuid() ||
+        getsockopt(handoff.fd, SOL_SOCKET, SO_TYPE, &type, &size) < 0 || size != sizeof(type) || type != SOCK_STREAM)
+        throw std::runtime_error("invalid inherited IPC listener");
+    size = sizeof(accepting);
+    socklen_t address_size = sizeof(address);
+    if (getsockopt(handoff.fd, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &size) < 0 ||
+        size != sizeof(accepting) || !accepting ||
+        getsockname(handoff.fd, reinterpret_cast<sockaddr*>(&address), &address_size) < 0 ||
+        address.sun_family != AF_UNIX)
+        throw std::runtime_error("invalid inherited IPC listener");
+    dir_ = open(directory_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (dir_ < 0) fail("open IPC directory");
+    try {
+        if (fstat(dir_, &st) < 0) fail("stat IPC directory");
+        if (!S_ISDIR(st.st_mode) || st.st_uid != geteuid() || (st.st_mode & 077) != 0)
+            throw std::runtime_error("IPC directory must be private and owned by the current user");
+        if (fstatat(dir_, name_.c_str(), &st, AT_SYMLINK_NOFOLLOW) < 0) fail("stat IPC socket");
+        if (!S_ISSOCK(st.st_mode) || st.st_uid != geteuid() || st.st_ino != handoff.inode)
+            throw std::runtime_error("inherited IPC socket was replaced");
+        if (fcntl(handoff.fd, F_SETFD, fd_flags | FD_CLOEXEC) < 0) fail("secure IPC listener");
+        socket_inode_ = handoff.inode;
+        listener_ = handoff.fd;
+        owns_path_ = false;
+    } catch (...) {
+        close(dir_);
+        dir_ = -1;
+        throw;
+    }
+}
+
 Ipc::~Ipc() {
     for (const auto& client : clients_) close(client.fd);
     if (listener_ >= 0) close(listener_);
     struct stat st {};
     if (dir_ >= 0) {
-        if (fstatat(dir_, name_.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0 &&
+        if (owns_path_ && fstatat(dir_, name_.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0 &&
             S_ISSOCK(st.st_mode) && st.st_ino == socket_inode_)
             unlinkat(dir_, name_.c_str(), 0);
         close(dir_);

@@ -381,6 +381,17 @@ int main() {
     write("(bind-key 1 0 (lambda () (exit)))");
     check(config.load(path) && config.run_binding(0) == Result::success);
     check(host.window_actions.back() == mortar::Config::WindowAction::exit);
+    write("(restart)");
+    check(!config.load(path));
+    check(config.evaluate("(restart)").success);
+    check(host.window_actions.back() == mortar::Config::WindowAction::restart && host.target == 0);
+    check(!config.evaluate("(restart 1)").success);
+    write("(bind-key 1 0 (lambda () (restart)))");
+    check(config.load(path) && config.run_binding(0) == Result::success);
+    check(host.window_actions.back() == mortar::Config::WindowAction::restart);
+    host.fail = true;
+    check(!config.evaluate("(restart)").success);
+    host.fail = false;
     for (const char *action : {"(focus-output-next)", "(focus-output-previous)", "(move-to-output-next)", "(move-to-output-previous)"}) {
         write(action);
         check(!config.load(path));

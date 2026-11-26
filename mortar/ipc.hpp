@@ -17,7 +17,15 @@ public:
     static constexpr std::size_t max_queue = 262144;
     static constexpr std::size_t max_clients = 32;
 
+    struct Handoff {
+        int fd;
+        std::uint64_t inode;
+        std::string path;
+    };
+
     explicit Ipc(const std::string& path);
+    explicit Ipc(const Handoff& handoff);
+    Handoff handoff() const;
     ~Ipc();
     Ipc(const Ipc&) = delete;
     Ipc& operator=(const Ipc&) = delete;
@@ -45,6 +53,7 @@ private:
     std::string path_;
     std::string name_;
     std::uint64_t socket_inode_ = 0;
+    bool owns_path_ = true;
     std::vector<Client> clients_;
     std::size_t next_client_ = 0;
     std::chrono::steady_clock::time_point accept_retry_ {};
