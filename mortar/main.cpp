@@ -136,7 +136,18 @@ int main() {
             socket_path = std::string(runtime) + "/mortar-ipc." + std::to_string(geteuid()) + "." +
                           std::to_string(getpid()) + ".sock";
         }
-        ipc = std::make_unique<mortar::Ipc>(socket_path);
+        try {
+            ipc = std::make_unique<mortar::Ipc>(socket_path);
+        } catch (const std::system_error &error) {
+            if (!override_path || !*override_path || error.code().value() != EEXIST) throw;
+            const char *runtime = std::getenv("XDG_RUNTIME_DIR");
+            if (!runtime || !std::filesystem::path(runtime).is_absolute())
+                throw std::runtime_error("XDG_RUNTIME_DIR must be an absolute private directory");
+            std::fprintf(stderr, "mortar: IPC path occupied, using default path\n");
+            socket_path = std::string(runtime) + "/mortar-ipc." + std::to_string(geteuid()) + "." +
+                          std::to_string(getpid()) + ".sock";
+            ipc = std::make_unique<mortar::Ipc>(socket_path);
+        }
         if (setenv("MORTARSOCK", ipc->path().c_str(), 1) < 0)
             throw std::system_error(errno, std::generic_category(), "setenv MORTARSOCK");
         std::fprintf(stderr, "mortar: IPC socket %s\n", ipc->path().c_str());

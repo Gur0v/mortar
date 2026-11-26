@@ -176,6 +176,28 @@ Dir.mktmpdir('mortar-ipc') do |dir|
     raise 'workspace count lost on startup' unless property.call('_NET_NUMBER_OF_DESKTOPS', 6) == [11]
     X11.XCloseDisplay(connection)
     UNIXSocket.new(custom).close
+    Process.kill('KILL', wm)
+    Process.wait(wm)
+    wm = nil
+    stale_inode = File.lstat(custom).ino
+    log_reader.close
+    log_reader, log_writer = IO.pipe
+    wm = Process.spawn({ 'DISPLAY' => ":#{Integer(display)}", 'XDG_RUNTIME_DIR' => dir, 'XDG_CONFIG_HOME' => dir, 'MORTARSOCK' => custom }, ARGV.fetch(0), err: log_writer)
+    log_writer.close
+    fallback = Timeout.timeout(10) do
+      loop do
+        line = log_reader.gets or raise 'Mortar exited before IPC setup'
+        break line.split('IPC socket ', 2).last.strip if line.include?('IPC socket ')
+      end
+    end
+    raise 'fallback path incorrect' unless fallback == File.join(dir, "mortar-ipc.#{Process.uid}.#{wm}.sock")
+    raise 'stale socket replaced' unless File.lstat(custom).ino == stale_inode
+    restarted = UNIXSocket.new(fallback)
+    request = 'eval (getenv "MORTARSOCK")'
+    restarted.write([request.bytesize].pack('N') + request)
+    size = restarted.read(4).unpack1('N')
+    raise 'fallback environment missing' unless restarted.read(size) == %(ok "#{fallback}")
+    restarted.close
   ensure
     Process.kill('TERM', client) rescue nil if client
     Process.wait(client) rescue nil if client

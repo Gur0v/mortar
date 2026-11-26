@@ -1,6 +1,6 @@
 # IPC
 
-mortar creates `$XDG_RUNTIME_DIR/mortar-ipc.<uid>.<pid>.sock`, using its effective UID and process ID. A nonempty `MORTARSOCK` at startup overrides this path. The selected path must be absolute, fit in a Unix socket address, and have a parent directory owned by the effective user and inaccessible to group and other users. mortar never removes an existing path to create the socket. An empty `MORTARSOCK` uses the default path.
+mortar creates `$XDG_RUNTIME_DIR/mortar-ipc.<uid>.<pid>.sock`, using its effective UID and process ID. A nonempty `MORTARSOCK` at startup overrides this path. The selected path must be absolute, fit in a Unix socket address, and have a parent directory owned by the effective user and inaccessible to group and other users. mortar never removes an existing path to create the socket. If the override path already exists, mortar leaves it untouched and tries the default path instead. This permits restart after a crash, but clients using a fixed path must discover the newly exported or logged path. The fallback requires a valid private `XDG_RUNTIME_DIR`; if it fails, IPC remains unavailable. An empty `MORTARSOCK` uses the default path.
 
 On success, mortar exports the selected path as `MORTARSOCK` to child processes and writes it to standard error as `mortar: IPC socket PATH`. If setup fails, mortar clears `MORTARSOCK` and continues without IPC. Socket connections must have the same effective UID as mortar. IPC clients are trusted to execute Scheme with the user's privileges.
 
