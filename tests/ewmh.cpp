@@ -98,6 +98,44 @@ int main() {
     xcb_flush(c);
     if (!wait([&] { return property(active) == std::vector<xcb_window_t>{first}; },
               "activation request did not focus window")) return EXIT_FAILURE;
+    auto third = xcb_generate_id(c);
+    auto window_type = atom("_NET_WM_WINDOW_TYPE");
+    auto dialog = atom("_NET_WM_WINDOW_TYPE_DIALOG");
+    if (!window_type || !dialog) return EXIT_FAILURE;
+    xcb_create_window(c, XCB_COPY_FROM_PARENT, third, screen->root, 0, 0, 100, 100, 0,
+                      XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+    xcb_change_property(c, XCB_PROP_MODE_REPLACE, third, window_type, XCB_ATOM_ATOM, 32, 1, &dialog);
+    xcb_map_window(c, third);
+    xcb_flush(c);
+    if (!wait([&] { return property(clients) == std::vector<xcb_window_t>{first, second, third}; },
+              "third window missing from client list")) return EXIT_FAILURE;
+    for (int i = 0; i < 100; ++i) {
+        const uint32_t mode = i % 2 ? XCB_STACK_MODE_BELOW : XCB_STACK_MODE_ABOVE;
+        xcb_configure_window(c, third, XCB_CONFIG_WINDOW_STACK_MODE, &mode);
+        request.window = i % 2 ? first : second;
+        xcb_send_event(c, false, screen->root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                       reinterpret_cast<const char *>(&request));
+        xcb_flush(c);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!wait([&] {
+        std::unique_ptr<xcb_query_tree_reply_t, decltype(&std::free)> reply{
+            xcb_query_tree_reply(c, xcb_query_tree(c, screen->root), nullptr), &std::free};
+        if (!reply) return false;
+        std::vector<xcb_window_t> stack;
+        auto *children = xcb_query_tree_children(reply.get());
+        for (int i = 0; i < xcb_query_tree_children_length(reply.get()); ++i)
+            if (children[i] == first || children[i] == second || children[i] == third) stack.push_back(children[i]);
+        return stack.size() == 3 && property(stacking) == stack &&
+            property(clients) == std::vector<xcb_window_t>{first, second, third} &&
+            property(active) == std::vector<xcb_window_t>{first};
+    }, "rapid restacks left stale EWMH state")) return EXIT_FAILURE;
+    xcb_destroy_window(c, third);
+    xcb_flush(c);
+    if (!wait([&] { return property(clients) == std::vector<xcb_window_t>{first, second} &&
+                           property(stacking) == actual_stack() &&
+                           property(active) == std::vector<xcb_window_t>{first}; },
+              "third window removal left stale EWMH state")) return EXIT_FAILURE;
     auto urgent = atom("_MORTAR_URGENT_WORKSPACES");
     auto urgent_property = [&] {
         std::vector<uint32_t> result;

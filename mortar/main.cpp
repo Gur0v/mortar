@@ -11,6 +11,7 @@
 #include "keyboard.hpp"
 
 #include <xcb/xcb.h>
+#include <xcb/xcbext.h>
 #include <xcb/randr.h>
 #include <xcb/render.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
@@ -1390,6 +1391,9 @@ int main(int argc, char **argv) {
     std::vector<xcb_window_t> published_clients, published_stack;
     xcb_window_t published_active = XCB_NONE;
     bool published = false;
+    bool stack_pending = false, stack_dirty = false, stack_published = false;
+    xcb_query_tree_cookie_t stack_cookie{};
+    auto stack_retry = std::chrono::steady_clock::time_point{};
     std::vector<uint32_t> published_outputs, published_urgent, published_workareas;
     auto publish = [&] {
         std::vector<uint32_t> workareas;
@@ -1430,21 +1434,11 @@ int main(int argc, char **argv) {
             xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, output_workspaces, XCB_ATOM_CARDINAL, 32, metadata.size(), metadata.data());
             published_outputs = std::move(metadata);
         }
-        std::unique_ptr<xcb_query_tree_reply_t, decltype(&std::free)> reply{
-            xcb_query_tree_reply(c, xcb_query_tree(c, root), nullptr), &std::free};
-        if (!reply) return;
-        std::vector<xcb_window_t> stack;
-        auto *children = xcb_query_tree_children(reply.get());
-        for (int i = 0; i < xcb_query_tree_children_length(reply.get()); ++i)
-            if (std::find(clients.begin(), clients.end(), children[i]) != clients.end()) stack.push_back(children[i]);
+        stack_dirty = true;
         auto active = workspaces[current].focused;
         if (!published || clients != published_clients) {
             xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_clients, XCB_ATOM_WINDOW, 32, clients.size(), clients.data());
             published_clients = clients;
-        }
-        if (!published || stack != published_stack) {
-            xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_stacking, XCB_ATOM_WINDOW, 32, stack.size(), stack.data());
-            published_stack = std::move(stack);
         }
         if (!published || active != published_active) {
             xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_active, XCB_ATOM_WINDOW, 32, 1, &active);
@@ -1453,6 +1447,43 @@ int main(int argc, char **argv) {
         }
         published = true;
         xcb_flush(c);
+    };
+    auto poll_stack = [&] {
+        if (!stack_pending) {
+            if (stack_dirty && std::chrono::steady_clock::now() >= stack_retry) {
+                stack_dirty = false;
+                stack_cookie = xcb_query_tree(c, root);
+                stack_pending = true;
+            }
+            return;
+        }
+        void *raw = nullptr;
+        xcb_generic_error_t *error = nullptr;
+        if (!xcb_poll_for_reply(c, stack_cookie.sequence, &raw, &error)) return;
+        std::unique_ptr<xcb_query_tree_reply_t, decltype(&std::free)> reply{
+            static_cast<xcb_query_tree_reply_t *>(raw), &std::free};
+        std::free(error);
+        stack_pending = false;
+        if (reply) {
+            std::vector<xcb_window_t> stack;
+            auto *children = xcb_query_tree_children(reply.get());
+            for (int i = 0; i < xcb_query_tree_children_length(reply.get()); ++i)
+                if (std::find(clients.begin(), clients.end(), children[i]) != clients.end()) stack.push_back(children[i]);
+            if (!stack_published || stack != published_stack) {
+                xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_stacking, XCB_ATOM_WINDOW, 32, stack.size(), stack.data());
+                published_stack = std::move(stack);
+                stack_published = true;
+            }
+        } else {
+            std::fputs("mortar: cannot query stacking order\n", stderr);
+            stack_dirty = true;
+            stack_retry = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        }
+        if (stack_dirty && std::chrono::steady_clock::now() >= stack_retry) {
+            stack_dirty = false;
+            stack_cookie = xcb_query_tree(c, root);
+            stack_pending = true;
+        }
     };
     auto tree_cookie = xcb_query_tree(c, root);
     std::unique_ptr<xcb_query_tree_reply_t, decltype(&std::free)> tree{
@@ -1989,6 +2020,14 @@ int main(int argc, char **argv) {
             }
         }
         if (xcb_connection_has_error(c)) { std::free(event); break; }
+        try {
+            poll_stack();
+        } catch (const std::bad_alloc &) {
+            std::fputs("mortar: cannot allocate stacking order\n", stderr);
+            stack_dirty = true;
+            stack_retry = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        }
+        if (!event) event = xcb_poll_for_queued_event(c);
         auto fds = ipc ? ipc->poll_fds() : std::vector<pollfd>{};
         fds.push_back({xcb_get_file_descriptor(c), POLLIN, 0});
         xcb_flush(c);

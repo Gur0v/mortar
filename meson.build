@@ -153,6 +153,7 @@ end
   test('ipc-integration', find_program('ruby'), args: [files('tests/ipc-integration.rb'), mortar, client])
   test('restart-integration', find_program('ruby'), args: [files('tests/restart-integration.rb'), mortar])
   test('click-focus', find_program('ruby'), args: [files('tests/click-focus.rb'), mortar])
+  test('multimonitor-resize', find_program('ruby'), args: [files('tests/multimonitor-resize.rb'), mortar])
   ewmh_test = executable('test-ewmh', 'tests/ewmh.cpp', dependencies: xcb)
   test('ewmh', find_program('ruby'), args: ['-e', '''
 require 'timeout'
