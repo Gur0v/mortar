@@ -172,7 +172,21 @@ int main() {
     check(config.load(path));
     std::string hostile(4096, 'a');
     hostile += 'b';
+    FILE *errors = std::tmpfile();
+    check(errors != nullptr);
+    int saved_stderr = dup(STDERR_FILENO);
+    check(saved_stderr >= 0 && dup2(fileno(errors), STDERR_FILENO) >= 0);
+    check(!config.window_rules()[0].matches({}, {}, "b"));
+    check(std::fflush(stderr) == 0 && std::ftell(errors) == 0);
     check(!config.window_rules()[0].matches({}, {}, hostile));
+    check(std::fflush(stderr) == 0 && std::ftell(errors) > 0);
+    std::rewind(errors);
+    char message[256]{};
+    check(std::fgets(message, sizeof(message), errors) != nullptr);
+    check(std::string(message).find("match limit exceeded") != std::string::npos);
+    check(dup2(saved_stderr, STDERR_FILENO) >= 0);
+    close(saved_stderr);
+    std::fclose(errors);
     check(config.run_workspace(1) == Result::absent);
     check(config.run_workspace(10) == Result::failure);
     write("(bind-workspace 1 (lambda () (workspace 4)))\n"

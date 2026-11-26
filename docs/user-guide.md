@@ -1,4 +1,4 @@
-# mortar user guide
+# Mortar User's Guide
 
 mortar is an X11 window manager configured in Guile Scheme. It arranges windows in a tree of split containers and workspaces.
 
@@ -80,7 +80,7 @@ For example:
 
 `bind-key` takes a list with one case-sensitive XKB keysym and any of `alt`, `shift`, `control`, `mod1` through `mod5`, followed by a zero-argument procedure. Keysyms resolve across layouts and levels, including required modifiers; bindings follow keyboard map changes and ignore lock modifiers. Bindings are registered while loading; later registrations replace earlier ones, and arbitrary bindings take precedence over built-in shortcuts. The numeric form `(bind-key keysym modifiers procedure)` accepts an integer keysym and X modifier mask. `(bind-workspace digit procedure)` and `(bind-move-workspace digit procedure)` replace the callbacks for built-in workspace shortcuts.
 
-The example window rule assigns matching new windows to desktop index 1, the second workspace. `(window-rule class workspace floating [instance [title]])` matches specified `WM_CLASS` components and title exactly. Criteria are nonempty strings or `#f`, with at least one specified; omitted criteria are `#f`. The title uses valid `_NET_WM_NAME`, otherwise `WM_NAME`. Workspace is an index from 0 to 9 or `#f`; floating is `'floating`, `'tiled`, or `#f`. Later matching rules override earlier assignments. Rules apply when windows are managed, not retroactively on reload. `window-rule-regex` takes the same arguments but searches with PCRE2 regular expressions; use `^` and `$` to anchor matches. Invalid patterns fail configuration loading; on reload, the previous configuration remains active. Matching has resource limits.
+The example window rule assigns matching new windows to desktop index 1, the second workspace. `(window-rule class workspace floating [instance [title]])` matches specified `WM_CLASS` components and title exactly. Criteria are nonempty strings or `#f`, with at least one specified; omitted criteria are `#f`. The title uses valid `_NET_WM_NAME`, otherwise `WM_NAME`. Workspace is an index from 0 to 9 or `#f`; floating is `'floating`, `'tiled`, or `#f`. Later matching rules override earlier assignments. Rules apply when windows are managed, not retroactively on reload. `window-rule-regex` takes the same arguments but searches with PCRE2 regular expressions; use `^` and `$` to anchor matches. Invalid patterns fail configuration loading; on reload, the previous configuration remains active. Matching has resource limits. A match error, including a resource limit or invalid UTF-8, is reported on standard error and the rule is treated as not matching; an ordinary non-match is not reported.
 
 Actions below run in callbacks or IPC, not during configuration loading. `spawn` passes separate string arguments directly to an executable; it does not invoke a shell.
 

@@ -1,5 +1,6 @@
 #include "config.hpp"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <new>
@@ -31,12 +32,22 @@ struct RuleRegex {
             pcre2_match_data_create_from_pattern(code.get(), nullptr), pcre2_match_data_free};
         std::unique_ptr<pcre2_match_context, decltype(&pcre2_match_context_free)> context{
             pcre2_match_context_create(nullptr), pcre2_match_context_free};
-        if (!data || !context) return false;
+        if (!data || !context) {
+            std::fprintf(stderr, "mortar: window rule regex match allocation failed\n");
+            return false;
+        }
         pcre2_set_match_limit(context.get(), 10000);
         pcre2_set_depth_limit(context.get(), 1000);
         pcre2_set_heap_limit(context.get(), 1024);
-        return pcre2_match(code.get(), reinterpret_cast<PCRE2_SPTR>(value.data()), value.size(), 0, 0,
-                           data.get(), context.get()) >= 0;
+        int result = pcre2_match(code.get(), reinterpret_cast<PCRE2_SPTR>(value.data()), value.size(), 0, 0,
+                                 data.get(), context.get());
+        if (result < 0 && result != PCRE2_ERROR_NOMATCH) {
+            PCRE2_UCHAR message[256];
+            if (pcre2_get_error_message(result, message, sizeof(message)) >= 0)
+                std::fprintf(stderr, "mortar: window rule regex match failed: %s (%d)\n", message, result);
+            else std::fprintf(stderr, "mortar: window rule regex match failed: error %d\n", result);
+        }
+        return result >= 0;
     }
 };
 
