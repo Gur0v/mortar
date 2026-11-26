@@ -34,11 +34,10 @@ int main() {
     check(first.focused == 2 && second.focused == 1);
 
     mortar::Workspaces navigation;
-    std::vector<bool> visible(10);
+    std::vector<bool> visible(13);
     check(navigation.ensure(12));
     check(!navigation.ensure(16384));
     check(navigation.workspaces.size() == 13);
-    visible.resize(13);
     visible[12] = true;
     check(navigation.adjacent(false, visible) == 12);
     visible[12] = false;
