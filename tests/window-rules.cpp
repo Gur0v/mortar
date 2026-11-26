@@ -66,6 +66,9 @@ int main() {
     const char trailing[] = "instance\0Float\0extra";
     const char special[] = "special\0Other";
     const char combined[] = "special\0Combined";
+    const char regex[] = "terminal\0RegexEditor";
+    const char regex_mismatch[] = "xterminal\0RegexEditor";
+    const char literal[] = "terminal\0Regex.*";
     return check("floating", floating, sizeof(floating), XCB_ATOM_STRING, 0, true) &&
            check("workspace", workspace, sizeof(workspace), XCB_ATOM_STRING, 1, false) &&
            check("override", overridden, sizeof(overridden), XCB_ATOM_STRING, 0, false) &&
@@ -77,6 +80,10 @@ int main() {
            check("title match", instance_only, sizeof(instance_only), XCB_ATOM_STRING, 1, false, "Target") &&
            check("legacy title", instance_only, sizeof(instance_only), XCB_ATOM_STRING, 1, false, "Target", false) &&
            check("combined mismatch", combined, sizeof(combined), XCB_ATOM_STRING, 0, true, "Other") &&
-           check("combined match", combined, sizeof(combined), XCB_ATOM_STRING, 2, false, "Target")
+           check("combined match", combined, sizeof(combined), XCB_ATOM_STRING, 2, false, "Target") &&
+           check("regex match", regex, sizeof(regex), XCB_ATOM_STRING, 1, true, "a file") &&
+           check("regex mismatch", regex_mismatch, sizeof(regex_mismatch), XCB_ATOM_STRING, 0, false, "a file") &&
+           check("regex missing title", regex, sizeof(regex), XCB_ATOM_STRING, 0, false) &&
+           check("literal metacharacters", literal, sizeof(literal), XCB_ATOM_STRING, 2, false)
         ? EXIT_SUCCESS : EXIT_FAILURE;
 }

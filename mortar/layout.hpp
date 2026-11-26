@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace mortar {
@@ -45,6 +46,8 @@ public:
     bool toggle_split(std::uint32_t focused);
     std::uint32_t neighbor(std::uint32_t focused, Direction direction, bool wrap = true) const;
     bool focus(std::uint32_t window);
+    std::optional<std::vector<std::size_t>> window_path(std::uint32_t window) const;
+    std::optional<std::vector<std::size_t>> parent_path(const std::vector<std::size_t> &path) const;
     bool remove(std::uint32_t window);
     bool move(std::uint32_t window, Direction direction);
     bool resize(std::uint32_t window, Direction direction, int pixels, Rect bounds);

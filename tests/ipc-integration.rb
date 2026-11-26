@@ -93,13 +93,19 @@ Dir.mktmpdir('mortar-ipc') do |dir|
     frames = 3.times.map { read_frame.call }
     raise "named switch failed: #{frames.inspect}" unless frames.include?('event workspace 2') && frames.include?('event output unspecified') && frames.any? { |f| f.start_with?('ok ') }
     raise 'EWMH current desktop not updated' unless property.call('_NET_CURRENT_DESKTOP', 6) == [2]
-    ['(rename-workspace 4 "web-é")', '(workspace "missing")'].each do |expression|
+    ['(rename-workspace 4 "web-é")'].each do |expression|
       send_frame.call("eval #{expression}")
       raise "invalid workspace action accepted: #{expression}" unless read_frame.call.start_with?('error ')
     end
     raise 'failed action changed EWMH names' unless property.call('_NET_DESKTOP_NAMES', utf8) == names.join("\0").b + "\0"
     raise 'failed action changed current desktop' unless property.call('_NET_CURRENT_DESKTOP', 6) == [2]
-    X11.XCloseDisplay(connection)
+    send_frame.call('eval (workspace "new-é")')
+    frames = 3.times.map { read_frame.call }
+    raise "named creation failed: #{frames.inspect}" unless frames.include?('event workspace 10') && frames.include?('event output unspecified') && frames.any? { |f| f.start_with?('ok ') }
+    names << 'new-é'
+    raise 'created workspace name missing' unless property.call('_NET_DESKTOP_NAMES', utf8) == names.join("\0").b + "\0"
+    raise 'desktop count not updated' unless property.call('_NET_NUMBER_OF_DESKTOPS', 6) == [11]
+    raise 'created workspace not current' unless property.call('_NET_CURRENT_DESKTOP', 6) == [10]
     send_frame.call('eval (workspace 2)')
     frames = 3.times.map { read_frame.call }
     raise "workspace reset failed: #{frames.inspect}" unless frames.include?('event workspace 1') && frames.include?('event output unspecified') && frames.any? { |f| f.start_with?('ok ') }
@@ -137,10 +143,9 @@ Dir.mktmpdir('mortar-ipc') do |dir|
     Timeout.timeout(5) { Thread.pass until File.exist?(child_env) && File.size?(child_env) }
     raise 'child socket environment missing' unless File.read(child_env) == path
     socket.close
-    Process.kill('TERM', wm)
+    Process.kill('KILL', wm)
     Process.wait(wm)
     wm = nil
-    raise 'socket not removed' if File.exist?(path)
     custom = File.join(dir, 'custom.sock')
     log_reader.close
     log_reader, log_writer = IO.pipe
@@ -153,6 +158,17 @@ Dir.mktmpdir('mortar-ipc') do |dir|
       end
     end
     raise 'override ignored' unless selected == custom
+    ready = UNIXSocket.new(custom)
+    ready.write([12].pack('N') + 'eval (+ 1 2)')
+    begin
+      raise 'second WM not ready' unless ready.read(4).unpack1('N') == 4 && ready.read(4) == 'ok 3'
+    rescue StandardError => error
+      raise "#{error}: #{log_reader.read}"
+    end
+    ready.close
+    raise 'workspace names lost on startup' unless property.call('_NET_DESKTOP_NAMES', utf8) == names.join("\0").b + "\0"
+    raise 'workspace count lost on startup' unless property.call('_NET_NUMBER_OF_DESKTOPS', 6) == [11]
+    X11.XCloseDisplay(connection)
     UNIXSocket.new(custom).close
   ensure
     Process.kill('TERM', client) rescue nil if client

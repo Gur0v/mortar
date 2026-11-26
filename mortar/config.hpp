@@ -8,11 +8,13 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace mortar {
 
 struct ConfigRuntime;
+struct RuleRegex;
 
 class Config {
 public:
@@ -32,6 +34,12 @@ public:
         std::optional<bool> floating;
         std::optional<std::string> instance;
         std::optional<std::string> title;
+        std::shared_ptr<const RuleRegex> class_regex;
+        std::shared_ptr<const RuleRegex> instance_regex;
+        std::shared_ptr<const RuleRegex> title_regex;
+
+        bool matches(std::optional<std::string_view> class_name, std::optional<std::string_view> instance_name,
+                     std::optional<std::string_view> window_title) const;
     };
 
     struct Gaps {

@@ -1,9 +1,10 @@
 #include "../mortar/wm-selection.hpp"
 
 #include <cstdlib>
+#include <cstdio>
 
 #undef assert
-#define assert(condition) ((condition) ? static_cast<void>(0) : std::abort())
+#define assert(condition) ((condition) ? static_cast<void>(0) : (std::fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #condition), std::abort()))
 #include <memory>
 #include <chrono>
 #include <thread>
@@ -60,8 +61,14 @@ int main(int argc, char **) {
     auto duplicate = mortar::acquire_wm_selection(observer, root, screen_number);
     assert(!duplicate.atom && !duplicate.window);
     xcb_disconnect(connection);
-    owner = xcb_get_selection_owner_reply(observer, xcb_get_selection_owner(observer, selected.atom), nullptr);
-    assert(owner && owner->owner == XCB_WINDOW_NONE);
-    std::free(owner);
+    for (int i = 0; i < 200; ++i) {
+        owner = xcb_get_selection_owner_reply(observer, xcb_get_selection_owner(observer, selected.atom), nullptr);
+        assert(owner);
+        const auto current = owner->owner;
+        std::free(owner);
+        if (current == XCB_WINDOW_NONE) break;
+        assert(i < 199);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     xcb_disconnect(observer);
 }

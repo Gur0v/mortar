@@ -109,9 +109,9 @@ bool Layout::insert_after(std::uint32_t focused, Layout child) {
                 node.focus_order_.push_back(index);
                 node.children_.insert(it + 1, std::move(child));
                 if (node.resized_) {
-                    const double weight = node.weights_[index - 1] / 2;
-                    node.weights_[index - 1] = weight;
-                    node.weights_.insert(node.weights_.begin() + index, weight);
+                    double total = 0;
+                    for (double weight : node.weights_) total += weight;
+                    node.weights_.insert(node.weights_.begin() + index, total / node.weights_.size());
                 } else {
                     node.weights_.insert(node.weights_.begin() + index, 1.0);
                 }
@@ -171,6 +171,33 @@ bool Layout::focus(std::uint32_t window) {
         return true;
     }
     return false;
+}
+
+std::optional<std::vector<std::size_t>> Layout::window_path(std::uint32_t window) const {
+    std::vector<std::size_t> path;
+    auto find = [&](auto &&self, const Layout &node) -> bool {
+        if (node.leaf_) return node.window_ == window;
+        for (std::size_t i = 0; i < node.children_.size(); ++i) {
+            path.push_back(i);
+            if (self(self, node.children_[i])) return true;
+            path.pop_back();
+        }
+        return false;
+    };
+    if (!find(find, *this)) return std::nullopt;
+    return path;
+}
+
+std::optional<std::vector<std::size_t>> Layout::parent_path(const std::vector<std::size_t> &path) const {
+    if (path.empty()) return std::nullopt;
+    const Layout *node = this;
+    for (auto index : path) {
+        if (index >= node->children_.size()) return std::nullopt;
+        node = &node->children_[index];
+    }
+    auto parent = path;
+    parent.pop_back();
+    return parent;
 }
 
 std::uint32_t Layout::neighbor(std::uint32_t focused, Direction direction, bool allow_wrap) const {

@@ -9,6 +9,12 @@ void check(bool value) {
 }
 
 int main() {
+    std::vector<std::string> names{"2", "2_"};
+    pad_workspace_names(names, 3);
+    check((names == std::vector<std::string>{"2", "2_", "3"}));
+    names = {"2"};
+    pad_workspace_names(names, 2);
+    check((names == std::vector<std::string>{"2", "2_"}));
     uint32_t h[18]{};
     check((hinted_size(100, 80, h, 18) == std::pair{100u, 80u}));
     h[0] = 16 | 32 | 64 | 256;

@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <limits>
+#include <stdexcept>
 
 using namespace mortar;
 
@@ -42,7 +43,7 @@ int main() {
     check(!state.update({{"bad", {0, 0, 0, 1}}}));
     check(!state.update({{"bad", {std::numeric_limits<int>::max(), 0, 1, 1}}}));
     check(state.outputs().size() == 1 && state.focused_workspace() == 4);
-    check(!state.focus_output("missing") && !state.switch_workspace(10));
+    check(!state.focus_output("missing") && !state.switch_workspace(16384));
     check(state.update({{"c", {0, 0, 50, 50}}, {"d", {50, 0, 50, 50}}}));
     check(state.outputs()[0].workspace != state.outputs()[1].workspace);
 
@@ -96,6 +97,30 @@ int main() {
     check(topology.update({{"left", {-100, -50, 100, 100}}}));
     check(topology.focused_output() == "left" && topology.focused_workspace() == 5);
     check(topology.owners()[1] == "left" && topology.owners()[5] == "left");
+
+    Outputs extended;
+    check(extended.update({{"a", {0, 0, 50, 50}}}));
+    check(extended.switch_workspace(12));
+    check(extended.focused_workspace() == 12 && extended.owners()[12] == "a");
+    check(!extended.switch_workspace(16384));
+
+    auto restored = Outputs::restore(topology.outputs(), topology.owners(), topology.focused_output(),
+                                     topology.focused_workspace());
+    check(restored.outputs() == topology.outputs() && restored.owners() == topology.owners());
+    check(restored.focused_output() == topology.focused_output() &&
+          restored.focused_workspace() == topology.focused_workspace());
+    check(restored.update({{"replacement", {0, 0, 100, 100}}}));
+    check(restored.focused_workspace() == 5 && restored.owners()[5] == "replacement");
+    auto no_outputs = Outputs::restore({}, std::vector<std::optional<std::string>>(10), std::nullopt, 4);
+    check(no_outputs.update({{"a", {0, 0, 50, 50}}}));
+    check(no_outputs.focused_workspace() == 4);
+    bool rejected = false;
+    try {
+        Outputs::restore(topology.outputs(), topology.owners(), topology.focused_output(), 0);
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    check(rejected);
 
     Outputs full;
     check(full.update({{"a", {0, 0, 50, 50}}}));

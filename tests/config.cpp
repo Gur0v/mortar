@@ -157,6 +157,22 @@ int main() {
         write(invalid);
         check(!config.load(path) && config.window_rules()[0].title == "title");
     }
+    write("(window-rule \"Editor.*\" 1 #f)");
+    check(config.load(path));
+    check(config.window_rules()[0].matches("Editor.*", {}, {}));
+    check(!config.window_rules()[0].matches("EditorX", {}, {}));
+    write("(window-rule-regex \"Edit(or)?\" 2 'floating \"^term\" \"file$\")");
+    check(config.load(path));
+    check(config.window_rules()[0].matches("MyEditor", "terminal", "a file"));
+    check(!config.window_rules()[0].matches("MyEditor", "xterminal", "a file"));
+    check(!config.window_rules()[0].matches("MyEditor", {}, "a file"));
+    write("(window-rule-regex \"[\" 1 #f)");
+    check(!config.load(path) && config.window_rules()[0].workspace == 2);
+    write("(window-rule-regex #f 3 #f #f \"^(a+)+$\")");
+    check(config.load(path));
+    std::string hostile(4096, 'a');
+    hostile += 'b';
+    check(!config.window_rules()[0].matches({}, {}, hostile));
     check(config.run_workspace(1) == Result::absent);
     check(config.run_workspace(10) == Result::failure);
     write("(bind-workspace 1 (lambda () (workspace 4)))\n"

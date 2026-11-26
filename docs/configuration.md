@@ -21,8 +21,8 @@ Here Alt+1 switches to workspace 2, and Alt+Shift+0 moves the focused window to 
 
 - `(bind-workspace digit procedure)` replaces the switch callback for that digit.
 - `(bind-move-workspace digit procedure)` replaces the move callback for that digit.
-- `(workspace digit)` switches to the specified workspace. `(workspace "name")` switches by exact name.
-- `(rename-workspace digit "name")` renames a slot and immediately updates `_NET_DESKTOP_NAMES` and the bar. Names must be unique, nonempty, at most 4096 UTF-8 bytes, and contain no NUL. Unknown names and duplicate names raise errors. Names start as `"1"` through `"10"` and last until Mortar exits or restarts; reload does not reset them. These actions are available in callbacks and IPC, not while loading configuration. Mortar still has exactly ten slots; naming does not create workspaces.
+- `(workspace digit)` switches to the specified workspace. `(workspace "name")` switches by exact name, creating a workspace if the name is new.
+- `(rename-workspace digit "name")` renames a numbered slot and immediately updates `_NET_DESKTOP_NAMES` and the bar. Names must be unique, nonempty, at most 4096 UTF-8 bytes, and contain no NUL. Duplicate names raise errors. Names start as `"1"` through `"10"` and last until Mortar exits or restarts; reload does not reset them. Up to 16384 workspaces can exist. These actions are available in callbacks and IPC, not while loading configuration.
 - `(workspace-next)` and `(workspace-previous)` switch among occupied or visible workspaces in numeric order, wrapping at either end.
 - `(workspace-back-and-forth)` switches to the previously focused workspace, including one that became empty. It does nothing until a workspace change occurs. These actions have no default shortcuts; use `bind-key` to assign them.
 - `(move-to-workspace digit)` moves the focused window to the specified workspace.
@@ -55,6 +55,8 @@ Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(toggle-split)
 ## Window rules
 
 `(window-rule class workspace floating [instance [title]])` matches the specified class and instance components of `WM_CLASS` and window title exactly. Each criterion is a nonempty string or `#f`; omitted criteria default to `#f`. At least one criterion is required, and all specified criteria must match. The title uses `_NET_WM_NAME` when valid, otherwise `WM_NAME`. Existing `(window-rule "Class" workspace floating)` rules remain valid. `workspace` is a desktop index from 0 to 9 or `#f` to leave it unchanged. `floating` is `'floating`, `'tiled`, or `#f` to leave the classification unchanged. Later matching rules override fields set by earlier rules. Rules apply when a window is managed and are replaced on successful configuration reload; existing windows are not reassigned automatically.
+
+`(window-rule-regex class workspace floating [instance [title]])` accepts the same arguments and assignments, but treats each specified criterion as a C++ ECMAScript regular expression. It searches for a match anywhere in each value; use `^` and `$` to anchor it. Invalid patterns fail configuration loading, leaving the previous configuration active on reload. Literal `window-rule` matching remains exact.
 
 ## Bar appearance
 

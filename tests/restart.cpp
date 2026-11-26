@@ -67,6 +67,24 @@ int main() {
     auto encoded = encode_restart_snapshot(state);
     assert(decode_restart_snapshot(encoded) == state);
     assert(Workspaces::restore(state.workspaces).snapshot() == state.workspaces);
+    assert(workspaces.ensure(12));
+    auto extended = state;
+    extended.workspaces = workspaces.snapshot();
+    extended.owners.resize(13);
+    assert(decode_restart_snapshot(encode_restart_snapshot(extended)) == extended);
+    assert(Workspaces::restore(extended.workspaces).snapshot() == extended.workspaces);
+    for (std::size_t i = 0; i < extended.workspaces.workspaces.size(); ++i)
+        extended.workspace_names.push_back(std::to_string(i + 1));
+    extended.workspace_names[12] = "web-é";
+    assert(decode_restart_snapshot(encode_restart_snapshot(extended)) == extended);
+    auto duplicate_names = extended;
+    duplicate_names.workspace_names[12] = duplicate_names.workspace_names[0];
+    rejects([&] { encode_restart_snapshot(duplicate_names); });
+    auto legacy = encoded;
+    legacy.resize(legacy.size() - 4);
+    legacy[4] = 3;
+    legacy.erase(legacy.begin() + 8, legacy.begin() + 12);
+    assert(decode_restart_snapshot(legacy) == state);
     assert(Scratchpad::restore(state.scratchpad).snapshot() == state.scratchpad);
     for (std::size_t i = 0; i < encoded.size(); ++i)
         rejects([&] { decode_restart_snapshot(std::span(encoded).first(i)); });
@@ -74,7 +92,7 @@ int main() {
     corrupt[4] = 1;
     rejects([&] { decode_restart_snapshot(corrupt); });
     corrupt = encoded;
-    corrupt[8] = 10;
+    corrupt[8] = 0;
     rejects([&] { decode_restart_snapshot(corrupt); });
     auto trailing = encoded;
     trailing.push_back(0);

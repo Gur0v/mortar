@@ -3,6 +3,7 @@
 #include "gaps.hpp"
 #include "ipc.hpp"
 #include "randr.hpp"
+#include "restart.hpp"
 #include "scratchpad.hpp"
 #include "size-hints.hpp"
 #include "workspaces.hpp"
@@ -39,6 +40,14 @@ extern char **environ;
 static volatile std::sig_atomic_t stopping = 0;
 
 static void stop(int) { stopping = 1; }
+
+static void pad_workspace_names(std::vector<std::string> &names, std::size_t count) {
+    while (names.size() < count) {
+        auto name = std::to_string(names.size() + 1);
+        while (std::find(names.begin(), names.end(), name) != names.end()) name += "_";
+        names.push_back(std::move(name));
+    }
+}
 
 static std::pair<uint32_t, uint32_t> hinted_size(uint32_t width, uint32_t height, const uint32_t *h, size_t count) {
     if (count < 15) return {width, height};
@@ -336,7 +345,26 @@ int main() {
     const auto attention_atom = atom("_NET_WM_STATE_DEMANDS_ATTENTION", 31);
     const auto urgent_workspaces = atom("_MORTAR_URGENT_WORKSPACES", 25);
     if (!output_workspaces || !net_clients || !net_stacking || !net_active || !net_names || !net_supported || !net_number || !net_current || !net_close || !net_workarea || !net_desktop || !net_check || !net_name || !utf8 || !window_type || !dialog_type || !dock_type || !strut || !strut_partial || !local_bar || !net_state || !fullscreen_atom || !attention_atom || !urgent_workspaces) return EXIT_FAILURE;
+    const auto persisted_workspaces = atom("_MORTAR_WORKSPACES", 18);
+    if (!persisted_workspaces) return EXIT_FAILURE;
     using Property = std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)>;
+    std::vector<std::string> restored_names;
+    {
+        Property reply{xcb_get_property_reply(c, xcb_get_property(c, false, root, persisted_workspaces,
+            persisted_workspaces, 0, (mortar::restart_max_bytes + 3) / 4), nullptr), &std::free};
+        if (reply && reply->type == persisted_workspaces && reply->format == 8 && reply->bytes_after == 0) {
+            try {
+                const auto *data = static_cast<const std::uint8_t *>(xcb_get_property_value(reply.get()));
+                auto state = mortar::decode_restart_snapshot({data, static_cast<std::size_t>(xcb_get_property_value_length(reply.get()))});
+                if (!state.workspace_names.empty() && workspace_state.ensure(static_cast<uint32_t>(state.workspace_names.size() - 1)))
+                    restored_names = std::move(state.workspace_names);
+            } catch (const std::invalid_argument &) {
+                std::fputs("mortar: ignoring invalid saved workspace state\n", stderr);
+            }
+        } else if (reply && reply->type != XCB_ATOM_NONE) {
+            std::fputs("mortar: ignoring invalid saved workspace state\n", stderr);
+        }
+    }
     auto cardinal = [&](xcb_window_t window, xcb_atom_t property, uint32_t fallback) {
         Property reply{xcb_get_property_reply(c, xcb_get_property(c, false, window, property,
                                                                  XCB_ATOM_CARDINAL, 0, 1), nullptr), &std::free};
@@ -385,6 +413,9 @@ int main() {
             return EXIT_FAILURE;
         outputs.switch_workspace(current);
     }
+    if (outputs.owners().size() > workspaces.size() &&
+        !workspace_state.ensure(static_cast<uint32_t>(outputs.owners().size() - 1))) return EXIT_FAILURE;
+    if (!outputs.ensure(static_cast<uint32_t>(workspaces.size() - 1))) return EXIT_FAILURE;
     auto visible = [&](uint32_t workspace) {
         return std::any_of(outputs.outputs().begin(), outputs.outputs().end(),
             [&](const auto &output) { return output.workspace == workspace; });
@@ -728,16 +759,21 @@ int main() {
     std::function<void(uint32_t)> workspace_event = [](uint32_t) {};
     std::function<void()> output_event = [] {};
     std::function<void(uint32_t)> settle_workspace = [](uint32_t) {};
-    auto switch_workspace = [&](uint32_t destination) {
+    auto switch_workspace = [&](uint32_t destination, mortar::Outputs *prepared = nullptr) {
         if (destination >= workspaces.size() || destination == current) return;
         auto old_outputs = outputs.outputs();
-        if (outputs.owners()[destination]) outputs.focus_output(*outputs.owners()[destination]);
-        if (!outputs.switch_workspace(destination)) return;
+        if (prepared) {
+            outputs = std::move(*prepared);
+        } else {
+            if (destination < outputs.owners().size() && outputs.owners()[destination])
+                outputs.focus_output(*outputs.owners()[destination]);
+            if (!outputs.switch_workspace(destination)) return;
+        }
+        workspace_state.switch_to(outputs.focused_workspace());
         for (const auto &output : old_outputs)
             if (!visible(output.workspace))
                 for (auto window : workspaces[output.workspace].windows) unmap(window);
         settle_workspace(destination);
-        workspace_state.switch_to(outputs.focused_workspace());
         xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_current, XCB_ATOM_CARDINAL, 32, 1, &current);
         tile();
         for (const auto &output : outputs.outputs())
@@ -846,7 +882,7 @@ int main() {
             if (workspace_state.previous) switch_workspace(*workspace_state.previous);
             return;
         }
-        std::array<bool, 10> visible_workspaces{};
+        std::vector<bool> visible_workspaces(workspaces.size());
         for (const auto &output : outputs.outputs()) visible_workspaces[output.workspace] = true;
         switch_workspace(workspace_state.adjacent(action == Navigation::next, visible_workspaces));
     };
@@ -1056,9 +1092,7 @@ int main() {
             title = std::string_view(static_cast<const char *>(xcb_get_property_value(window_title.get())),
                                      xcb_get_property_value_length(window_title.get()));
         for (const auto &rule : config.window_rules()) {
-            if ((rule.window_class && (!class_name || *class_name != *rule.window_class)) ||
-                (rule.instance && (!instance_name || *instance_name != *rule.instance)) ||
-                (rule.title && (!title || *title != *rule.title))) continue;
+            if (!rule.matches(class_name, instance_name, title)) continue;
             if (rule.workspace) desktop = (*rule.workspace + 9) % 10;
             if (rule.floating) floating = *rule.floating;
         }
@@ -1185,7 +1219,23 @@ int main() {
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_supported, XCB_ATOM_ATOM, 32, std::size(supported_atoms), supported_atoms);
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_number, XCB_ATOM_CARDINAL, 32, 1, &desktop_count);
     xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_current, XCB_ATOM_CARDINAL, 32, 1, &current);
-    std::array<std::string, 10> workspace_names = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"};
+    std::vector<std::string> workspace_names = restored_names.empty()
+        ? std::vector<std::string>{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
+        : std::move(restored_names);
+    pad_workspace_names(workspace_names, workspaces.size());
+    auto save_names = [&](const std::vector<std::string> &names) {
+        mortar::Workspaces empty;
+        if (!empty.ensure(static_cast<uint32_t>(names.size() - 1)))
+            throw std::runtime_error("workspace limit exceeded");
+        mortar::RestartSnapshot saved{empty.snapshot(), {}};
+        saved.owners.resize(names.size());
+        saved.workspace_names = names;
+        auto bytes = mortar::encode_restart_snapshot(saved);
+        auto request = xcb_change_property_checked(c, XCB_PROP_MODE_REPLACE, root, persisted_workspaces,
+            persisted_workspaces, 8, static_cast<uint32_t>(bytes.size()), bytes.data());
+        std::unique_ptr<xcb_generic_error_t, decltype(&std::free)> error{xcb_request_check(c, request), &std::free};
+        if (error || xcb_connection_has_error(c)) throw std::runtime_error("cannot save workspace state");
+    };
     auto publish_names = [&] {
         std::string names;
         for (const auto &name : workspace_names) { names += name; names += '\0'; }
@@ -1195,14 +1245,50 @@ int main() {
         auto index = (digit + 9) % 10;
         for (std::size_t i = 0; i < workspace_names.size(); ++i)
             if (i != index && workspace_names[i] == name) throw std::runtime_error("duplicate workspace name");
-        workspace_names[index] = name;
+        auto next_names = workspace_names;
+        next_names[index] = name;
+        save_names(next_names);
+        workspace_names = std::move(next_names);
         publish_names();
         xcb_flush(c);
     };
     actions.workspace_name = [&](const std::string &name) {
         auto found = std::find(workspace_names.begin(), workspace_names.end(), name);
-        if (found == workspace_names.end()) throw std::runtime_error("unknown workspace name");
-        switch_workspace(static_cast<uint32_t>(found - workspace_names.begin()));
+        if (found == workspace_names.end()) {
+            auto index = static_cast<uint32_t>(workspace_names.size());
+            if (index >= 16384) throw std::runtime_error("workspace limit reached");
+            auto next_outputs = outputs;
+            if (!next_outputs.switch_workspace(index)) throw std::runtime_error("cannot create workspace");
+            auto next_names = workspace_names;
+            next_names.push_back(name);
+            std::string encoded_names;
+            for (const auto &item : next_names) { encoded_names += item; encoded_names += '\0'; }
+            if (!workspace_state.ensure(index)) throw std::runtime_error("workspace limit reached");
+            try {
+                save_names(next_names);
+            } catch (...) {
+                workspaces.resize(index);
+                throw;
+            }
+            workspace_names = std::move(next_names);
+            const auto count = static_cast<uint32_t>(workspaces.size());
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_number, XCB_ATOM_CARDINAL, 32, 1, &count);
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_names, utf8, 8,
+                                static_cast<uint32_t>(encoded_names.size()), encoded_names.data());
+            xcb_flush(c);
+            try {
+                switch_workspace(index, &next_outputs);
+            } catch (...) {
+                if (outputs.owners().size() == index) {
+                    outputs = std::move(next_outputs);
+                    workspace_state.switch_to(index);
+                    xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_current, XCB_ATOM_CARDINAL, 32, 1, &current);
+                }
+                throw;
+            }
+        } else {
+            switch_workspace(static_cast<uint32_t>(found - workspace_names.begin()));
+        }
     };
     publish_names();
     try {
@@ -1598,9 +1684,26 @@ int main() {
                 if (!next_outputs.update(discovered) || next_outputs.outputs().empty())
                     throw std::runtime_error("invalid output configuration");
                 auto old_owners = outputs.owners();
+                if (next_outputs.owners().size() > workspaces.size()) {
+                    auto names = workspace_names;
+                    pad_workspace_names(names, next_outputs.owners().size());
+                    const auto previous_size = workspaces.size();
+                    if (!workspace_state.ensure(static_cast<uint32_t>(next_outputs.owners().size() - 1)))
+                        throw std::runtime_error("workspace limit reached");
+                    try {
+                        save_names(names);
+                    } catch (...) {
+                        workspaces.resize(previous_size);
+                        throw;
+                    }
+                    workspace_names = std::move(names);
+                    const auto count = static_cast<uint32_t>(workspaces.size());
+                    xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_number, XCB_ATOM_CARDINAL, 32, 1, &count);
+                    publish_names();
+                }
                 outputs = std::move(next_outputs);
                 for (size_t workspace = 0; workspace < workspaces.size(); ++workspace) {
-                    if (!old_owners[workspace] || !outputs.owners()[workspace]) continue;
+                    if (workspace >= old_owners.size() || !old_owners[workspace] || !outputs.owners()[workspace]) continue;
                     auto old = std::find_if(old_outputs.begin(), old_outputs.end(), [&](const auto &output) {
                         return output.name == *old_owners[workspace];
                     });
@@ -1910,6 +2013,11 @@ int main() {
         if (check && check->type == XCB_ATOM_WINDOW && check->format == 32 &&
             xcb_get_property_value_length(check.get()) == 4 && check->bytes_after == 0 &&
             *static_cast<const xcb_window_t *>(xcb_get_property_value(check.get())) == support) {
+            try {
+                save_names(workspace_names);
+            } catch (const std::exception &error) {
+                std::fprintf(stderr, "mortar: cannot save workspace state: %s\n", error.what());
+            }
             xcb_delete_property(c, root, net_check);
             xcb_delete_property(c, root, net_clients);
         xcb_delete_property(c, root, net_stacking);

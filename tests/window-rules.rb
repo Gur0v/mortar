@@ -19,6 +19,8 @@ Dir.mktmpdir('mortar-rules-') do |dir|
       (window-rule #f #f 'floating "special")
       (window-rule #f 2 #f #f "Target")
       (window-rule "Combined" 3 #f "special" "Target")
+      (window-rule-regex "^Regex" 2 'floating "^term" "file$")
+      (window-rule "Regex.*" 3 #f)
     SCHEME
     env = { 'DISPLAY' => ":#{Integer(display)}", 'XDG_CONFIG_HOME' => dir, 'HOME' => dir,
             'PATH' => '/nonexistent' }

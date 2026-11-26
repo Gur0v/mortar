@@ -47,12 +47,18 @@ int Workspaces::owner(std::uint32_t window) const {
     return -1;
 }
 
-std::uint32_t Workspaces::adjacent(bool forward, const std::array<bool, 10> &visible) const {
+std::uint32_t Workspaces::adjacent(bool forward, const std::vector<bool> &visible) const {
     for (std::size_t step = 1; step < workspaces.size(); ++step) {
         auto index = (current + (forward ? step : workspaces.size() - step)) % workspaces.size();
-        if (visible[index] || !workspaces[index].windows.empty()) return static_cast<std::uint32_t>(index);
+        if ((index < visible.size() && visible[index]) || !workspaces[index].windows.empty()) return static_cast<std::uint32_t>(index);
     }
     return current;
+}
+
+bool Workspaces::ensure(std::uint32_t index) {
+    if (index >= 16384) return false;
+    if (index >= workspaces.size()) workspaces.resize(static_cast<std::size_t>(index) + 1);
+    return true;
 }
 
 bool Workspaces::switch_to(std::uint32_t destination) {

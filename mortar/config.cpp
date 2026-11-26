@@ -3,7 +3,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <stdexcept>
 #include <utility>
+#define PCRE2_CODE_UNIT_WIDTH 8
+#include <pcre2.h>
 #include <xkbcommon/xkbcommon.h>
 
 #ifdef __clang__
@@ -11,6 +14,41 @@
 #endif
 
 namespace mortar {
+
+struct RuleRegex {
+    std::unique_ptr<pcre2_code, decltype(&pcre2_code_free)> code{nullptr, pcre2_code_free};
+
+    explicit RuleRegex(const std::string &pattern) {
+        int error;
+        PCRE2_SIZE offset;
+        code.reset(pcre2_compile(reinterpret_cast<PCRE2_SPTR>(pattern.data()), pattern.size(),
+                                 PCRE2_UTF | PCRE2_UCP, &error, &offset, nullptr));
+        if (!code) throw std::invalid_argument("invalid regular expression");
+    }
+
+    bool matches(std::string_view value) const {
+        std::unique_ptr<pcre2_match_data, decltype(&pcre2_match_data_free)> data{
+            pcre2_match_data_create_from_pattern(code.get(), nullptr), pcre2_match_data_free};
+        std::unique_ptr<pcre2_match_context, decltype(&pcre2_match_context_free)> context{
+            pcre2_match_context_create(nullptr), pcre2_match_context_free};
+        if (!data || !context) return false;
+        pcre2_set_match_limit(context.get(), 10000);
+        pcre2_set_depth_limit(context.get(), 1000);
+        pcre2_set_heap_limit(context.get(), 1024);
+        return pcre2_match(code.get(), reinterpret_cast<PCRE2_SPTR>(value.data()), value.size(), 0, 0,
+                           data.get(), context.get()) >= 0;
+    }
+};
+
+bool Config::WindowRule::matches(std::optional<std::string_view> class_name,
+                                 std::optional<std::string_view> instance_name,
+                                 std::optional<std::string_view> window_title) const {
+    auto match = [](const auto &criterion, const auto &pattern, const auto &value) {
+        return !criterion || (value && (pattern ? pattern->matches(*value) : *value == *criterion));
+    };
+    return match(window_class, class_regex, class_name) && match(instance, instance_regex, instance_name) &&
+           match(title, title_regex, window_title);
+}
 
 struct ConfigRuntime {
     Config *config;
@@ -398,7 +436,7 @@ struct ConfigRuntime {
         return SCM_UNSPECIFIED;
     }
 
-    static SCM window_rule(SCM name, SCM workspace, SCM floating, SCM instance, SCM title) {
+    static SCM window_rule_impl(SCM name, SCM workspace, SCM floating, SCM instance, SCM title, bool regex) {
         if (!active || !active->path) scm_misc_error("window-rule", "only allowed while loading", SCM_EOL);
         if (SCM_UNBNDP(instance)) instance = SCM_BOOL_F;
         if (SCM_UNBNDP(title)) title = SCM_BOOL_F;
@@ -422,16 +460,30 @@ struct ConfigRuntime {
                     auto criterion = [&](size_t i) -> std::optional<std::string> {
                         return state.arguments[i].empty() ? std::nullopt : std::optional<std::string>(state.arguments[i]);
                     };
-                    active->window_rules.push_back({criterion(0),
+                    Config::WindowRule rule{criterion(0),
                         scm_is_false(workspace) ? std::nullopt : std::optional<unsigned>(digit(workspace)),
                         scm_is_false(floating) ? std::nullopt :
                             std::optional<bool>(scm_is_eq(floating, scm_from_utf8_symbol("floating"))),
-                        criterion(1), criterion(2)});
+                        criterion(1), criterion(2), {}, {}, {}};
+                    if (regex) {
+                        if (rule.window_class) rule.class_regex = std::make_shared<RuleRegex>(*rule.window_class);
+                        if (rule.instance) rule.instance_regex = std::make_shared<RuleRegex>(*rule.instance);
+                        if (rule.title) rule.title_regex = std::make_shared<RuleRegex>(*rule.title);
+                    }
+                    active->window_rules.push_back(std::move(rule));
                 } catch (...) { failed = true; }
             } else failed = true;
         }
         if (failed) scm_misc_error("window-rule", "invalid criterion or allocation failure", SCM_EOL);
         return SCM_UNSPECIFIED;
+    }
+
+    static SCM window_rule(SCM name, SCM workspace, SCM floating, SCM instance, SCM title) {
+        return window_rule_impl(name, workspace, floating, instance, title, false);
+    }
+
+    static SCM window_rule_regex(SCM name, SCM workspace, SCM floating, SCM instance, SCM title) {
+        return window_rule_impl(name, workspace, floating, instance, title, true);
     }
 
     static SCM set_gaps(SCM inner, SCM outer) {
@@ -586,6 +638,7 @@ struct ConfigRuntime {
         scm_c_define_gsubr("bar-output", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_output));
         scm_c_define_gsubr("bar-colors", 4, 0, 0, reinterpret_cast<scm_t_subr>(bar_colors));
         scm_c_define_gsubr("window-rule", 3, 2, 0, reinterpret_cast<scm_t_subr>(window_rule));
+        scm_c_define_gsubr("window-rule-regex", 3, 2, 0, reinterpret_cast<scm_t_subr>(window_rule_regex));
         scm_c_define_gsubr("gaps", 2, 0, 0, reinterpret_cast<scm_t_subr>(set_gaps));
         scm_c_define_gsubr("border", 3, 0, 0, reinterpret_cast<scm_t_subr>(set_border));
         scm_c_define_gsubr("spawn", 0, 0, 1, reinterpret_cast<scm_t_subr>(spawn_action));

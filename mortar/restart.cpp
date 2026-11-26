@@ -96,16 +96,17 @@ WorkspacesSnapshot Workspaces::snapshot() const {
     WorkspacesSnapshot result{};
     result.current = current;
     result.previous = previous;
-    for (std::size_t i = 0; i < workspaces.size(); ++i) {
-        const auto &workspace = workspaces[i];
-        result.workspaces[i] = {workspace.layout.snapshot(), workspace.windows, workspace.floating, workspace.focused};
-    }
+    for (const auto &workspace : workspaces)
+        result.workspaces.push_back({workspace.layout.snapshot(), workspace.windows, workspace.floating, workspace.focused});
     return result;
 }
 
 Workspaces Workspaces::restore(const WorkspacesSnapshot &snapshot) {
-    validate_restart_snapshot({snapshot, {}});
+    RestartSnapshot validation{snapshot, {}};
+    validation.owners.resize(snapshot.workspaces.size());
+    validate_restart_snapshot(validation);
     Workspaces result;
+    result.workspaces.resize(snapshot.workspaces.size());
     result.current = snapshot.current;
     result.previous = snapshot.previous;
     for (std::size_t i = 0; i < result.workspaces.size(); ++i) {
@@ -121,8 +122,8 @@ Scratchpad Scratchpad::restore(const std::vector<ScratchpadEntry> &snapshot) {
     if (snapshot.size() > restart_max_nodes) invalid();
     std::unordered_set<std::uint32_t> windows;
     for (const auto &entry : snapshot)
-        if (!entry.window || !windows.insert(entry.window).second || entry.workspace >= 10 ||
-            (entry.visible_workspace && *entry.visible_workspace >= 10) ||
+        if (!entry.window || !windows.insert(entry.window).second || entry.workspace >= restart_max_nodes ||
+            (entry.visible_workspace && *entry.visible_workspace >= restart_max_nodes) ||
             (entry.geometry && (entry.geometry->width <= 0 || entry.geometry->height <= 0))) invalid();
     Scratchpad result;
     result.entries_ = snapshot;
@@ -131,8 +132,13 @@ Scratchpad Scratchpad::restore(const std::vector<ScratchpadEntry> &snapshot) {
 
 void validate_restart_snapshot(const RestartSnapshot &snapshot) {
     const auto &state = snapshot.workspaces;
-    if (state.current >= state.workspaces.size() || (state.previous && *state.previous >= state.workspaces.size()) ||
+    if (state.workspaces.empty() || state.workspaces.size() > restart_max_nodes ||
+        snapshot.owners.size() != state.workspaces.size() || state.current >= state.workspaces.size() || (state.previous && *state.previous >= state.workspaces.size()) ||
         snapshot.scratchpad.size() > restart_max_nodes) invalid();
+    if (!snapshot.workspace_names.empty() && snapshot.workspace_names.size() != state.workspaces.size()) invalid();
+    std::unordered_set<std::string> workspace_names;
+    for (const auto &name : snapshot.workspace_names)
+        if (name.empty() || name.size() > 4096 || name.find('\0') != std::string::npos || !workspace_names.insert(name).second) invalid();
     Codec codec;
     std::unordered_set<std::uint32_t> all;
     for (const auto &workspace : state.workspaces) {
@@ -204,7 +210,8 @@ std::vector<std::uint8_t> encode_restart_snapshot(const RestartSnapshot &snapsho
     validate_restart_snapshot(snapshot);
     Codec codec;
     codec.put(0x3154524d, 4);
-    codec.put(3, 4);
+    codec.put(5, 4);
+    codec.put(snapshot.workspaces.workspaces.size(), 4);
     codec.put(snapshot.workspaces.current, 4);
     codec.put(snapshot.workspaces.previous ? *snapshot.workspaces.previous + 1 : 0, 4);
     for (const auto &workspace : snapshot.workspaces.workspaces) {
@@ -254,6 +261,8 @@ std::vector<std::uint8_t> encode_restart_snapshot(const RestartSnapshot &snapsho
     };
     put_geometry(snapshot.floating_geometry);
     put_geometry(snapshot.fullscreen_geometry);
+    codec.put(snapshot.workspace_names.size(), 4);
+    for (const auto &name : snapshot.workspace_names) put_string(name);
     return codec.output;
 }
 
@@ -261,8 +270,14 @@ RestartSnapshot decode_restart_snapshot(std::span<const std::uint8_t> bytes) {
     if (bytes.size() > restart_max_bytes) invalid();
     Codec codec;
     codec.input = bytes;
-    if (codec.get(4) != 0x3154524d || codec.get(4) != 3) invalid();
+    if (codec.get(4) != 0x3154524d) invalid();
+    auto version = codec.get(4);
+    if (version != 3 && version != 4 && version != 5) invalid();
+    auto workspace_count = version == 3 ? 10 : codec.get(4);
+    if (!workspace_count || workspace_count > restart_max_nodes || workspace_count > (bytes.size() - codec.position) / 23) invalid();
     RestartSnapshot result{};
+    result.workspaces.workspaces.resize(workspace_count);
+    result.owners.resize(workspace_count);
     result.workspaces.current = static_cast<std::uint32_t>(codec.get(4));
     auto previous = codec.get(4);
     if (previous) result.workspaces.previous = static_cast<std::uint32_t>(previous - 1);
@@ -334,6 +349,18 @@ RestartSnapshot decode_restart_snapshot(std::span<const std::uint8_t> bytes) {
     };
     read_geometry(result.floating_geometry);
     read_geometry(result.fullscreen_geometry);
+    if (version >= 5) {
+        auto name_count = codec.get(4);
+        if (name_count && name_count != workspace_count) invalid();
+        for (std::size_t i = 0; i < name_count; ++i) {
+            auto size = codec.get(4);
+            if (!size || size > 4096 || size > bytes.size() - codec.position) invalid();
+            std::string name;
+            name.reserve(size);
+            for (std::size_t j = 0; j < size; ++j) name.push_back(static_cast<char>(codec.get(1)));
+            result.workspace_names.push_back(std::move(name));
+        }
+    }
     if (codec.position != bytes.size()) invalid();
     validate_restart_snapshot(result);
     return result;

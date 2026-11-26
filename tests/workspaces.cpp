@@ -34,7 +34,14 @@ int main() {
     check(first.focused == 2 && second.focused == 1);
 
     mortar::Workspaces navigation;
-    std::array<bool, 10> visible{};
+    std::vector<bool> visible(10);
+    check(navigation.ensure(12));
+    check(!navigation.ensure(16384));
+    check(navigation.workspaces.size() == 13);
+    visible.resize(13);
+    visible[12] = true;
+    check(navigation.adjacent(false, visible) == 12);
+    visible[12] = false;
     visible[0] = true;
     check(!navigation.previous && navigation.adjacent(true, visible) == 0);
     check(!navigation.switch_to(0) && !navigation.previous);
@@ -46,7 +53,7 @@ int main() {
     check(navigation.switch_to(7) && navigation.previous == 4);
     check(navigation.adjacent(true, visible) == 0 && navigation.adjacent(false, visible) == 4);
     check(navigation.switch_to(*navigation.previous) && navigation.previous == 7);
-    check(!navigation.switch_to(10) && navigation.previous == 7);
+    check(!navigation.switch_to(13) && navigation.previous == 7);
 
     mortar::Workspaces nested;
     auto &source = nested.workspaces[0];

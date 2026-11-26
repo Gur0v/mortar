@@ -2,8 +2,39 @@
 
 #include <algorithm>
 #include <limits>
+#include <stdexcept>
+#include <unordered_set>
 
 namespace mortar {
+
+Outputs Outputs::restore(const std::vector<Output> &outputs,
+                         const std::vector<std::optional<std::string>> &owners,
+                         const std::optional<std::string> &focused, std::uint32_t workspace) {
+    if (owners.empty() || owners.size() > 16384 || workspace >= owners.size() ||
+        outputs.size() > owners.size() || outputs.empty() != !focused)
+        throw std::invalid_argument("invalid output snapshot");
+    std::unordered_set<std::string> names;
+    std::unordered_set<std::uint32_t> visible;
+    bool found_focus = false;
+    for (const auto &output : outputs) {
+        const auto &r = output.bounds;
+        if (output.name.empty() || output.name.size() > 255 || !names.insert(output.name).second ||
+            r.width <= 0 || r.height <= 0 || r.x > std::numeric_limits<int>::max() - r.width ||
+            r.y > std::numeric_limits<int>::max() - r.height || output.workspace >= owners.size() ||
+            !visible.insert(output.workspace).second || owners[output.workspace] != output.name)
+            throw std::invalid_argument("invalid output snapshot");
+        if (focused == output.name && output.workspace == workspace) found_focus = true;
+    }
+    if (focused && !found_focus) throw std::invalid_argument("invalid output snapshot");
+    for (const auto &owner : owners)
+        if (owner && !names.contains(*owner)) throw std::invalid_argument("invalid output snapshot");
+    Outputs result;
+    result.outputs_ = outputs;
+    result.owners_ = owners;
+    result.focused_ = focused;
+    result.focused_workspace_ = workspace;
+    return result;
+}
 
 bool Outputs::update(const std::vector<OutputGeometry> &geometries) {
     std::vector<OutputGeometry> active;
@@ -28,17 +59,18 @@ bool Outputs::update(const std::vector<OutputGeometry> &geometries) {
             *clone = geometry;
         }
     }
-    if (active.size() > owners_.size()) return false;
+    if (active.size() > 16384) return false;
 
     Outputs next = *this;
     next.outputs_.clear();
+    if (next.owners_.size() < active.size()) next.owners_.resize(active.size());
     for (const auto &geometry : active) {
         auto old = std::find_if(outputs_.begin(), outputs_.end(), [&](const auto &output) {
             return output.name == geometry.name;
         });
         if (old != outputs_.end()) next.outputs_.push_back({geometry.name, geometry.bounds, old->workspace});
     }
-    std::array<bool, 10> migrated{};
+    std::vector<bool> migrated(next.owners_.size());
     for (std::size_t i = 0; i < next.owners_.size(); ++i) {
         auto &owner = next.owners_[i];
         if (owner && std::none_of(active.begin(), active.end(), [&](const auto &output) {
@@ -120,8 +152,14 @@ bool Outputs::focus_output(const std::string &name) {
     return true;
 }
 
+bool Outputs::ensure(std::uint32_t workspace) {
+    if (workspace >= 16384) return false;
+    if (workspace >= owners_.size()) owners_.resize(static_cast<std::size_t>(workspace) + 1);
+    return true;
+}
+
 bool Outputs::switch_workspace(std::uint32_t workspace) {
-    if (workspace >= owners_.size() || !focused_) return false;
+    if (!focused_ || !ensure(workspace)) return false;
     auto visible = std::find_if(outputs_.begin(), outputs_.end(), [&](const auto &output) {
         return output.workspace == workspace;
     });

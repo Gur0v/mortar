@@ -23,6 +23,15 @@ int main() {
     check(tree.geometry({-3, 4, 8, 7}) ==
           (std::vector<Placement>{{1, {-3, 4, 2, 7}}, {2, {-1, 4, 3, 3}},
                                   {3, {-1, 7, 3, 4}}, {4, {2, 4, 3, 7}}}));
+    check(tree.window_path(2) == (std::vector<std::size_t>{1, 0}));
+    check(!tree.window_path(99));
+    check(Layout::leaf(1).window_path(1) == std::vector<std::size_t>{});
+    check(tree.parent_path({1, 0}) == std::vector<std::size_t>{1});
+    check(tree.parent_path({1}) == std::vector<std::size_t>{});
+    check(!tree.parent_path({}));
+    check(!tree.parent_path({3}));
+    check(!tree.parent_path({0, 0}));
+    check(!Layout::leaf(1).parent_path({0}));
     check(tree.contains(2));
     check(!tree.contains(5));
     check(!tree.insert(Layout::leaf(2)));
@@ -186,8 +195,8 @@ int main() {
     check(insertion.resize(51, Direction::right, 10, {0, 0, 100, 20}));
     check(insertion.insert_after(51, Layout::leaf(53)));
     check(insertion.geometry({0, 0, 100, 20}) ==
-          (std::vector<Placement>{{51, {0, 0, 30, 20}}, {53, {30, 0, 30, 20}},
-                                  {52, {60, 0, 40, 20}}}));
+          (std::vector<Placement>{{51, {0, 0, 40, 20}}, {53, {40, 0, 33, 20}},
+                                  {52, {73, 0, 27, 20}}}));
     check(!nested.resize(41, Direction::up, 1, {0, 0, 0, 0}));
     check(!nested.resize(41, static_cast<Direction>(-1), 1, {0, 0, 100, 100}));
     bool rejected = false;

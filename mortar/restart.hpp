@@ -26,10 +26,11 @@ struct RestartSnapshot {
     WorkspacesSnapshot workspaces;
     std::vector<ScratchpadEntry> scratchpad;
     std::vector<Output> outputs{};
-    std::array<std::optional<std::string>, 10> owners{};
+    std::vector<std::optional<std::string>> owners = std::vector<std::optional<std::string>>(10);
     std::optional<std::string> focused_output{};
     std::vector<RestartGeometry> floating_geometry{};
     std::vector<RestartGeometry> fullscreen_geometry{};
+    std::vector<std::string> workspace_names{};
     bool operator==(const RestartSnapshot &) const = default;
 };
 
