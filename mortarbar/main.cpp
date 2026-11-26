@@ -500,7 +500,6 @@ int main(int argc, char **argv) {
             label_start = i + 1;
             ++label_index;
         }
-        if (workspace_buttons && !label_index) workspace_width = measure("1").first + 12;
         auto block_width = [&](const mortarbar::StatusBlock& block, bool short_text) {
             const auto& text = short_text && block.short_text && !block.short_text->empty() ? *block.short_text : block.full_text;
             int width = measure(text, block.markup == "pango").first;
@@ -554,22 +553,6 @@ int main(int argc, char **argv) {
             workspace_right = std::min(workspace_right + width, status_left);
             start = i + 1;
             ++index;
-        }
-        if (workspace_buttons && workspace_bounds.empty()) {
-            auto [text_width, text_height] = measure("1");
-            int width = text_width + 12;
-            set_color({}, "#4c7899");
-            cairo_rectangle(cr, workspace_right, 0, width, height);
-            cairo_fill(cr);
-            set_color({}, color_names[2].c_str());
-            cairo_rectangle(cr, workspace_right + 1, 1, std::max(0, width - 2), std::max(0, static_cast<int>(height) - 2));
-            cairo_fill(cr);
-            set_color({}, color_names[1].c_str());
-            cairo_move_to(cr, workspace_right + 6, (height - text_height) / 2);
-            pango_cairo_show_layout(cr, layout);
-            workspace_bounds.emplace_back(workspace_right, std::min(workspace_right + width, status_left));
-            bar.workspace_ids.push_back(0);
-            workspace_right = std::min(workspace_right + width, status_left);
         }
         cairo_restore(cr);
         status_bounds.assign(blocks.size(), {0, 0});

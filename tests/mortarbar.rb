@@ -93,6 +93,12 @@ begin
   current = X11.XInternAtom(connection, '_NET_CURRENT_DESKTOP', 0)
   clients = X11.XInternAtom(connection, '_NET_CLIENT_LIST', 0)
   desktop = X11.XInternAtom(connection, '_NET_WM_DESKTOP', 0)
+  sleep 0.2
+  image = X11.XGetImage(connection, window, 0, 0, 100, bar_height, -1, 2)
+  abort 'cannot capture empty workspace bar' if image.null?
+  colors = (0...100).map { |x| X11.XGetPixel(image, x, 1) & 0xffffff }
+  X11.XDestroyImage(image)
+  abort 'empty workspace list drew a button' if colors.include?(0x285577) || colors.include?(0x4c7899)
   labels = "1\0 2\0".b
   X11.XChangeProperty(connection, root, names, utf8, 8, 0, labels, labels.bytesize)
   X11.XChangeProperty(connection, root, current, 6, 32, 0, [0].pack('L!'), 1)
