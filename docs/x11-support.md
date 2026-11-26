@@ -1,32 +1,80 @@
-# X11 support matrix
+# X11 support
 
-This matrix describes implemented features, not full ICCCM, EWMH, RandR, or XKB compliance. Test references identify exercised behavior, not exhaustive protocol coverage.
+These lists describe implemented features, not full protocol compliance. Tests cover selected behavior, not every client, server, or protocol interaction.
 
-| Protocol and feature | Current implementation | Test coverage and limitations |
-| --- | --- | --- |
-| ICCCM: window lifecycle | Manages mapped and eligible existing root children; ignores override-redirect windows. Sets `WM_STATE` to Normal, Iconic, or Withdrawn as appropriate. Handles initial iconic `WM_HINTS`, `WM_CHANGE_STATE` to Iconic, and remapping iconic windows. | `tests/x11.rb` and `tests/client.cpp` exercise existing windows, iconic state, withdrawal, restart, and shutdown. This is not a complete lifecycle or session-management implementation. |
-| ICCCM: input focus | Reads the input flag in `WM_HINTS`; sends `WM_TAKE_FOCUS` when listed in `WM_PROTOCOLS`. Focus follows pointer entry and is restored on workspace changes. | `tests/client.cpp` exercises the four input/take-focus combinations, pointer focus, and workspace focus restoration. Other focus interactions are not comprehensively tested. |
-| ICCCM: size and configure | Applies valid `WM_NORMAL_HINTS` minimum, maximum, base, resize increment, and aspect values within the tile when possible, and to floating window resize actions. Managed configure requests receive a synthetic `ConfigureNotify`; unmanaged requests are forwarded. | `tests/size-hints.cpp` and `tests/floating-size-hints.cpp` cover selected calculations; `tests/client.cpp` exercises geometry. Conflicting or impossible hints may fall back to sizes that do not satisfy every constraint. Other ICCCM hints and protocols are not generally implemented. |
-| EWMH: WM identity | Publishes `_NET_SUPPORTED`, `_NET_SUPPORTING_WM_CHECK`, and a supporting window with `_NET_WM_NAME` set to `mortar`. Advertises desktop, WM identity, fullscreen state, window type, dock, and strut atoms. Advertisement does not imply support for every associated behavior. | `tests/client.cpp` checks the supporting-window relationship; `tests/x11.rb` checks selected startup and shutdown state. This list is not a claim of complete EWMH support. |
-| ICCCM: close | The focused-window close action sends `WM_DELETE_WINDOW` through `WM_PROTOCOLS` when advertised. Unsupported clients are not forcibly killed. | `tests/actions.cpp` checks unsupported, sent, and error results and the message timestamp; `tests/client.cpp` checks the default and Scheme close actions. |
-| ICCCM: WM selection and manager announcement | Claims root substructure redirection and the screen's `WM_Sn` selection, refusing to replace an existing owner. Announces ownership with `MANAGER` and shuts down when ownership is lost. | `tests/wm-selection.cpp` checks ownership, announcement, refusal to replace an owner, and selection-loss shutdown. `tests/x11.rb` checks that a second WM fails before configuration executes. Selection conversion targets are not implemented. |
-| ICCCM: transient, client leader, colormap | Windows with `WM_TRANSIENT_FOR` are managed as floating. No handling of `WM_CLIENT_LEADER` or `WM_COLORMAP_WINDOWS` was found. | `tests/client.cpp` exercises transient floating windows. No client-leader or colormap coverage was found. |
-| EWMH: desktops | Publishes ten desktops and the current desktop. Sets each managed window's `_NET_WM_DESKTOP`; handles requests to change the current desktop or move a window. Restores valid stored desktop values during startup. | `tests/client.cpp` exercises desktop properties, requests, focus, and restart. Only indices 0–9 are accepted; special desktop values are not implemented. |
-| EWMH: client lists and active window | Publishes `_NET_CLIENT_LIST`, `_NET_CLIENT_LIST_STACKING`, and `_NET_ACTIVE_WINDOW`. Handles active-window requests; application requests for hidden workspaces do not switch workspaces. | `tests/ewmh.cpp` exercises publication, activation, stacking, and removal. Hidden application requests are not marked urgent. |
-| EWMH: desktop names and workarea | Publishes numbered `_NET_DESKTOP_NAMES` and one `_NET_WORKAREA` rectangle per workspace. Each rectangle is the owning output's usable area; unassigned workspaces use the focused output. | `tests/client.cpp` checks desktop names, bar workspace interaction, and workareas with a bar. Multi-output workarea interoperability is not established. |
-| EWMH: close | Handles `_NET_CLOSE_WINDOW` for managed windows using the ICCCM close action and request timestamp. Unsupported clients are not forcibly killed. | `tests/client.cpp` checks a request targeting an unfocused window and its timestamp. |
-| EWMH: window types and floating | Dialog-type and transient windows are managed as floating; floating can also be toggled by the user. Other window types are not generally implemented. | `tests/client.cpp` exercises dialog and transient floating behavior. |
-| EWMH: fullscreen | Handles initial `_NET_WM_STATE_FULLSCREEN` and add, remove, and toggle client messages. Fullscreen covers the output bounds, including reserved dock space; one fullscreen window is allowed per workspace. Other state atoms are preserved but not implemented. | `tests/client.cpp` exercises fullscreen requests, focus, transient dialogs, and withdrawal. Other EWMH state behavior is not generally implemented. |
-| EWMH: docks and struts | Recognizes dock-type windows outside the tiling layout. Valid `_NET_WM_STRUT_PARTIAL` or fallback `_NET_WM_STRUT` properties reserve root-edge space on overlapping outputs; property changes recalculate layout. | Strut handling is limited to recognized docks and rectangular per-output usable areas. |
-| RandR: version and topology | Negotiates RandR up to 1.5. Uses active monitor objects on 1.5 or later, connected outputs with active CRTCs on 1.2–1.4, and root geometry when RandR is absent, older, or has no active outputs. Reacts to screen, CRTC, output, and resource notifications. Workspaces are displayed per output. | `tests/randr.cpp` and `tests/outputs.cpp` cover discovery and output/workspace state; full hotplug and multi-monitor interoperability are not established. |
-| mortarbar: output placement | Creates a top bar for each distinct active output. Root-top bars publish partial struts; `_MORTAR_BAR_OUTPUT` reserves output-local space in Mortar for other bars. Uses root geometry when RandR is unavailable. Reacts to RandR topology changes. On multiple outputs, bars show their output's visible and occupied workspaces; status is repeated. | Output-local reservations are specific to Mortar. Single-output and invalid or unavailable metadata retain the global desktop list. Multi-output and hotplug behavior need testing on real RandR hardware. |
-| XKB: workspace keys | Uses the core XKB keyboard and xkbcommon keymap to resolve digit keysyms, groups, levels, and modifiers. Alt plus digit switches workspace; an additional Shift moves the focused window, or Control when Shift is required to produce the digit. Ignores detected lock modifiers and reloads on keyboard or map changes. | `tests/x11.rb` and `tests/client.cpp` exercise key grabs, remapping, French layout, and group changes. `tests/keyboard.cpp` exercises mapping, lock handling, shifted and other level modifiers, and reload. Missing XKB, an unavailable Alt modifier, or conflicting grabs can prevent startup. |
-| XKB: devices, groups, maps, locks, and grabs | Uses the core keyboard device, not separate per-device bindings. Resolves keys across keymap groups and levels and selects the group from each key press. Reloads on XKB map or new-keyboard notifications. Detects Caps, Num, and Scroll lock modifiers and grabs combinations with detected locks. Scheme can register keysym/modifier callbacks; failed grab replacement retains previous grabs. | `tests/keyboard.cpp` exercises replacement, reload, failure, removal, lock handling, and multiple level modifiers. `tests/x11.rb` and `tests/client.cpp` exercise remapping, French layout, group changes, and grab conflicts. Per-device behavior and all possible maps and lock configurations are unverified. |
+## ICCCM
 
-Mortar publishes the private root property `_MORTAR_OUTPUT_WORKSPACES` as 32-bit CARDINALs. Version 1 contains the version and output count, followed for each output by x, y, width, height, visible workspace, focused flag, workspace indices, and a `0xffffffff` terminator. Coordinates use two's-complement encoding. The workspace list includes the visible workspace and occupied workspaces owned by that output. Mortarbar validates the property and falls back to EWMH metadata when it is absent, invalid, or does not match its output. This private property is not an EWMH interface.
+**Supported**
 
-The integration harness uses Xvfb and XTEST. Its scenarios cover a subset of behavior, not interoperability with every X server, client, keyboard map, or protocol feature. Source: `mortar/main.cpp` and `mortar/keyboard.cpp`; tests: `tests/x11.rb`, `tests/client.cpp`, `tests/keyboard.cpp`, and `tests/size-hints.cpp`.
+- Manage mapped windows and eligible existing root children; ignore override-redirect windows. Set `WM_STATE` for normal, iconic, and withdrawn windows, including initial iconic state, iconify requests, and remapping.
+- Read the `WM_HINTS` input flag and send `WM_TAKE_FOCUS` when advertised. Focus follows pointer entry and is restored when changing workspaces.
+- Send `WM_DELETE_WINDOW` when advertised. Clients without it are not forcibly killed.
+- Claim root substructure redirection and the screen's `WM_Sn` selection, announce ownership with `MANAGER`, and exit on selection loss. An existing owner is not replaced.
+- Manage `WM_TRANSIENT_FOR` windows as floating.
 
-## Urgency
+**Partial**
 
-Mortar marks hidden windows urgent for application activation requests, and recognizes `WM_HINTS` urgency and `_NET_WM_STATE_DEMANDS_ATTENTION` requests. Focusing a window clears its urgency. The bar highlights workspaces containing urgent windows in red. Pager activation may switch workspaces.
+- Apply valid minimum, maximum, base, increment, and aspect size hints within tiles when possible and to floating resize actions. Conflicting or impossible hints may not all be satisfied.
+- Send synthetic `ConfigureNotify` events for managed configure requests and forward unmanaged requests. Lifecycle and focus handling do not cover every ICCCM interaction.
+
+**Unsupported**
+
+- Selection conversion targets, `WM_CLIENT_LEADER`, and `WM_COLORMAP_WINDOWS`. Other hints and protocols are not generally implemented.
+
+## EWMH
+
+**Supported**
+
+- Publish `_NET_SUPPORTED`, `_NET_SUPPORTING_WM_CHECK`, and a supporting window named `mortar`. Advertised atoms do not imply complete support for their associated behavior.
+- Publish desktop names, current desktop, client lists, stacking order, active window, and each managed window's `_NET_WM_DESKTOP`. Handle desktop switching and window movement requests; restore valid stored desktops on startup.
+- Handle activation requests. Application requests for hidden workspaces mark the window urgent instead of switching; pager requests may switch workspaces.
+- Handle `_NET_CLOSE_WINDOW` through the ICCCM close action using the request timestamp.
+- Handle initial fullscreen state and add, remove, and toggle requests. Fullscreen covers output bounds, including dock space; each workspace permits one fullscreen window.
+- Recognize `WM_HINTS` urgency and initial or requested `_NET_WM_STATE_DEMANDS_ATTENTION`. Focus clears urgency; mortarbar highlights urgent workspaces in red.
+- Manage dialog windows as floating and recognized docks outside the tiling layout. Valid `_NET_WM_STRUT_PARTIAL`, or fallback `_NET_WM_STRUT`, reserves root-edge space on overlapping outputs; changes recalculate layout.
+
+**Partial**
+
+- `_NET_WORKAREA` contains one rectangle per workspace: its owning output's usable area, or the focused output's area for unassigned workspaces. Multi-output interoperability is not established.
+- Struts apply only to recognized docks and produce rectangular per-output usable areas. Other state atoms are preserved, but other state and window-type behavior is not generally implemented.
+
+**Unsupported**
+
+- Special `_NET_WM_DESKTOP` values and most other EWMH features.
+
+## RandR
+
+**Supported**
+
+- Negotiate up to RandR 1.5. Use active monitor objects with 1.5 or later, or connected outputs with active CRTCs with 1.2–1.4. Fall back to root geometry if RandR is absent, older, or has no active outputs.
+- React to screen, CRTC, output, and resource notifications. Display workspaces per output.
+- mortarbar creates a bar for each selected active output, repeats status, and shows that output's visible and occupied workspaces. It follows topology changes and falls back to root geometry without RandR.
+
+**Partial**
+
+- Root-edge bars publish partial struts. `_MORTAR_BAR_OUTPUT` reserves output-local space for other bars only in mortar.
+- `_MORTAR_OUTPUT_WORKSPACES` is a private root property, not an EWMH interface. Version 1 uses 32-bit CARDINALs: version and output count, then x, y, width, height, visible workspace, focused flag, and workspace indices for each output, terminated by `0xffffffff`. Coordinates use two's-complement encoding. The list includes the visible and occupied workspaces owned by that output. mortarbar validates this metadata and falls back to the global EWMH desktop list if it is missing, invalid, or does not match the output.
+## XKB
+
+**Supported**
+
+- Use the core XKB keyboard and xkbcommon to resolve keysyms across groups and levels, including Scheme keysym/modifier callbacks. Use the group from each key press.
+- Alt plus a digit switches workspace. Add Shift to move the focused window, or Control when Shift is needed to produce the digit.
+- Detect Caps, Num, and Scroll lock modifiers, grab their combinations, and reload on map or new-keyboard notifications. Failed grab replacement retains previous grabs.
+
+**Partial**
+
+- Missing XKB, an unavailable Alt modifier, or conflicting grabs can prevent startup. Not all keyboard maps and lock configurations have been verified.
+
+**Unsupported**
+
+- Separate per-device bindings; mortar uses the core keyboard.
+
+## Tests
+
+- `tests/client.cpp`, `tests/x11.rb`, `tests/actions.cpp`, and `tests/wm-selection.cpp` exercise lifecycle, focus, geometry, close actions, selection ownership, restart, and shutdown.
+- `tests/size-hints.cpp` and `tests/floating-size-hints.cpp` cover selected size calculations. `tests/ewmh.cpp` covers client lists, activation, stacking, and urgency.
+- `tests/randr.cpp` and `tests/outputs.cpp` cover discovery and output/workspace state. Bar tests cover selected output and workspace behavior.
+- `tests/keyboard.cpp`, `tests/x11.rb`, and `tests/client.cpp` exercise key grabs, remapping, lock handling, French layout, and group changes.
+
+Integration tests use Xvfb and XTEST. They do not establish interoperability with every X server, client, keyboard map, or protocol feature.
