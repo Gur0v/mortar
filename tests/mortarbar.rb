@@ -163,7 +163,7 @@ begin
   abort 'empty status block drawn' if colors.include?(0xff00ff)
   abort 'urgent background missing' unless colors.include?(0x900000)
   abort 'urgent border missing' unless colors.include?(0x2f343a)
-  abort 'zero-width separator missing' unless colors.include?(0x666666)
+  abort 'zero-width separator antialiasing incorrect' unless colors.include?(0x333333) && !colors.include?(0x666666)
   abort 'status background missing' unless colors.include?(0x00ff00)
   abort 'status border missing' unless colors.include?(0x0000ff)
   abort 'status foreground missing' unless colors.any? { |pixel| ((pixel >> 16) & 0xff) > ((pixel >> 8) & 0xff) + 32 }

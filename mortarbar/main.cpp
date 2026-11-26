@@ -572,8 +572,10 @@ int main(int argc, char **argv) {
             cairo_clip(cr);
             if (i < blocks.size() && block.separator) {
                 set_color({}, "#666666");
-                cairo_rectangle(cr, right + gap / 2, std::min<int>(3, height / 2), 1, std::max<int>(0, height - 6));
-                cairo_fill(cr);
+                cairo_set_line_width(cr, 1);
+                cairo_move_to(cr, right + gap / 2, 3);
+                cairo_line_to(cr, right + gap / 2, static_cast<int>(height) - 3);
+                cairo_stroke(cr);
             }
             int padding = std::min(status_padding, static_cast<int>(height) / 2);
             int content_height = height - 2 * padding;
