@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <unordered_set>
 #include <stdexcept>
 #include <utility>
 
@@ -9,6 +10,47 @@ namespace mortar {
 
 Layout::Layout(bool leaf, std::uint32_t window, Split direction, std::vector<Layout> children)
     : leaf_(leaf), window_(window), direction_(direction), children_(std::move(children)) {}
+
+LayoutSnapshot Layout::snapshot() const {
+    LayoutSnapshot result{leaf_, window_, direction_, {}, focus_order_, weights_, resized_};
+    for (const auto &child : children_) result.children.push_back(child.snapshot());
+    return result;
+}
+
+Layout Layout::restore(const LayoutSnapshot &snapshot) {
+    std::unordered_set<std::uint32_t> windows;
+    auto restore_node = [&](auto &&self, const LayoutSnapshot &node, std::size_t depth) -> Layout {
+        if (depth > 1024 || (node.direction != Split::horizontal && node.direction != Split::vertical))
+            throw std::invalid_argument("invalid layout snapshot");
+        if (node.leaf) {
+            if (!node.children.empty() || !node.focus_order.empty() || !node.weights.empty() ||
+                node.resized || node.direction != Split::horizontal || !windows.insert(node.window).second)
+                throw std::invalid_argument("invalid layout snapshot");
+            return Layout::leaf(node.window);
+        }
+        if (node.window != 0 || node.focus_order.size() != node.children.size() ||
+            node.weights.size() != node.children.size())
+            throw std::invalid_argument("invalid layout snapshot");
+        std::vector<bool> seen(node.children.size());
+        for (auto index : node.focus_order) {
+            if (index >= seen.size() || seen[index]) throw std::invalid_argument("invalid layout snapshot");
+            seen[index] = true;
+        }
+        double total = 0;
+        for (double weight : node.weights) {
+            if (!(weight > 0 && weight <= std::numeric_limits<double>::max())) throw std::invalid_argument("invalid layout snapshot");
+            total += weight;
+        }
+        if (total > std::numeric_limits<double>::max()) throw std::invalid_argument("invalid layout snapshot");
+        Layout result(false, 0, node.direction, {});
+        for (const auto &child : node.children) result.children_.push_back(self(self, child, depth + 1));
+        result.focus_order_ = node.focus_order;
+        result.weights_ = node.weights;
+        result.resized_ = node.resized;
+        return result;
+    };
+    return restore_node(restore_node, snapshot, 0);
+}
 
 Layout Layout::leaf(std::uint32_t window) {
     return Layout(true, window, Split::horizontal, {});
@@ -106,6 +148,20 @@ bool Layout::set_split(std::uint32_t focused, Split direction) {
     return false;
 }
 
+bool Layout::toggle_split(std::uint32_t focused) {
+    if (!focused && !leaf_ && children_.empty()) {
+        direction_ = direction_ == Split::horizontal ? Split::vertical : Split::horizontal;
+        return true;
+    }
+    for (auto &child : children_) {
+        if (child.leaf_ && child.window_ == focused) {
+            return set_split(focused, direction_ == Split::horizontal ? Split::vertical : Split::horizontal);
+        }
+        if (!child.leaf_ && child.toggle_split(focused)) return true;
+    }
+    return false;
+}
+
 bool Layout::focus(std::uint32_t window) {
     if (leaf_) return window_ == window;
     for (std::size_t i = 0; i < children_.size(); ++i) {
@@ -117,7 +173,7 @@ bool Layout::focus(std::uint32_t window) {
     return false;
 }
 
-std::uint32_t Layout::neighbor(std::uint32_t focused, Direction direction) const {
+std::uint32_t Layout::neighbor(std::uint32_t focused, Direction direction, bool allow_wrap) const {
     if (direction != Direction::left && direction != Direction::right &&
         direction != Direction::up && direction != Direction::down) return 0;
     const bool previous = direction == Direction::left || direction == Direction::up;
@@ -140,7 +196,7 @@ std::uint32_t Layout::neighbor(std::uint32_t focused, Direction direction) const
         return false;
     };
     if (!find(find, *this)) return 0;
-    const Layout *target = next ? next : wrap;
+    const Layout *target = next ? next : (allow_wrap ? wrap : nullptr);
     while (target && !target->leaf_) {
         if (target->children_.empty()) return 0;
         target = &target->children_[target->focus_order_.front()];

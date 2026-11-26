@@ -72,13 +72,13 @@ begin
   geometry = Array.new(6) { Fiddle::Pointer.malloc(Fiddle::SIZEOF_INT) }
   abort 'cannot get bar geometry' if X11.XGetGeometry(connection, window, root_return, *geometry) == 0
   bar_height = geometry[3][0, Fiddle::SIZEOF_INT].unpack1('I')
-  abort 'default bar too short' unless bar_height >= 24
-  spans = reservations.map { |reservation| [reservation[2], reservation[8], reservation[9]] }.sort
+  abort 'default bar height incorrect' unless bar_height > 6
+  spans = reservations.map { |reservation| [reservation[3], reservation[10], reservation[11]] }.sort
   abort 'bar strut incorrect' unless spans == (multi ? [[bar_height, 0, 399], [bar_height, 400, 799]] : [[bar_height, 0, 799]])
   if multi
     geometry = Array.new(6) { Fiddle::Pointer.malloc(Fiddle::SIZEOF_INT) }
     abort 'cannot get lower bar geometry' if X11.XGetGeometry(connection, windows[2], root_return, *geometry) == 0
-    abort 'lower bar geometry incorrect' unless geometry.first(4).map { |v| v[0, Fiddle::SIZEOF_INT].unpack1('i') } == [0, 300, 800, bar_height]
+    abort 'lower bar geometry incorrect' unless geometry.first(4).map { |v| v[0, Fiddle::SIZEOF_INT].unpack1('i') } == [0, 500 - bar_height, 800, bar_height]
     local = X11.XInternAtom(connection, '_MORTAR_BAR_OUTPUT', 0)
     result = X11.XGetWindowProperty(connection, windows[2], local, 0, 4, 0, 6, actual_type, actual_format, items, remaining, data)
     abort 'local bar property missing' unless result == 0 && items[0, Fiddle::SIZEOF_LONG].unpack1('L!') == 4
@@ -101,22 +101,27 @@ begin
   X11.XSync(connection, 0)
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
   loop do
-    image = X11.XGetImage(connection, window, 0, 0, 100, 24, -1, 2)
+    image = X11.XGetImage(connection, window, 0, 0, 100, bar_height, -1, 2)
     abort 'cannot capture bar' if image.null?
-    colors = (0...100).map { |x| X11.XGetPixel(image, x, 0) & 0xffffff }
+    colors = (0...100).map { |x| X11.XGetPixel(image, x, 1) & 0xffffff }
     X11.XDestroyImage(image)
-    break if colors.include?(0x285577) && colors.include?(0x333333)
+    break if colors.include?(0x285577) && colors.include?(0x222222) && colors.include?(0x333333)
     if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
       abort "workspace backgrounds missing: active=#{colors.include?(0x285577)}, occupied=#{colors.include?(0x333333)}, observed=#{colors.uniq.map { |color| format('#%06x', color) }.join(', ')}"
     end
     sleep 0.02
   end
+  image = X11.XGetImage(connection, window, 0, 0, 100, bar_height, -1, 2)
+  abort 'focused border incorrect' unless X11.XGetPixel(image, 0, 0) & 0xffffff == 0x4c7899
+  abort 'workspace inset incorrect' unless X11.XGetPixel(image, 1, 1) & 0xffffff == 0x285577
+  abort 'bar background incorrect' unless X11.XGetPixel(image, 99, 0) & 0xffffff == 0
+  X11.XDestroyImage(image)
   X11.XChangeProperty(connection, window, desktop, 6, 32, 0, [0].pack('L!'), 1)
   X11.XSync(connection, 0)
   sleep 0.2
-  image = X11.XGetImage(connection, window, 0, 0, 100, 24, -1, 2)
-  colors = (0...100).map { |x| X11.XGetPixel(image, x, 0) & 0xffffff }
-  abort 'stale occupied workspace background' if colors.include?(0x333333)
+  image = X11.XGetImage(connection, window, 0, 0, 100, bar_height, -1, 2)
+  colors = (0...100).map { |x| X11.XGetPixel(image, x, 1) & 0xffffff }
+  abort 'inactive workspace background missing' unless colors.include?(0x222222)
   X11.XDestroyImage(image)
   if multi
     metadata = X11.XInternAtom(connection, '_MORTAR_OUTPUT_WORKSPACES', 0)
@@ -126,19 +131,19 @@ begin
     X11.XSync(connection, 0)
     sleep 0.2
     colors_by_bar = windows.map do |bar_window|
-      image = X11.XGetImage(connection, bar_window, 0, 0, 100, 24, -1, 2)
-      colors = (0...100).map { |x| X11.XGetPixel(image, x, 0) & 0xffffff }
+      image = X11.XGetImage(connection, bar_window, 0, 0, 100, bar_height, -1, 2)
+      colors = (0...100).map { |x| X11.XGetPixel(image, x, 1) & 0xffffff }
       X11.XDestroyImage(image)
       colors
     end
     abort 'focused output metadata ignored' unless colors_by_bar[0].include?(0x285577)
-    abort 'visible output metadata ignored' unless colors_by_bar[1].include?(0x333333) && !colors_by_bar[1].include?(0x285577)
+    abort 'visible output metadata ignored' unless colors_by_bar[1].include?(0x5f676a) && !colors_by_bar[1].include?(0x285577)
     values[0] = 2
     X11.XChangeProperty(connection, root, metadata, 6, 32, 0, values.pack('L!*'), values.size)
     X11.XSync(connection, 0)
     sleep 0.2
-    image = X11.XGetImage(connection, windows[1], 0, 0, 100, 24, -1, 2)
-    colors = (0...100).map { |x| X11.XGetPixel(image, x, 0) & 0xffffff }
+    image = X11.XGetImage(connection, windows[1], 0, 0, 100, bar_height, -1, 2)
+    colors = (0...100).map { |x| X11.XGetPixel(image, x, 1) & 0xffffff }
     X11.XDestroyImage(image)
     abort 'invalid metadata did not fall back' unless colors.include?(0x285577)
   end
@@ -146,9 +151,9 @@ begin
   X11.XChangeProperty(connection, root, names, utf8, 8, 0, long_name, long_name.bytesize)
   X11.XSync(connection, 0)
   sleep 0.2
-  image = X11.XGetImage(connection, window, 0, 0, (multi ? 400 : 800), 24, -1, 2)
+  image = X11.XGetImage(connection, window, 0, 0, (multi ? 400 : 800), bar_height, -1, 2)
   abort 'cannot capture bar' if image.null?
-  colors = (multi ? (200...400) : (600...800)).flat_map { |x| (0...24).map { |y| X11.XGetPixel(image, x, y) & 0xffffff } }
+  colors = (multi ? (200...400) : (600...800)).flat_map { |x| (0...bar_height).map { |y| X11.XGetPixel(image, x, y) & 0xffffff } }
   abort 'urgent background missing' unless colors.include?(0x900000)
   abort 'urgent border missing' unless colors.include?(0x2f343a)
   abort 'disabled separator drawn' if colors.include?(0x666666)

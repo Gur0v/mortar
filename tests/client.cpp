@@ -39,6 +39,24 @@ int main(int argc, char **argv) {
         xcb_flush(c);
         return EXIT_SUCCESS;
     }
+    if (argc == 2 && (std::strcmp(argv[1], "gaps") == 0 || std::strcmp(argv[1], "gaps-large") == 0)) {
+        auto window = xcb_generate_id(c);
+        xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, 100, 100, 0,
+                          XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+        xcb_map_window(c, window);
+        xcb_flush(c);
+        const bool large = std::strcmp(argv[1], "gaps-large") == 0;
+        for (int i = 0; i < 100; ++i) {
+            std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
+            if (geometry && (large ? geometry->width == 1 && geometry->height == 1 :
+                geometry->x == 15 && geometry->y == 15 &&
+                geometry->width == screen->width_in_pixels - 30 &&
+                geometry->height == screen->height_in_pixels - 30)) return EXIT_SUCCESS;
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        return EXIT_FAILURE;
+    }
     if (argc == 2 && std::strcmp(argv[1], "borders") == 0) {
         bool rgb_visual = false;
         for (auto depths = xcb_screen_allowed_depths_iterator(screen); depths.rem; xcb_depth_next(&depths)) {
@@ -747,7 +765,7 @@ int main(int argc, char **argv) {
                 xcb_flush(c);
                 return id;
             };
-            if (!shortcut(scheme ? 'b' : 'v')) return EXIT_FAILURE;
+            if (!shortcut(scheme ? 'z' : 'e')) return EXIT_FAILURE;
             auto second = create();
             if (!tiled(window, 0, 0, 800, 300) || !tiled(second, 0, 300, 800, 300) || !focused_on(second)) return EXIT_FAILURE;
             if (!shortcut(scheme ? 'c' : 0xff52) || !focused_on(window) || !shortcut(scheme ? 'e' : 0xff54) || !focused_on(second)) return EXIT_FAILURE;

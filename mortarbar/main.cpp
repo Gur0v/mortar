@@ -69,14 +69,14 @@ std::vector<std::uint8_t> property(xcb_connection_t* c, xcb_window_t window, xcb
 
 int main(int argc, char **argv) {
     std::uint16_t height = 0;
-    int status_padding = 0;
-    int status_edge_padding = 8;
-    bool bottom = false;
+    int status_padding = 1;
+    int status_edge_padding = 3;
+    bool bottom = true;
     bool hidden = false;
     bool workspace_buttons = true;
     bool wrap_scroll = false;
     std::string font_name = "monospace 10";
-    std::array<std::uint32_t, 4> colors{0x222222, 0xffffff, 0x285577, 0x333333};
+    std::array<std::uint32_t, 4> colors{0x000000, 0xffffff, 0x285577, 0x222222};
     std::vector<std::string_view> selected_outputs;
     int command = 1;
     if (argc > 1 && std::string_view(argv[1]) == "--mortar-settings") {
@@ -209,7 +209,7 @@ int main(int argc, char **argv) {
         pango_layout_set_font_description(layout, font);
         int text_height = 0;
         pango_layout_get_pixel_size(layout, nullptr, &text_height);
-        height = static_cast<std::uint16_t>(std::clamp(static_cast<std::int64_t>(text_height) + 6, std::int64_t{24}, std::int64_t{65535}));
+        height = static_cast<std::uint16_t>(std::clamp(static_cast<std::int64_t>(text_height) + 6, std::int64_t{1}, std::int64_t{65535}));
         pango_font_description_free(font);
         g_object_unref(layout);
         cairo_destroy(cr);
@@ -444,15 +444,6 @@ int main(int argc, char **argv) {
         auto urgent_bytes = property(c, screen->root, urgent_workspaces, XCB_ATOM_CARDINAL, 32);
         std::vector<std::uint32_t> urgent(urgent_bytes.size() / 4);
         if (!urgent.empty()) std::memcpy(urgent.data(), urgent_bytes.data(), urgent_bytes.size());
-        std::vector<std::uint32_t> occupied;
-        for (auto window : watched_clients) {
-            auto value = property(c, window, desktop, XCB_ATOM_CARDINAL, 32);
-            if (value.size() == sizeof(std::uint32_t)) {
-                std::uint32_t workspace;
-                std::memcpy(&workspace, value.data(), sizeof(workspace));
-                occupied.push_back(workspace);
-            }
-        }
         auto& selected = bar.selected;
         selected = 0;
         workspace_bounds.clear();
@@ -504,19 +495,20 @@ int main(int argc, char **argv) {
                 ++label_index;
                 continue;
             }
-            std::string label = label_index == selected ? "[" : " ";
-            label.append(reinterpret_cast<const char*>(raw.data() + label_start), i - label_start);
-            label += label_index == selected ? "] " : "  ";
-            workspace_width = std::min<int>(bar.width, workspace_width + std::min<int>(bar.width, measure(label).first));
+            std::string label(reinterpret_cast<const char*>(raw.data() + label_start), i - label_start);
+            workspace_width = std::min<int>(bar.width, workspace_width + std::min<int>(bar.width, measure(label).first + 12));
             label_start = i + 1;
             ++label_index;
         }
-        if (workspace_buttons && !label_index) workspace_width = measure("[1] ").first;
+        if (workspace_buttons && !label_index) workspace_width = measure("1").first + 12;
         auto block_width = [&](const mortarbar::StatusBlock& block, bool short_text) {
             const auto& text = short_text && block.short_text && !block.short_text->empty() ? *block.short_text : block.full_text;
             int width = measure(text, block.markup == "pango").first;
             int minimum = block.min_width_text ? measure(*block.min_width_text, block.markup == "pango").first : block.min_width.value_or(0);
-            return std::min<int>(bar.width + 1, std::max(std::min<int>(width, bar.width + 1), std::clamp(minimum, 0, static_cast<int>(bar.width) + 1)) + 12);
+            int borders = (block.border || block.urgent) ?
+                (block.border_left.value_or(1) > 0 ? block.border_left.value_or(1) + 3 : 0) +
+                (block.border_right.value_or(1) > 0 ? block.border_right.value_or(1) + 3 : 0) : 0;
+            return std::min<int>(bar.width + 1, std::max(std::min<int>(width, bar.width + 1), std::clamp(minimum, 0, static_cast<int>(bar.width) + 1)) + borders);
         };
         auto total_width = [&](bool short_text) {
             int total = 0;
@@ -528,7 +520,7 @@ int main(int argc, char **argv) {
         };
         bool use_short = total_width(false) > std::max(0, static_cast<int>(bar.width) - 8 - status_edge_padding - workspace_width);
         int status_left = std::max(8, static_cast<int>(bar.width) - status_edge_padding - total_width(use_short));
-        int workspace_right = 8;
+        int workspace_right = 0;
         cairo_save(cr);
         cairo_rectangle(cr, 0, 0, status_left, height);
         cairo_clip(cr);
@@ -539,18 +531,23 @@ int main(int argc, char **argv) {
                 ++index;
                 continue;
             }
-            std::string label = index == selected ? "[" : " ";
-            label.append(reinterpret_cast<const char*>(raw.data() + start), i - start);
-            label += index == selected ? "] " : "  ";
-            auto [width, text_height] = measure(label);
+            std::string label(reinterpret_cast<const char*>(raw.data() + start), i - start);
+            auto [text_width, text_height] = measure(label);
+            int width = text_width + 12;
             bool is_urgent = std::find(urgent.begin(), urgent.end(), index) != urgent.end();
-            if (is_urgent || index == selected || std::find(occupied.begin(), occupied.end(), index) != occupied.end()) {
-                set_color({}, is_urgent ? "#900000" : color_names[index == selected && (!valid || bar_focused) ? 2 : 3].c_str());
-                cairo_rectangle(cr, workspace_right, 0, width, height);
-                cairo_fill(cr);
-            }
-            set_color({}, color_names[1].c_str());
-            cairo_move_to(cr, workspace_right, (height - text_height) / 2);
+            bool focused = index == selected && (!valid || bar_focused);
+            bool visible = index == selected && valid && !bar_focused;
+            set_color({}, is_urgent ? "#900000" : focused ? color_names[2].c_str() : visible ? "#5f676a" : color_names[3].c_str());
+            cairo_rectangle(cr, workspace_right, 0, width, height);
+            cairo_fill(cr);
+            set_color({}, is_urgent ? "#2f343a" : focused ? "#4c7899" : "#333333");
+            cairo_rectangle(cr, workspace_right, 0, width, height);
+            cairo_rectangle(cr, workspace_right + 1, 1, std::max(0, width - 2), std::max(0, static_cast<int>(height) - 2));
+            cairo_set_fill_rule(cr, CAIRO_FILL_RULE_EVEN_ODD);
+            cairo_fill(cr);
+            cairo_set_fill_rule(cr, CAIRO_FILL_RULE_WINDING);
+            set_color({}, is_urgent || focused || visible ? color_names[1].c_str() : "#888888");
+            cairo_move_to(cr, workspace_right + 6, (height - text_height) / 2);
             pango_cairo_show_layout(cr, layout);
             workspace_bounds.emplace_back(workspace_right, std::min(workspace_right + width, status_left));
             bar.workspace_ids.push_back(index);
@@ -559,9 +556,16 @@ int main(int argc, char **argv) {
             ++index;
         }
         if (workspace_buttons && workspace_bounds.empty()) {
-            auto [width, text_height] = measure("[1] ");
+            auto [text_width, text_height] = measure("1");
+            int width = text_width + 12;
+            set_color({}, "#4c7899");
+            cairo_rectangle(cr, workspace_right, 0, width, height);
+            cairo_fill(cr);
+            set_color({}, color_names[2].c_str());
+            cairo_rectangle(cr, workspace_right + 1, 1, std::max(0, width - 2), std::max(0, static_cast<int>(height) - 2));
+            cairo_fill(cr);
             set_color({}, color_names[1].c_str());
-            cairo_move_to(cr, workspace_right, (height - text_height) / 2);
+            cairo_move_to(cr, workspace_right + 6, (height - text_height) / 2);
             pango_cairo_show_layout(cr, layout);
             workspace_bounds.emplace_back(workspace_right, std::min(workspace_right + width, status_left));
             bar.workspace_ids.push_back(0);
@@ -608,9 +612,11 @@ int main(int argc, char **argv) {
                 cairo_fill(cr);
             }
             set_color(block.urgent ? std::optional<std::string>{"#ffffff"} : block.color, color_names[1].c_str());
-            int extra = std::max(0, width - 12 - text_width);
+            int left_border = (block.border || block.urgent) && block.border_left.value_or(1) > 0 ? block.border_left.value_or(1) + 3 : 0;
+            int right_border = (block.border || block.urgent) && block.border_right.value_or(1) > 0 ? block.border_right.value_or(1) + 3 : 0;
+            int extra = std::max(0, width - left_border - right_border - text_width);
             int offset = block.align == "right" ? extra : block.align == "center" ? extra / 2 : 0;
-            cairo_move_to(cr, left + 6 + offset, (height - text_height) / 2);
+            cairo_move_to(cr, left + left_border + offset, (height - text_height) / 2);
             pango_cairo_show_layout(cr, layout);
             cairo_restore(cr);
             right = left;

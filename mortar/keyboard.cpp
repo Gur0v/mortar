@@ -146,7 +146,8 @@ void Keyboard::reload()
                 const xkb_keysym_t* symbols = nullptr;
                 auto count = xkb_keymap_key_get_syms_by_level(map, key, group, level, &symbols);
                 for (int i = 0; i < count; ++i) {
-                    for (const auto& binding : bindings_) {
+                    for (std::size_t priority = 0; priority < bindings_.size(); ++priority) {
+                        const auto& binding = bindings_[priority];
                         if (binding.keysym != symbols[i]) continue;
                         xkb_mod_mask_t masks[256];
                         auto mask_count = xkb_keymap_key_get_mods_for_level(map, key, group, level, masks, 256);
@@ -154,7 +155,7 @@ void Keyboard::reload()
                             if ((masks[j] & ~0xffU) != 0) continue;
                             auto mods = static_cast<std::uint16_t>((masks[j] | binding.modifiers |
                                 (binding.dynamic_alt ? alt : 0)) & ~locks);
-                            binding_keys.push_back({static_cast<xcb_keycode_t>(key), group, mods, binding.callback});
+                            binding_keys.push_back({static_cast<xcb_keycode_t>(key), group, mods, binding.callback, priority});
                         }
                     }
                     if (symbols[i] >= XKB_KEY_0 && symbols[i] <= XKB_KEY_9) {
@@ -177,9 +178,10 @@ void Keyboard::reload()
     std::vector<std::pair<xcb_keycode_t, std::uint16_t>> next;
     std::vector<std::pair<xcb_keycode_t, std::uint16_t>> added;
     try {
-        for (auto [key, group, modifiers, callback] : binding_keys) {
+        for (auto [key, group, modifiers, callback, priority] : binding_keys) {
             (void)group;
             (void)callback;
+            (void)priority;
             for (unsigned mask = 0; mask < 256; ++mask) {
                 if ((mask & ~locks) != 0) continue;
                 auto grab = std::pair{key, static_cast<std::uint16_t>(modifiers | mask)};
@@ -254,12 +256,15 @@ std::optional<WorkspaceAction> Keyboard::process(const xcb_generic_event_t& even
         xkb_state_update_mask(state, 0, 0, 0, 0, 0, (press.state >> 13) & 3);
         auto group = xkb_state_key_get_layout(state, press.detail);
         xkb_state_unref(state);
-        for (auto [key, layout, modifiers, callback] : binding_keys_) {
-            if (key == press.detail && layout == group && mods == modifiers) {
+        std::optional<std::size_t> priority;
+        for (auto [key, layout, modifiers, callback, candidate] : binding_keys_) {
+            if (key == press.detail && layout == group && mods == modifiers &&
+                (!priority || candidate > *priority)) {
+                priority = candidate;
                 callback_ = callback;
-                return std::nullopt;
             }
         }
+        if (priority) return std::nullopt;
         for (auto [key, layout, workspace, modifiers] : keys_) {
             if (key != press.detail || layout != group) continue;
             if (mods == (alt_ | modifiers)) return WorkspaceAction{workspace, false};

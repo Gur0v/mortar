@@ -73,6 +73,18 @@ int main() {
     using Result = mortar::Config::Result;
     check(config.bar_status().empty());
     check(!config.evaluate("1").success);
+    check(config.gaps().inner == 0 && config.gaps().outer == 0);
+    write("(gaps 5 9)");
+    check(config.stage(path) && config.gaps().inner == 0);
+    config.commit();
+    check(config.gaps().inner == 5 && config.gaps().outer == 9);
+    for (const char *invalid : {"(gaps -1 0)", "(gaps 0 65536)", "(gaps 1 2) (error \"bad\")"}) {
+        write(invalid);
+        check(!config.load(path) && config.gaps().inner == 5 && config.gaps().outer == 9);
+    }
+    check(!config.evaluate("(gaps 1 2)").success);
+    write("#t");
+    check(config.load(path) && config.gaps().inner == 0 && config.gaps().outer == 0);
     check(!config.mouse_modifier());
     write("(floating-modifier 64)");
     check(config.stage(path) && config.staged_mouse_modifier() == 64 && !config.mouse_modifier());
@@ -87,34 +99,34 @@ int main() {
     check(config.load(path) && config.mouse_modifier() == 0);
     write("#t");
     check(config.load(path) && !config.mouse_modifier());
-    check(!config.bar().bottom && config.bar().font == "monospace 10" &&
-          config.bar().background == 0x222222 && config.bar().foreground == 0xffffff &&
+    check(config.bar().bottom && config.bar().font == "monospace 10" &&
+          config.bar().background == 0x000000 && config.bar().foreground == 0xffffff &&
           config.bar().focused == 0x285577 && config.bar().unfocused == 0x333333);
     check(config.bar().workspace_buttons && !config.bar().wrap_scroll);
-    check(config.bar().height == 0 && config.bar().status_padding == 0 && config.bar().status_edge_padding == 8);
-    write("(bar-height 40) (bar-status-padding 4) (bar-status-edge-padding 12) (bar-workspace-buttons #f) (bar-wrap-scroll #t) (bar-mode 'hide) (bar-position 'bottom) (bar-font \"sans 12\") (bar-colors 1 2 3 4) (bar-output \"left\") (bar-output \"right\")");
-    check(config.stage(path) && config.staged_bar().hidden && !config.bar().hidden && config.staged_bar().bottom && config.staged_bar().font == "sans 12" &&
+    check(config.bar().height == 0 && config.bar().status_padding == 1 && config.bar().status_edge_padding == 3);
+    write("(bar-height 40) (bar-status-padding 4) (bar-status-edge-padding 12) (bar-workspace-buttons #f) (bar-wrap-scroll #t) (bar-mode 'hide) (bar-position 'top) (bar-font \"sans 12\") (bar-colors 1 2 3 4) (bar-output \"left\") (bar-output \"right\")");
+    check(config.stage(path) && config.staged_bar().hidden && !config.bar().hidden && !config.staged_bar().bottom && config.staged_bar().font == "sans 12" &&
           config.staged_bar().background == 1 && config.staged_bar().foreground == 2 &&
-          config.staged_bar().focused == 3 && config.staged_bar().unfocused == 4 && !config.bar().bottom);
+          config.staged_bar().focused == 3 && config.staged_bar().unfocused == 4 && config.bar().bottom);
     check(config.staged_bar().outputs == std::vector<std::string>({"left", "right"}) && config.bar().outputs.empty());
     check(config.staged_bar().height == 40 && config.staged_bar().status_padding == 4 && config.staged_bar().status_edge_padding == 12 && config.bar().height == 0);
     check(!config.staged_bar().workspace_buttons && config.staged_bar().wrap_scroll && config.bar().workspace_buttons);
     config.discard();
-    check(!config.bar().bottom && !config.staged_bar().bottom && config.bar().outputs.empty());
-    check(config.load(path) && config.bar().bottom && config.bar().font == "sans 12");
+    check(config.bar().bottom && config.staged_bar().bottom && config.bar().outputs.empty());
+    check(config.load(path) && !config.bar().bottom && config.bar().font == "sans 12");
     check(config.bar().outputs == std::vector<std::string>({"left", "right"}));
     check(!config.bar().workspace_buttons && config.bar().wrap_scroll);
     for (const char *invalid : {"(bar-height 0)", "(bar-height 65536)", "(bar-status-padding -1)", "(bar-status-padding 32768)", "(bar-status-edge-padding 65536)", "(bar-workspace-buttons 1)", "(bar-wrap-scroll 'yes)", "(bar-mode 'show)", "(bar-output \"\")", "(bar-output 1)", "(bar-output (string #\\nul))", "(bar-position 'left)", "(bar-font \"\")", "(bar-font 1)",
                                 "(bar-font (string #\\nul))", "(bar-colors 0 0 0 #x1000000)",
                                 "(bar-colors 0 -1 0 0)", "(bar-position 'top) (error \"bad\")"}) {
         write(invalid);
-        check(!config.load(path) && config.bar().bottom && config.bar().font == "sans 12");
+        check(!config.load(path) && !config.bar().bottom && config.bar().font == "sans 12");
     }
     check(!config.evaluate("(bar-height 30)").success);
     check(!config.evaluate("(bar-position 'top)").success);
     check(!config.evaluate("(bar-wrap-scroll #f)").success);
     write("#t");
-    check(config.load(path) && !config.bar().bottom && config.bar().font == "monospace 10");
+    check(config.load(path) && config.bar().bottom && config.bar().font == "monospace 10");
     write("(window-rule \"Editor\" 2 (quote floating))");
     check(config.load(path));
     check(config.window_rules().size() == 1 && config.window_rules()[0].workspace == 2 &&
@@ -209,6 +221,22 @@ int main() {
     check(!config.load(path));
     write("(bind-key 65 0 42)");
     check(!config.load(path));
+    write("(bind-key '(alt shift j) (lambda () (workspace 6))) "
+          "(bind-key '(control mod4 Return) (lambda () #t))");
+    check(config.load(path) && config.bindings().size() == 2);
+    check(config.bindings()[0].keysym == 106 && config.bindings()[0].modifiers == 1 &&
+          config.bindings()[0].dynamic_alt);
+    check(config.run_binding(0) == Result::success && host.workspace == 6);
+    check(config.bindings()[1].keysym == 0xff0d && config.bindings()[1].modifiers == 68);
+    for (const char *invalid : {"(bind-key '() (lambda () #t))", "(bind-key '(alt) (lambda () #t))",
+                                "(bind-key '(j k) (lambda () #t))", "(bind-key '(not-a-keysym) (lambda () #t))",
+                                "(bind-key '(alt 5) (lambda () #t))", "(bind-key '(alt . j) (lambda () #t))"}) {
+        write(invalid);
+        check(!config.load(path) && config.bindings().size() == 2);
+    }
+    write("(bind-workspace 1 (lambda () (workspace 4))) (bind-key 65 8 (lambda () (workspace 5)))");
+    check(config.load(path));
+    host.workspace = 4;
     write("(workspace 8)");
     check(!config.load(path) && host.workspace == 4);
     write("(move-to-workspace 8)");
@@ -288,15 +316,15 @@ int main() {
         check(!config.load(path) && config.border().width == 65535);
     }
     check(!config.evaluate("(border 1 0 0)").success);
-    write("(bind-key 1 0 (lambda () (floating-toggle) (scratchpad-move) (scratchpad-show) (fullscreen-toggle)))");
+    write("(bind-key 1 0 (lambda () (toggle-split) (floating-toggle) (scratchpad-move) (scratchpad-show) (fullscreen-toggle)))");
     check(config.load(path) && config.run_binding(0) == Result::success);
     check(host.window_actions == std::vector<mortar::Config::WindowAction>({
-        mortar::Config::WindowAction::floating, mortar::Config::WindowAction::scratch_move,
+        mortar::Config::WindowAction::toggle_split, mortar::Config::WindowAction::floating, mortar::Config::WindowAction::scratch_move,
         mortar::Config::WindowAction::scratch_show, mortar::Config::WindowAction::fullscreen}));
     host.fail = true;
     check(config.run_binding(0) == Result::failure);
     host.fail = false;
-    for (const char *action : {"(floating-toggle)", "(scratchpad-move)", "(scratchpad-show)", "(fullscreen-toggle)", "(exit)"}) {
+    for (const char *action : {"(toggle-split)", "(floating-toggle)", "(scratchpad-move)", "(scratchpad-show)", "(fullscreen-toggle)", "(exit)"}) {
         write(action);
         check(!config.load(path));
         check(config.evaluate(action).success);

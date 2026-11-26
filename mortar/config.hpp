@@ -23,6 +23,7 @@ public:
         std::uint32_t keysym;
         std::uint16_t modifiers;
         std::uint32_t callback;
+        bool dynamic_alt = false;
     };
 
     struct WindowRule {
@@ -33,6 +34,11 @@ public:
         std::optional<std::string> title;
     };
 
+    struct Gaps {
+        std::uint16_t inner = 0;
+        std::uint16_t outer = 0;
+    };
+
     struct Border {
         std::uint16_t width = 0;
         std::uint32_t focused = 0x4c7899;
@@ -41,15 +47,15 @@ public:
 
     struct Bar {
         std::uint16_t height = 0;
-        std::uint16_t status_padding = 0;
-        std::uint16_t status_edge_padding = 8;
-        bool bottom = false;
+        std::uint16_t status_padding = 1;
+        std::uint16_t status_edge_padding = 3;
+        bool bottom = true;
         bool hidden = false;
         bool workspace_buttons = true;
         bool wrap_scroll = false;
         std::string font = "monospace 10";
         std::vector<std::string> outputs;
-        std::uint32_t background = 0x222222;
+        std::uint32_t background = 0x000000;
         std::uint32_t foreground = 0xffffff;
         std::uint32_t focused = 0x285577;
         std::uint32_t unfocused = 0x333333;
@@ -58,7 +64,7 @@ public:
 
     enum class WorkspaceNavigation { next, previous, back_and_forth };
     using WorkspaceNavigationCallback = void (*)(void *, WorkspaceNavigation);
-    enum class WindowAction { floating, scratch_move, scratch_show, fullscreen, exit, focus_output_next, focus_output_previous, move_output_next, move_output_previous };
+    enum class WindowAction { toggle_split, floating, scratch_move, scratch_show, fullscreen, exit, focus_output_next, focus_output_previous, move_output_next, move_output_previous };
     using WindowActionCallback = void (*)(void *, WindowAction);
     using SplitAction = void (*)(void *, Split);
     using FocusAction = void (*)(void *, Direction);
@@ -91,6 +97,7 @@ public:
     Result run_binding(std::uint32_t callback);
     const std::vector<std::string> &bar_status() const noexcept { return bar_status_; }
     const std::vector<WindowRule> &window_rules() const noexcept { return window_rules_; }
+    const Gaps &gaps() const noexcept { return gaps_; }
     const Border &border() const noexcept { return border_; }
     const Border &staged_border() const noexcept;
     const Bar &bar() const noexcept { return bar_; }
@@ -117,6 +124,7 @@ private:
     std::vector<Binding> bindings_;
     std::vector<SCM> callbacks_;
     std::vector<std::string> bar_status_;
+    Gaps gaps_;
     Border border_;
     Bar bar_;
     std::optional<std::uint16_t> mouse_modifier_;

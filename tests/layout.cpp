@@ -42,6 +42,30 @@ int main() {
         try { tree.geometry(invalid); } catch (const std::invalid_argument &) { rejected = true; }
         check(rejected);
     }
+    auto toggle = Layout::split(Split::horizontal);
+    check(toggle.toggle_split(0));
+    check(toggle.insert_after(0, Layout::leaf(71)));
+    check(toggle.insert_after(71, Layout::leaf(72)));
+    check(toggle.geometry({0, 0, 100, 100}) ==
+          (std::vector<Placement>{{71, {0, 0, 100, 50}}, {72, {0, 50, 100, 50}}}));
+    check(!toggle.toggle_split(99));
+    check(!toggle.toggle_split(0));
+    check(toggle.toggle_split(71));
+    check(toggle.insert_after(71, Layout::leaf(73)));
+    check(toggle.geometry({0, 0, 100, 100}) ==
+          (std::vector<Placement>{{71, {0, 0, 50, 50}}, {73, {50, 0, 50, 50}},
+                                  {72, {0, 50, 100, 50}}}));
+    check(toggle.toggle_split(71));
+    check(toggle.insert_after(71, Layout::leaf(74)));
+    check(toggle.geometry({0, 0, 100, 100}) ==
+          (std::vector<Placement>{{71, {0, 0, 50, 25}}, {74, {0, 25, 50, 25}},
+                                  {73, {50, 0, 50, 50}}, {72, {0, 50, 100, 50}}}));
+    auto single = Layout::split(Split::horizontal, {Layout::leaf(75)});
+    check(single.toggle_split(75));
+    check(single.insert_after(75, Layout::leaf(76)));
+    check(single.geometry({0, 0, 100, 100}) ==
+          (std::vector<Placement>{{75, {0, 0, 100, 50}}, {76, {0, 50, 100, 50}}}));
+    check(!Layout::leaf(75).toggle_split(75));
     auto live = Layout::split(Split::horizontal);
     check(live.set_split(0, Split::vertical));
     check(live.insert_after(0, Layout::leaf(10)));
@@ -66,6 +90,10 @@ int main() {
     check(edge.focus(22));
     check(edge.neighbor(23, Direction::left) == 22);
     check(edge.neighbor(23, Direction::right) == 22);
+    check(edge.neighbor(23, Direction::right, false) == 0);
+    check(edge.neighbor(23, Direction::left, false) == 22);
+    check(edge.neighbor(22, Direction::right, false) == 23);
+    check(edge.neighbor(21, Direction::left, false) == 0);
     check(!edge.focus(99));
     check(edge.remove(22));
     check(edge.neighbor(23, Direction::left) == 21);
@@ -115,6 +143,35 @@ int main() {
     check(equal.geometry({0, 0, 800, 20}) ==
           (std::vector<Placement>{{61, {0, 0, 266, 20}}, {63, {266, 0, 267, 20}},
                                   {62, {533, 0, 267, 20}}}));
+    auto saved = nested.snapshot();
+    auto restored = Layout::restore(saved);
+    check(restored.snapshot() == saved);
+    check(restored.geometry({0, 0, 100, 100}) == nested.geometry({0, 0, 100, 100}));
+    check(restored.neighbor(43, Direction::up) == nested.neighbor(43, Direction::up));
+    check(restored.insert_after(43, Layout::leaf(44)));
+    check(nested.insert_after(43, Layout::leaf(44)));
+    check(restored.snapshot() == nested.snapshot());
+    auto invalid_snapshot = saved;
+    auto reject_snapshot = [](const mortar::LayoutSnapshot &snapshot) {
+        try { Layout::restore(snapshot); } catch (const std::invalid_argument &) { return true; }
+        return false;
+    };
+    invalid_snapshot.focus_order[0] = invalid_snapshot.focus_order[1];
+    check(reject_snapshot(invalid_snapshot));
+    invalid_snapshot = saved;
+    invalid_snapshot.weights[0] = std::numeric_limits<double>::infinity();
+    check(reject_snapshot(invalid_snapshot));
+    invalid_snapshot = saved;
+    invalid_snapshot.weights[0] = 0;
+    check(reject_snapshot(invalid_snapshot));
+    invalid_snapshot = saved;
+    invalid_snapshot.children.push_back(invalid_snapshot.children.back());
+    invalid_snapshot.focus_order.push_back(invalid_snapshot.focus_order.size());
+    invalid_snapshot.weights.push_back(1);
+    check(reject_snapshot(invalid_snapshot));
+    invalid_snapshot = saved;
+    invalid_snapshot.direction = static_cast<Split>(-1);
+    check(reject_snapshot(invalid_snapshot));
     auto insertion = Layout::split(Split::horizontal, {Layout::leaf(51), Layout::leaf(52)});
     check(insertion.resize(51, Direction::right, 10, {0, 0, 100, 20}));
     check(insertion.insert_after(51, Layout::leaf(53)));

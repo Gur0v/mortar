@@ -4,6 +4,7 @@
 #include <cstring>
 #include <new>
 #include <utility>
+#include <xkbcommon/xkbcommon.h>
 
 #ifdef __clang__
 #pragma clang diagnostic ignored "-Wdeprecated-volatile"
@@ -18,6 +19,7 @@ struct ConfigRuntime {
     std::vector<Config::Binding> bindings;
     std::vector<SCM> callbacks;
     std::vector<std::string> bar_status;
+    Config::Gaps gaps;
     Config::Border border;
     Config::Bar bar;
     std::optional<std::uint16_t> mouse_modifier;
@@ -72,29 +74,62 @@ struct ConfigRuntime {
         if (!active || !active->path) {
             scm_misc_error("bind-key", "binding is only allowed while loading", SCM_EOL);
         }
-        if (!scm_is_unsigned_integer(keysym, 1, UINT32_MAX)) {
-            scm_out_of_range("bind-key", keysym);
-        }
-        if (!scm_is_unsigned_integer(modifiers, 0, 0xff)) {
-            scm_out_of_range("bind-key", modifiers);
+        std::uint32_t key = 0;
+        std::uint16_t mods = 0;
+        bool dynamic_alt = false;
+        if (SCM_UNBNDP(procedure)) {
+            procedure = modifiers;
+            if (!scm_is_true(scm_list_p(keysym)) || scm_is_null(keysym))
+                scm_wrong_type_arg_msg("bind-key", 1, keysym, "nonempty list of symbols");
+            SCM list = keysym;
+            while (scm_is_pair(list)) {
+                SCM part = scm_car(list);
+                if (!scm_is_symbol(part)) scm_wrong_type_arg_msg("bind-key", 1, part, "symbol");
+                if (scm_is_eq(part, scm_from_utf8_symbol("alt"))) dynamic_alt = true;
+                else if (scm_is_eq(part, scm_from_utf8_symbol("shift"))) mods |= 1;
+                else if (scm_is_eq(part, scm_from_utf8_symbol("control"))) mods |= 4;
+                else if (scm_is_eq(part, scm_from_utf8_symbol("mod1"))) mods |= 8;
+                else if (scm_is_eq(part, scm_from_utf8_symbol("mod2"))) mods |= 16;
+                else if (scm_is_eq(part, scm_from_utf8_symbol("mod3"))) mods |= 32;
+                else if (scm_is_eq(part, scm_from_utf8_symbol("mod4"))) mods |= 64;
+                else if (scm_is_eq(part, scm_from_utf8_symbol("mod5"))) mods |= 128;
+                else {
+                    if (key) scm_misc_error("bind-key", "multiple key symbols", SCM_EOL);
+                    SCM name = scm_symbol_to_string(part);
+                    size_t length = 0;
+                    char *text = scm_to_utf8_stringn(name, &length);
+                    if (std::strlen(text) == length) key = xkb_keysym_from_name(text, XKB_KEYSYM_NO_FLAGS);
+                    std::free(text);
+                    if (!key) scm_misc_error("bind-key", "unknown key symbol", SCM_EOL);
+                }
+                list = scm_cdr(list);
+            }
+            if (!key) scm_misc_error("bind-key", "missing key symbol", SCM_EOL);
+        } else {
+            if (!scm_is_unsigned_integer(keysym, 1, UINT32_MAX)) scm_out_of_range("bind-key", keysym);
+            if (!scm_is_unsigned_integer(modifiers, 0, 0xff)) scm_out_of_range("bind-key", modifiers);
+            key = scm_to_uint32(keysym);
+            mods = static_cast<std::uint16_t>(scm_to_uint(modifiers));
         }
         if (scm_is_false(scm_procedure_p(procedure))) {
-            scm_wrong_type_arg_msg("bind-key", 3, procedure, "procedure");
+            scm_wrong_type_arg_msg("bind-key", 0, procedure, "procedure");
         }
-        auto key = scm_to_uint32(keysym);
-        auto mods = static_cast<std::uint16_t>(scm_to_uint(modifiers));
         for (std::size_t i = 0; i < active->bindings.size(); ++i) {
-            if (active->bindings[i].keysym == key && active->bindings[i].modifiers == mods) {
+            if (active->bindings[i].keysym == key && active->bindings[i].modifiers == mods &&
+                active->bindings[i].dynamic_alt == dynamic_alt) {
+                auto binding = active->bindings[i];
                 scm_gc_protect_object(procedure);
-                scm_gc_unprotect_object(active->callbacks[i]);
-                active->callbacks[i] = procedure;
+                scm_gc_unprotect_object(active->callbacks[binding.callback]);
+                active->callbacks[binding.callback] = procedure;
+                active->bindings.erase(active->bindings.begin() + static_cast<std::ptrdiff_t>(i));
+                active->bindings.push_back(binding);
                 return SCM_UNSPECIFIED;
             }
         }
         bool failed = false;
         try {
             if (active->callbacks.size() >= UINT32_MAX) throw std::bad_alloc();
-            active->bindings.push_back({key, mods, static_cast<std::uint32_t>(active->callbacks.size())});
+            active->bindings.push_back({key, mods, static_cast<std::uint32_t>(active->callbacks.size()), dynamic_alt});
             try {
                 active->callbacks.push_back(procedure);
             } catch (...) {
@@ -236,6 +271,7 @@ struct ConfigRuntime {
         return SCM_UNSPECIFIED;
     }
 
+    static SCM toggle_split() { return window_action("toggle-split", Config::WindowAction::toggle_split); }
     static SCM floating_toggle() { return window_action("floating-toggle", Config::WindowAction::floating); }
     static SCM scratchpad_move() { return window_action("scratchpad-move", Config::WindowAction::scratch_move); }
     static SCM scratchpad_show() { return window_action("scratchpad-show", Config::WindowAction::scratch_show); }
@@ -362,6 +398,14 @@ struct ConfigRuntime {
         return SCM_UNSPECIFIED;
     }
 
+    static SCM set_gaps(SCM inner, SCM outer) {
+        if (!active || !active->path) scm_misc_error("gaps", "only allowed while loading", SCM_EOL);
+        if (!scm_is_unsigned_integer(inner, 0, UINT16_MAX)) scm_out_of_range("gaps", inner);
+        if (!scm_is_unsigned_integer(outer, 0, UINT16_MAX)) scm_out_of_range("gaps", outer);
+        active->gaps = {scm_to_uint16(inner), scm_to_uint16(outer)};
+        return SCM_UNSPECIFIED;
+    }
+
     static SCM set_border(SCM width, SCM focused, SCM unfocused) {
         if (!active || !active->path) scm_misc_error("border", "only allowed while loading", SCM_EOL);
         if (!scm_is_unsigned_integer(width, 0, UINT16_MAX)) scm_out_of_range("border", width);
@@ -469,7 +513,7 @@ struct ConfigRuntime {
         scm_gc_protect_object(module);
         runtime->previous_module = scm_set_current_module(module);
         runtime->changed_module = true;
-        scm_c_define_gsubr("bind-key", 3, 0, 0, reinterpret_cast<scm_t_subr>(bind_key));
+        scm_c_define_gsubr("bind-key", 2, 1, 0, reinterpret_cast<scm_t_subr>(bind_key));
         scm_c_define_gsubr("floating-modifier", 1, 0, 0, reinterpret_cast<scm_t_subr>(floating_modifier));
         scm_c_define_gsubr("bind-workspace", 2, 0, 0, reinterpret_cast<scm_t_subr>(bind_workspace));
         scm_c_define_gsubr("bind-move-workspace", 2, 0, 0, reinterpret_cast<scm_t_subr>(bind_move));
@@ -491,6 +535,7 @@ struct ConfigRuntime {
         scm_c_define_gsubr("floating-toggle", 0, 0, 0, reinterpret_cast<scm_t_subr>(floating_toggle));
         scm_c_define_gsubr("scratchpad-move", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_move));
         scm_c_define_gsubr("scratchpad-show", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_show));
+        scm_c_define_gsubr("toggle-split", 0, 0, 0, reinterpret_cast<scm_t_subr>(toggle_split));
         scm_c_define_gsubr("fullscreen-toggle", 0, 0, 0, reinterpret_cast<scm_t_subr>(fullscreen_toggle));
         scm_c_define_gsubr("bar-status", 0, 0, 1, reinterpret_cast<scm_t_subr>(bar_status_action));
         scm_c_define_gsubr("bar-height", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_height));
@@ -504,6 +549,7 @@ struct ConfigRuntime {
         scm_c_define_gsubr("bar-output", 1, 0, 0, reinterpret_cast<scm_t_subr>(bar_output));
         scm_c_define_gsubr("bar-colors", 4, 0, 0, reinterpret_cast<scm_t_subr>(bar_colors));
         scm_c_define_gsubr("window-rule", 3, 2, 0, reinterpret_cast<scm_t_subr>(window_rule));
+        scm_c_define_gsubr("gaps", 2, 0, 0, reinterpret_cast<scm_t_subr>(set_gaps));
         scm_c_define_gsubr("border", 3, 0, 0, reinterpret_cast<scm_t_subr>(set_border));
         scm_c_define_gsubr("spawn", 0, 0, 1, reinterpret_cast<scm_t_subr>(spawn_action));
         return scm_c_primitive_load(runtime->path);
@@ -661,6 +707,7 @@ void Config::commit() noexcept {
     bindings_.swap(staged_->bindings);
     callbacks_.swap(staged_->callbacks);
     bar_status_.swap(staged_->bar_status);
+    std::swap(gaps_, staged_->gaps);
     std::swap(border_, staged_->border);
     std::swap(bar_, staged_->bar);
     std::swap(mouse_modifier_, staged_->mouse_modifier);

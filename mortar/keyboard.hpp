@@ -59,6 +59,7 @@ private:
         xkb_layout_index_t group;
         std::uint16_t modifiers;
         std::uint32_t callback;
+        std::size_t priority;
     };
     std::vector<KeyboardBinding> bindings_;
     std::vector<BindingKey> binding_keys_;

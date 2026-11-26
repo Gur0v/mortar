@@ -22,14 +22,28 @@ struct Placement {
     bool operator==(const Placement &) const = default;
 };
 
+struct LayoutSnapshot {
+    bool leaf;
+    std::uint32_t window;
+    Split direction;
+    std::vector<LayoutSnapshot> children;
+    std::vector<std::size_t> focus_order;
+    std::vector<double> weights;
+    bool resized;
+    bool operator==(const LayoutSnapshot &) const = default;
+};
+
 class Layout {
 public:
+    LayoutSnapshot snapshot() const;
+    static Layout restore(const LayoutSnapshot &snapshot);
     static Layout leaf(std::uint32_t window);
     static Layout split(Split direction, std::vector<Layout> children = {});
     bool insert(Layout child);
     bool insert_after(std::uint32_t focused, Layout child);
     bool set_split(std::uint32_t focused, Split direction);
-    std::uint32_t neighbor(std::uint32_t focused, Direction direction) const;
+    bool toggle_split(std::uint32_t focused);
+    std::uint32_t neighbor(std::uint32_t focused, Direction direction, bool wrap = true) const;
     bool focus(std::uint32_t window);
     bool remove(std::uint32_t window);
     bool move(std::uint32_t window, Direction direction);

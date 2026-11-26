@@ -23,7 +23,7 @@ if get_option('tests')
   test('status', status_test)
   ipc_test = executable('test-ipc', 'tests/ipc.cpp', 'mortar/ipc.cpp')
   test('ipc', ipc_test)
-  config_test = executable('test-config', 'tests/config.cpp', 'mortar/config.cpp', dependencies: guile)
+  config_test = executable('test-config', 'tests/config.cpp', 'mortar/config.cpp', dependencies: [guile, xkbcommon])
   test('config', config_test)
   size_hints_test = executable('test-size-hints', 'tests/size-hints.cpp', 'mortar/randr.cpp', 'mortar/outputs.cpp', 'mortar/scratchpad.cpp', 'mortar/ipc.cpp', 'mortar/actions.cpp', 'mortar/layout.cpp', 'mortar/workspaces.cpp', 'mortar/keyboard.cpp', 'mortar/config.cpp', dependencies: [xcb, xcb_randr, xcb_xkb, xkbcommon, guile])
   test('size-hints', size_hints_test)
@@ -31,6 +31,7 @@ if get_option('tests')
   test('floating-size-hints', floating_size_hints_test)
   scratchpad_test = executable('test-scratchpad', 'tests/scratchpad.cpp', 'mortar/scratchpad.cpp')
   test('scratchpad', scratchpad_test)
+  test('gaps', executable('test-gaps', 'tests/gaps.cpp'))
   layout_test = executable('test-layout', 'tests/layout.cpp', 'mortar/layout.cpp')
   test('layout', layout_test)
   workspaces_test = executable('test-workspaces', 'tests/workspaces.cpp', 'mortar/workspaces.cpp', 'mortar/layout.cpp')
@@ -106,6 +107,8 @@ end
   ewmh_test = executable('test-ewmh', 'tests/ewmh.cpp', dependencies: xcb)
   test('ewmh', find_program('ruby'), args: ['-e', '''
 require 'timeout'
+require 'tmpdir'
+require 'fileutils'
 reader, writer = IO.pipe
 server = Process.spawn('Xvfb', '-displayfd', '3', '-screen', '0', '800x600x24', 3 => writer, out: File::NULL, err: File::NULL)
 writer.close
@@ -113,9 +116,13 @@ wm = nil
 begin
   display = Timeout.timeout(10) { reader.gets }
   abort 'Xvfb failed to start' unless display
-  env = { 'DISPLAY' => ":#{Integer(display)}", 'HOME' => '/nonexistent', 'XDG_CONFIG_HOME' => '/nonexistent' }
-  wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: File::NULL)
-  exit(system(env, ARGV.fetch(1)) ? 0 : 1)
+  Dir.mktmpdir do |dir|
+    FileUtils.mkdir_p(File.join(dir, 'mortar'))
+    File.write(File.join(dir, 'mortar', 'config.scm'), "(bar-output \"mortar-test-no-such-output\")\n")
+    env = { 'DISPLAY' => ":#{Integer(display)}", 'HOME' => dir, 'XDG_CONFIG_HOME' => dir }
+    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: File::NULL)
+    exit(system(env, ARGV.fetch(1)) ? 0 : 1)
+  end
 ensure
   Process.kill('TERM', wm) rescue nil if wm
   Process.wait(wm) rescue nil if wm

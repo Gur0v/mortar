@@ -71,7 +71,12 @@ int main()
             press.detail = digits[1];
             press.state = alt;
             require(!process() && keyboard.callback() == 41, "custom workspace override failed");
-            keyboard.replace_bindings({{XKB_KEY_a, 0, 40, true}, {XKB_KEY_a, XCB_MOD_MASK_CONTROL, 42}});
+            keyboard.replace_bindings({{XKB_KEY_a, XCB_MOD_MASK_SHIFT, 39, true},
+                {XKB_KEY_A, 0, 44, true}, {XKB_KEY_a, 0, 40, true},
+                {XKB_KEY_a, XCB_MOD_MASK_CONTROL, 42}});
+            press.detail = letter;
+            press.state = alt | XCB_MOD_MASK_SHIFT;
+            require(!process() && keyboard.callback() == 44, "shifted keysym override failed");
             press.detail = letter;
             press.state = alt;
             require(!process() && keyboard.callback() == 40, "dynamic Alt binding failed");
@@ -90,6 +95,8 @@ int main()
             std::free(reply);
             keyboard.reload();
             require(keyboard.alt_modifier() == XCB_MOD_MASK_2, "Alt modifier did not change");
+            press.state = XCB_MOD_MASK_2 | XCB_MOD_MASK_SHIFT;
+            require(!process() && keyboard.callback() == 44, "shifted override lost after remapping");
             press.state = XCB_MOD_MASK_2;
             require(!process() && keyboard.callback() == 40, "dynamic Alt binding did not follow mapping");
             press.state = alt;

@@ -31,15 +31,21 @@ Bindings can only be registered while loading configuration. Workspace actions c
 
 If loading fails, Mortar reports the error and starts with built-in defaults. If a callback fails, Mortar reports the error and does not run that shortcut's default action for that invocation. Effects already performed by Scheme are not rolled back.
 
+## Gaps
+
+`(gaps inner outer)` sets nonnegative pixel gaps from 0 to 65535; both default to zero. Outer gaps inset the usable workspace. Inner gaps inset tiled windows by the full amount at workspace edges and half at shared edges, rounding down. Floating and fullscreen windows are unaffected. Oversized gaps may leave tiles with the minimum X11 window size. Settings take effect on successful reload.
+
 ## Mouse controls
 
 Hold Alt and drag with the left mouse button to move a floating window. Hold Alt and drag with the right mouse button to resize a floating or tiled window from the clicked corner. Tiled windows resize live when neighboring split boundaries are available. `(floating-modifier modifiers)` sets the X modifier bitmask for both mouse actions; for example, `(floating-modifier 64)` uses Mod4. Zero disables these mouse actions. The default follows the keyboard's Alt mapping. This setting does not change keyboard shortcuts. Reload preserves the old configuration if replacement grabs fail.
 
 ## Arbitrary bindings and actions
 
-`(bind-key keysym modifiers procedure)` registers a zero-argument callback for an X keysym and X modifier bitmask, both integers. For example, `(bind-key 65475 8 (lambda () (split 'vertical)))` binds Alt+F6. Repeated registrations replace the previous callback; a matching arbitrary binding takes precedence over a built-in shortcut, including workspace shortcuts.
+`(bind-key '(alt shift j) procedure)` registers a zero-argument callback for Alt+Shift+J. The list contains exactly one XKB keysym name, case-sensitive, and any of `alt`, `shift`, `control`, `mod1`, `mod2`, `mod3`, `mod4`, and `mod5`. For example, `(bind-key '(alt F6) (lambda () (split 'vertical)))` binds Alt+F6. Alt follows the keyboard mapping; Mod1 through Mod5 use their X modifier masks. Keysyms resolve against all keyboard layouts and levels, including the modifiers required to produce the symbol; bindings follow keyboard map changes. Lock modifiers are ignored.
 
-Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(focus 'left)`, `(focus 'right)`, `(focus 'up)`, `(focus 'down)`, and `(close)` for the focused window. `(move direction)` moves a tiled window, and `(resize direction pixels)` resizes a tiled or floating window at the specified edge. Positive pixels grow it; negative pixels shrink it. Floating resize applies valid `WM_NORMAL_HINTS` size constraints when possible; conflicting constraints may be ignored. Alt+Control+arrow grows the focused window by 10 pixels at that edge; tiled resizing requires a neighbor at that edge. `(spawn executable argument ...)` launches an executable with separate string arguments, without a shell. Invoke a shell explicitly if needed. These actions, like workspace actions, are only available in callbacks, not while loading configuration.
+The numeric form `(bind-key keysym modifiers procedure)` remains supported, with an integer X keysym and X modifier bitmask. For example, `(bind-key 65475 8 (lambda () (split 'vertical)))` binds Mod1+F6. Repeated registrations replace the previous callback; a matching arbitrary binding takes precedence over a built-in shortcut, including workspace shortcuts.
+
+Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(toggle-split)` to toggle the focused tiled container's split direction (Alt+E by default), `(focus 'left)`, `(focus 'right)`, `(focus 'up)`, `(focus 'down)`, and `(close)` for the focused window. `(move direction)` moves a tiled window, and `(resize direction pixels)` resizes a tiled or floating window at the specified edge. Positive pixels grow it; negative pixels shrink it. Floating resize applies valid `WM_NORMAL_HINTS` size constraints when possible; conflicting constraints may be ignored. Alt+Control+arrow grows the focused window by 10 pixels at that edge; tiled resizing requires a neighbor at that edge. `(spawn executable argument ...)` launches an executable with separate string arguments, without a shell. Invoke a shell explicitly if needed. These actions, like workspace actions, are only available in callbacks, not while loading configuration.
 
 `(exit)` requests graceful window manager shutdown from a callback or IPC evaluation. Managed clients are preserved. It is unavailable while loading configuration. No default exit shortcut is provided: i3's default uses `i3-nagbar` and a shell command for confirmation, which Mortar does not provide. An IPC client requesting exit may disconnect before receiving its response.
 
@@ -53,15 +59,15 @@ Callbacks may call `(split 'horizontal)` or `(split 'vertical)`, `(focus 'left)`
 
 `(bar-mode 'dock)` shows the bar and reserves space; it is the default. `(bar-mode 'hide)` hides the bar and releases its space. Hold Mod4 to reveal the bar without reserving space. Change the configuration and reload to switch modes. Sway's urgency and binding-mode reveal behavior are not supported.
 
-`(bar-position 'top)` and `(bar-position 'bottom)` select the edge of each output; the default is top. `(bar-font "monospace 10")` selects a Pango font description. The string must be nonempty and at most 4096 UTF-8 bytes, without NUL.
+`(bar-position 'top)` and `(bar-position 'bottom)` select the edge of each output; the default is bottom. `(bar-font "monospace 10")` selects a Pango font description. The string must be nonempty and at most 4096 UTF-8 bytes, without NUL.
 
 `(bar-output "HDMI-1")` restricts the bar to named RandR outputs. Repeat it to select multiple outputs; `"*"` selects all outputs. Without registrations, all outputs are selected. Names must be nonempty, at most 4096 UTF-8 bytes, and contain no NUL; at most 64 registrations are allowed. A missing output produces no bar until it appears.
 
-`(bar-colors background foreground focused unfocused)` sets 24-bit RGB integer colors. Defaults are `#x222222`, `#xffffff`, `#x285577`, and `#x333333`. Focused and unfocused colors fill workspace buttons; foreground colors their text and default status text. Status blocks may override their own colors.
+`(bar-colors background foreground focused unfocused)` sets 24-bit RGB integer colors. Defaults are `#x000000`, `#xffffff`, `#x285577`, and `#x333333`. Focused and unfocused colors fill workspace buttons; foreground colors their text and default status text. Status blocks may override their own colors.
 
 `(bar-workspace-buttons #f)` hides workspace buttons and disables workspace scrolling. The default is `#t`. `(bar-wrap-scroll #t)` wraps scrolling between the first and last displayed workspaces; the default is `#f`. Both accept only booleans. Status block scrolling remains unaffected.
 
-`(bar-height 40)` overrides bar height in pixels, from 1 to 65535. By default, height is the configured font's line height plus 6 pixels, with a minimum of 24 and a maximum of 65535. `(bar-status-padding 4)` sets vertical padding around status block backgrounds and borders, from 0 to 32767; the default is 0. Padding is clamped to half the bar height. `(bar-status-edge-padding 12)` sets the space between status blocks and the right edge, from 0 to 65535; the default is 8. Text remains vertically centered.
+`(bar-height 40)` overrides bar height in pixels, from 1 to 65535. By default, height is calculated from the configured font. `(bar-status-padding 4)` sets vertical padding around status block backgrounds and borders, from 0 to 32767; the default is 1. Padding is clamped to half the bar height. `(bar-status-edge-padding 12)` sets the space between status blocks and the right edge, from 0 to 65535; the default is 3. Text remains vertically centered.
 
 These settings are accepted only while loading. A successful reload restarts mortarbar if any changed, with the same failure behavior as a status-command change.
 

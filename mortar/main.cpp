@@ -1,5 +1,6 @@
 #include "actions.hpp"
 #include "config.hpp"
+#include "gaps.hpp"
 #include "ipc.hpp"
 #include "randr.hpp"
 #include "scratchpad.hpp"
@@ -141,7 +142,7 @@ int main() {
         std::function<void(mortar::Direction)> move_direction;
         std::function<void(mortar::Direction, int)> resize;
         std::function<void()> close;
-        std::function<void()> scratch_send, scratch_toggle, toggle_fullscreen, toggle_floating;
+        std::function<void()> scratch_send, scratch_toggle, toggle_fullscreen, toggle_floating, toggle_split;
         std::function<void(const std::vector<std::string> &)> spawn;
         xcb_timestamp_t time = XCB_CURRENT_TIME;
     } actions;
@@ -157,6 +158,7 @@ int main() {
         [](void *host, mortar::Config::WindowAction action) {
             auto &actions = *static_cast<Actions *>(host);
             switch (action) {
+            case mortar::Config::WindowAction::toggle_split: actions.toggle_split(); break;
             case mortar::Config::WindowAction::floating: actions.toggle_floating(); break;
             case mortar::Config::WindowAction::scratch_move: actions.scratch_send(); break;
             case mortar::Config::WindowAction::scratch_show: actions.scratch_toggle(); break;
@@ -202,11 +204,12 @@ int main() {
         std::fprintf(stderr, "mortar: keyboard setup failed: %s\n", error.what());
         return EXIT_FAILURE;
     }
-    enum : uint32_t { split_horizontal = UINT32_MAX - 21, split_vertical, focus_left, focus_down,
+    enum : uint32_t { split_horizontal = UINT32_MAX - 22, split_vertical, toggle_split, focus_left, focus_down,
         focus_up, focus_right, move_left, move_down, move_up, move_right,
         resize_left, resize_down, resize_up, resize_right, close_focused, terminal, launcher, toggle_floating, toggle_fullscreen, scratch_send, scratch_toggle, reload_config };
     std::vector<mortar::KeyboardBinding> defaults{
         {XKB_KEY_h, 0, split_horizontal, true}, {XKB_KEY_v, 0, split_vertical, true},
+        {XKB_KEY_e, 0, toggle_split, true},
         {XKB_KEY_j, 0, focus_left, true}, {XKB_KEY_k, 0, focus_down, true},
         {XKB_KEY_l, 0, focus_up, true}, {XKB_KEY_semicolon, 0, focus_right, true},
         {XKB_KEY_Left, 0, focus_left, true}, {XKB_KEY_Down, 0, focus_down, true},
@@ -226,11 +229,7 @@ int main() {
     auto prepare_bindings = [&](const auto &custom) {
         auto bindings = defaults;
         for (const auto &binding : custom) {
-            std::erase_if(bindings, [&](const auto &existing) {
-                return existing.keysym == binding.keysym &&
-                       (existing.modifiers | (existing.dynamic_alt ? keyboard->alt_modifier() : 0)) == binding.modifiers;
-            });
-            bindings.push_back({binding.keysym, binding.modifiers, binding.callback});
+            bindings.push_back({binding.keysym, binding.modifiers, binding.callback, binding.dynamic_alt});
         }
         return bindings;
     };
@@ -608,13 +607,15 @@ int main() {
             xcb_configure_window(c, window, XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
                 XCB_CONFIG_WINDOW_BORDER_WIDTH, values);
         }
-        for (const auto &placement : workspaces[workspace].layout.geometry(usable(output.bounds))) {
+        const auto gap_bounds = mortar::outer_gap(usable(output.bounds), config.gaps().outer);
+        for (auto placement : workspaces[workspace].layout.geometry(gap_bounds)) {
             if (is_fullscreen(placement.window) != fullscreen.end()) continue;
+            placement.bounds = mortar::inner_gap(placement.bounds, gap_bounds, config.gaps().inner);
             using Property = std::unique_ptr<xcb_get_property_reply_t, decltype(&std::free)>;
             Property hints{xcb_get_property_reply(c, xcb_get_property(c, false, placement.window,
                 XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 0, 18), nullptr), &std::free};
             const uint32_t border = std::min<uint32_t>(config.border().width,
-                (std::min(placement.bounds.width, placement.bounds.height) - 1) / 2);
+                std::max(0, std::min(placement.bounds.width, placement.bounds.height) - 1) / 2);
             uint32_t tile_width = std::max(1, placement.bounds.width - static_cast<int>(2 * border));
             uint32_t tile_height = std::max(1, placement.bounds.height - static_cast<int>(2 * border));
             if (hints && hints->type == XCB_ATOM_WM_SIZE_HINTS && hints->format == 32) {
@@ -853,9 +854,14 @@ int main() {
         ws.layout.set_split(ws.tiled_focus(), direction);
         tile();
     };
+    actions.toggle_split = [&] {
+        auto &ws = workspaces[current];
+        if (ws.layout.toggle_split(ws.tiled_focus())) tile();
+    };
     actions.focus = [&](mortar::Direction direction) {
         auto &ws = workspaces[current];
-        auto target = ws.layout.contains(ws.focused) ? ws.layout.neighbor(ws.focused, direction) : ws.tiled_focus();
+        const bool tiled = ws.layout.contains(ws.focused);
+        auto target = tiled ? ws.layout.neighbor(ws.focused, direction, false) : ws.tiled_focus();
         if (target) {
             std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
             focus(target, actions.time);
@@ -875,6 +881,10 @@ int main() {
                 if (!best || (forward ? candidate < previous : candidate > previous)) best = &output;
             }
             if (best) switch_workspace(best->workspace);
+            else if (tiled && (target = ws.layout.neighbor(ws.focused, direction))) {
+                std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
+                focus(target, actions.time);
+            }
         }
     };
     actions.move_direction = [&](mortar::Direction direction) {
@@ -1489,6 +1499,8 @@ int main() {
                     }
                 } else if (*id == split_horizontal || *id == split_vertical) {
                     actions.split(*id == split_horizontal ? mortar::Split::horizontal : mortar::Split::vertical);
+                } else if (*id == toggle_split) {
+                    actions.toggle_split();
                 } else if (*id >= focus_left && *id <= focus_right) {
                     const mortar::Direction directions[] = {mortar::Direction::left, mortar::Direction::down,
                         mortar::Direction::up, mortar::Direction::right};

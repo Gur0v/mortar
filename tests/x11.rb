@@ -60,7 +60,7 @@ Dir.mktmpdir('mortar-test-') do |dir|
     env = { 'DISPLAY' => ":#{Integer(display)}", 'XDG_CONFIG_HOME' => dir, 'HOME' => dir,
             'PATH' => "#{dir}:#{ENV.fetch('PATH')}", 'MORTAR_TEST_LAUNCH' => launch_log }
     File.symlink(File.expand_path(ARGV.fetch(2)), File.join(dir, 'mortarbar'))
-    File.write(config, "(bar-height 24)\n")
+    File.write(config, "(bar-height 24)\n(bar-position 'top)\n")
     wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: File::NULL, in: File::NULL)
     abort 'Automatic mortarbar did not reserve space' unless system(env, ARGV.fetch(1), 'bar-reservation')
     abort 'Workspace names or bar clicks failed' unless system(env, ARGV.fetch(1), 'bar-workspaces')
@@ -92,6 +92,7 @@ Dir.mktmpdir('mortar-test-') do |dir|
     end
     [input_reader, input_writer, output_reader, output_writer].each(&:close)
     File.unlink(File.join(dir, 'mortarbar'))
+    env['PATH'] = env.fetch('PATH').split(File::PATH_SEPARATOR).reject { |path| File.executable?(File.join(path, 'mortarbar')) }.join(File::PATH_SEPARATOR)
     client_input, client_writer = IO.pipe
     client_reader, client_output = IO.pipe
     client = Process.spawn(env, ARGV.fetch(1), 'grab-conflict', in: client_input, out: client_output)
@@ -206,6 +207,15 @@ Dir.mktmpdir('mortar-test-') do |dir|
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
     wm = nil
     abort 'Window manager shutdown failed' unless status.success?
+    [['(gaps 10 5)', 'gaps'], ['(gaps 65535 65535)', 'gaps-large']].each do |setting, mode|
+      File.write(config, "#{setting}\n")
+      wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: error_path)
+      abort "Gap geometry check failed: #{mode}" unless system(env, ARGV.fetch(1), mode)
+      Process.kill('TERM', wm)
+      _, status = Timeout.timeout(10) { Process.wait2(wm) }
+      wm = nil
+      abort 'Window manager shutdown failed after gap checks' unless status.success?
+    end
     File.write(config, "(border 3 #x123456 #x654321)\n")
     wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: error_path)
     abort 'Border checks failed' unless system(env, ARGV.fetch(1), 'borders')
@@ -214,7 +224,8 @@ Dir.mktmpdir('mortar-test-') do |dir|
     wm = nil
     abort 'Window manager shutdown failed after border checks' unless status.success?
     File.write(config, <<~SCHEME)
-      (bind-key 98 8 (lambda () (split 'vertical)))
+      (bind-key '(alt b) (lambda () (split 'vertical)))
+      (bind-key '(alt z) (lambda () (toggle-split)))
       (bind-key 99 8 (lambda () (focus 'up)))
       (bind-key 101 8 (lambda () (focus 'down)))
       (bind-key 102 8 (lambda () (split 'horizontal)))
