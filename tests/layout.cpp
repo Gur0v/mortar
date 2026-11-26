@@ -151,15 +151,14 @@ int main() {
     check(!toggle.toggle_split(99));
     check(!toggle.toggle_split(0));
     check(toggle.toggle_split(71));
-    check(toggle.insert_after(71, Layout::leaf(73)));
     check(toggle.geometry({0, 0, 100, 100}) ==
-          (std::vector<Placement>{{71, {0, 0, 50, 50}}, {73, {50, 0, 50, 50}},
-                                  {72, {0, 50, 100, 50}}}));
+          (std::vector<Placement>{{71, {0, 0, 50, 100}}, {72, {50, 0, 50, 100}}}));
+    check(toggle.focus(71));
+    check(toggle.select_parent(71));
     check(toggle.toggle_split(71));
-    check(toggle.insert_after(71, Layout::leaf(74)));
     check(toggle.geometry({0, 0, 100, 100}) ==
-          (std::vector<Placement>{{71, {0, 0, 50, 25}}, {74, {0, 25, 50, 25}},
-                                  {73, {50, 0, 50, 50}}, {72, {0, 50, 100, 50}}}));
+          (std::vector<Placement>{{71, {0, 0, 100, 50}}, {72, {0, 50, 100, 50}}}));
+    check(toggle.selected_path() == std::vector<std::size_t>{});
     auto single = Layout::split(Split::horizontal, {Layout::leaf(75)});
     check(single.toggle_split(75));
     check(single.insert_after(75, Layout::leaf(76)));

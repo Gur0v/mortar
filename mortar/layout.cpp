@@ -193,25 +193,22 @@ bool Layout::set_split(std::uint32_t focused, Split direction) {
 }
 
 bool Layout::toggle_split(std::uint32_t focused) {
-    if (selected_path_) {
-        const Layout *node = this;
-        for (auto index : *selected_path_) {
+    auto path = selected_path_ ? selected_path_ : window_path(focused);
+    if (!path) {
+        if (focused || leaf_ || !children_.empty()) return false;
+    } else if (!path->empty()) {
+        path->pop_back();
+    }
+    Layout *node = this;
+    if (path) {
+        for (auto index : *path) {
             if (index >= node->children_.size()) return false;
             node = &node->children_[index];
         }
-        return set_split(focused, node->direction_ == Split::horizontal ? Split::vertical : Split::horizontal);
     }
-    if (!focused && !leaf_ && children_.empty()) {
-        direction_ = direction_ == Split::horizontal ? Split::vertical : Split::horizontal;
-        return true;
-    }
-    for (auto &child : children_) {
-        if (child.leaf_ && child.window_ == focused) {
-            return set_split(focused, direction_ == Split::horizontal ? Split::vertical : Split::horizontal);
-        }
-        if (!child.leaf_ && child.toggle_split(focused)) return true;
-    }
-    return false;
+    if (node->leaf_) return false;
+    node->direction_ = node->direction_ == Split::horizontal ? Split::vertical : Split::horizontal;
+    return true;
 }
 
 bool Layout::focus(std::uint32_t window) {
