@@ -168,7 +168,7 @@ int main(int argc, char **argv) {
             const uint32_t value = uint32_t(data[0]) | (uint32_t(data[1]) << 8) | (uint32_t(data[2]) << 16);
             return value == expected;
         };
-        if (!wait([&] { return pixel(0, 100, 0x654321) && pixel(200, 100, 0x123456); })) {
+        if (!wait([&] { return pixel(0, 100, 0x654321) && pixel(350, 250, 0x123456); })) {
             std::fprintf(stderr, "borders: focused or unfocused color mismatch\n");
             return EXIT_FAILURE;
         }
@@ -177,6 +177,40 @@ int main(int argc, char **argv) {
         xcb_flush(c);
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         if (!border(second, 3)) return EXIT_FAILURE;
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "floating-center") == 0) {
+        auto atom = [&](const char *name) {
+            std::unique_ptr<xcb_intern_atom_reply_t, decltype(&std::free)> reply{
+                xcb_intern_atom_reply(c, xcb_intern_atom(c, false, static_cast<uint16_t>(std::strlen(name)), name), nullptr), &std::free};
+            return reply ? reply->atom : xcb_atom_t{XCB_ATOM_NONE};
+        };
+        auto type = atom("_NET_WM_WINDOW_TYPE");
+        auto dialog_type = atom("_NET_WM_WINDOW_TYPE_DIALOG");
+        if (!type || !dialog_type) return EXIT_FAILURE;
+        auto window = xcb_generate_id(c);
+        xcb_create_window(c, XCB_COPY_FROM_PARENT, window, screen->root, 40, 50, 200, 150, 0,
+                          XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+        xcb_change_property(c, XCB_PROP_MODE_REPLACE, window, type, XCB_ATOM_ATOM, 32, 1, &dialog_type);
+        xcb_map_window(c, window);
+        xcb_flush(c);
+        auto geometry_is = [&](int x, int y) {
+            for (int i = 0; i < 250; ++i) {
+                std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                    xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
+                if (geometry && geometry->x == x && geometry->y == y && geometry->width == 200 && geometry->height == 150) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            return false;
+        };
+        if (!geometry_is(300, 237)) return EXIT_FAILURE;
+        const uint32_t position[] = {70, 80};
+        xcb_configure_window(c, window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, position);
+        xcb_flush(c);
+        if (!geometry_is(70, 80)) return EXIT_FAILURE;
+        std::puts("floating ready");
+        std::fflush(stdout);
+        if (std::getchar() == EOF || !geometry_is(70, 80)) return EXIT_FAILURE;
         return EXIT_SUCCESS;
     }
     if (argc == 2 && std::strcmp(argv[1], "bar-reservation") == 0) {
@@ -462,6 +496,32 @@ int main(int argc, char **argv) {
             std::fprintf(stderr, "%s: test window did not receive focus\n", mode);
             return EXIT_FAILURE;
         }
+        if (std::strcmp(mode, "workspace-pointer") == 0) {
+            auto other = xcb_generate_id(c);
+            xcb_create_window(c, XCB_COPY_FROM_PARENT, other, screen->root, 0, 0, 100, 100, 0,
+                              XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+            xcb_map_window(c, other);
+            xcb_flush(c);
+            if (!wait_property(other, desktop, 0)) return EXIT_FAILURE;
+            auto focus_is = [&](xcb_window_t target) {
+                for (int i = 0; i < 250; ++i) {
+                    std::unique_ptr<xcb_get_input_focus_reply_t, decltype(&std::free)> reply{
+                        xcb_get_input_focus_reply(c, xcb_get_input_focus(c), nullptr), &std::free};
+                    if (reply && reply->focus == target) return true;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+                return false;
+            };
+            if (!focus_is(other)) return EXIT_FAILURE;
+            press(alt, true); tap(two); press(alt, false); xcb_flush(c);
+            if (!wait_property(screen->root, current, 1)) return EXIT_FAILURE;
+            xcb_warp_pointer(c, XCB_NONE, screen->root, 0, 0, 0, 0, 100, 300);
+            press(alt, true); tap(one); press(alt, false); xcb_flush(c);
+            if (!wait_property(screen->root, current, 0) || !focus_is(window)) return EXIT_FAILURE;
+            xcb_warp_pointer(c, XCB_NONE, screen->root, 0, 0, 0, 0, 799, 599);
+            xcb_flush(c);
+            return EXIT_SUCCESS;
+        }
         if (std::strcmp(mode, "scratchpad") == 0) {
             auto minus = key('-');
             if (!minus) return EXIT_FAILURE;
@@ -576,6 +636,7 @@ int main(int argc, char **argv) {
             xcb_flush(c);
             if (!wait_property(other, desktop, 0) || !wait([&] { return mapped(other, XCB_MAP_STATE_UNMAPPED); }, "move shown scratchpad")) return EXIT_FAILURE;
             shortcut(false);
+            xcb_warp_pointer(c, XCB_NONE, screen->root, 0, 0, 0, 0, 100, 100);
             press(alt, true); tap(key('1')); press(alt, false); xcb_flush(c);
             if (!wait_property(screen->root, current, 0) ||
                 !wait([&] { return mapped(other, XCB_MAP_STATE_VIEWABLE); }, "moved window remains on workspace")) return EXIT_FAILURE;
@@ -785,7 +846,7 @@ int main(int argc, char **argv) {
             xcb_flush(c);
             if (!wait_property(dialog, desktop, 0) || !map_is(dialog, XCB_MAP_STATE_VIEWABLE) ||
                 !focus_is(dialog) || !geometry_is(window, 0, 0, 800, 600) ||
-                !geometry_is(dialog, 40, 50, 200, 150)) return EXIT_FAILURE;
+                !geometry_is(dialog, 300, 225, 200, 150)) return EXIT_FAILURE;
             const uint32_t geometry[] = {70, 80, 240, 180};
             xcb_configure_window(c, dialog, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
                                  XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, geometry);
@@ -794,6 +855,7 @@ int main(int argc, char **argv) {
             press(alt, true); tap(two); press(alt, false); xcb_flush(c);
             if (!wait_property(screen->root, current, 1) || !map_is(window, XCB_MAP_STATE_UNMAPPED) ||
                 !map_is(dialog, XCB_MAP_STATE_UNMAPPED)) return EXIT_FAILURE;
+            xcb_warp_pointer(c, XCB_NONE, screen->root, 0, 0, 0, 0, 100, 100);
             press(alt, true); tap(one); press(alt, false); xcb_flush(c);
             if (!wait_property(screen->root, current, 0) || !map_is(window, XCB_MAP_STATE_VIEWABLE) ||
                 !map_is(dialog, XCB_MAP_STATE_VIEWABLE) || !focus_is(dialog) ||
@@ -1266,6 +1328,7 @@ int main(int argc, char **argv) {
     if (!property_is(screen->root, current_desktop, 0) || !tiled(fourth, 0, 800) || !focused_on(fourth)) return EXIT_FAILURE;
     send_desktop(window_desktop, fourth, 1);
     if (!property_is(fourth, window_desktop, 1)) return EXIT_FAILURE;
+    xcb_warp_pointer(c, XCB_NONE, screen->root, 0, 0, 0, 0, 600, 300);
     send_desktop(current_desktop, screen->root, 1);
     if (!property_is(screen->root, current_desktop, 1) || !tiled(other, 0, 400) ||
         !tiled(fourth, 400, 400) || !focused_on(fourth)) return EXIT_FAILURE;

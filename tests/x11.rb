@@ -60,10 +60,33 @@ Dir.mktmpdir('mortar-test-') do |dir|
     env = { 'DISPLAY' => ":#{Integer(display)}", 'XDG_CONFIG_HOME' => dir, 'HOME' => dir,
             'PATH' => "#{dir}:#{ENV.fetch('PATH')}", 'MORTAR_TEST_LAUNCH' => launch_log }
     File.symlink(File.expand_path(ARGV.fetch(2)), File.join(dir, 'mortarbar'))
-    File.write(config, "(bar-height 24)\n(bar-position 'top)\n")
-    wm = Process.spawn(env, ARGV.fetch(0), out: File::NULL, err: File::NULL, in: File::NULL)
+    restart_marker = File.join(dir, 'restart-marker')
+    socket_path = File.join(dir, 'floating.sock')
+    File.write(config, "(bar-height 24)\n(bar-position 'top)\n" \
+                       "(call-with-output-file #{restart_marker.dump} (lambda (port) (display \"ready\" port)))\n")
+    wm = Process.spawn(env.merge('MORTARSOCK' => socket_path), ARGV.fetch(0), out: File::NULL, err: File::NULL, in: File::NULL)
     abort 'Automatic mortarbar did not reserve space' unless system(env, ARGV.fetch(1), 'bar-reservation')
     abort 'Workspace names or bar clicks failed' unless system(env, ARGV.fetch(1), 'bar-workspaces')
+    client_input, client_writer = IO.pipe
+    client_reader, client_output = IO.pipe
+    client = Process.spawn(env, ARGV.fetch(1), 'floating-center', in: client_input, out: client_output)
+    client_input.close
+    client_output.close
+    abort 'Floating window was not centered in the usable area' unless
+      Timeout.timeout(10) { client_reader.gets } == "floating ready\n"
+    File.delete(restart_marker)
+    socket = UNIXSocket.new(socket_path)
+    request = 'eval (restart)'
+    socket.write([request.bytesize].pack('N') + request)
+    socket.close
+    Timeout.timeout(10) { sleep 0.02 until File.exist?(restart_marker) }
+    abort 'Window manager did not restart' unless system(env, ARGV.fetch(1), 'bar-reservation')
+    client_writer.puts
+    client_writer.close
+    client_reader.close
+    _, status = Timeout.timeout(10) { Process.wait2(client) }
+    client = nil
+    abort 'Floating window moved after restart' unless status.success?
     File.delete(config)
     Process.kill('TERM', wm)
     _, status = Timeout.timeout(10) { Process.wait2(wm) }
@@ -160,7 +183,7 @@ Dir.mktmpdir('mortar-test-') do |dir|
       system(env, ARGV.fetch(1), mode, out: File::NULL)
     end
     abort "Keyboard checks failed: #{failures.join(', ')}" unless failures.empty?
-    %w[transient dialog floating-toggle fullscreen scratchpad].each do |mode|
+    %w[transient dialog floating-toggle fullscreen scratchpad workspace-pointer].each do |mode|
       abort "Floating window check failed: #{mode}\nMortar stderr:\n#{File.read(wm_error_path)}" unless
         system(env, ARGV.fetch(1), mode, out: File::NULL)
     end

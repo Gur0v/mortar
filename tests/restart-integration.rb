@@ -166,8 +166,9 @@ Dir.mktmpdir('mortar-restart-') do |dir|
     wait.call('Scratchpad focus not restored') { focus.call == windows[3] }
     raise 'Scratchpad hide failed' unless request.call('(scratchpad-show)').start_with?('ok ')
     wait.call('Scratchpad did not hide') { focus.call != windows[3] }
-    X11.XWarpPointer(connection, 0, root, 0, 0, 0, 0, 799, 599)
+    X11.XWarpPointer(connection, 0, windows[0], 0, 0, 0, 0, 5, 5)
     X11.XSync(connection, 0)
+    wait.call('Pointer target did not receive focus') { focus.call == windows[0] }
     raise 'Scratchpad show failed' unless request.call('(scratchpad-show)').start_with?('ok ')
     wait.call('Scratchpad focus and geometry not restored after show') { focus.call == windows[3] && geometry.call(windows[3]) == scratch_geometry }
     File.unlink(binary)

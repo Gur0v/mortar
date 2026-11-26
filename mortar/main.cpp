@@ -908,13 +908,17 @@ int main(int argc, char **argv) {
                 XCB_ATOM_WINDOW, 32, 0, nullptr).sequence);
         }
     };
-    auto restore_focus = [&] {
+    auto restore_focus = [&](xcb_window_t target = XCB_NONE) {
         std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
         auto window = workspaces[current].focused;
         if (window && owner(window) == static_cast<int>(current)) {
             pending_focus.push_back(window);
             focus_sequence = static_cast<uint16_t>(xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, focus_time, XCB_ATOM_WINDOW, 32, 0, nullptr).sequence);
         } else xcb_set_input_focus(c, XCB_INPUT_FOCUS_POINTER_ROOT, root, XCB_CURRENT_TIME);
+        if (target && target != window && owner(target) == static_cast<int>(current)) {
+            pending_focus.push_back(target);
+            focus_sequence = static_cast<uint16_t>(xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, focus_time, XCB_ATOM_WINDOW, 32, 0, nullptr).sequence);
+        }
         xcb_flush(c);
     };
     std::function<void(uint32_t)> workspace_event = [](uint32_t) {};
@@ -941,7 +945,10 @@ int main(int argc, char **argv) {
         for (const auto &output : outputs.outputs())
             if (std::none_of(old_outputs.begin(), old_outputs.end(), [&](const auto &old) { return old.workspace == output.workspace; }))
                 for (auto window : workspaces[output.workspace].windows) xcb_map_window(c, window);
-        restore_focus();
+        std::unique_ptr<xcb_query_pointer_reply_t, decltype(&std::free)> pointer{
+            xcb_query_pointer_reply(c, xcb_query_pointer(c, root), nullptr), &std::free};
+        restore_focus(pointer && pointer->same_screen && owner(pointer->child) == static_cast<int>(current)
+            ? pointer->child : XCB_NONE);
         workspace_event(current);
         if (old_outputs != outputs.outputs()) output_event();
     };
@@ -1289,9 +1296,32 @@ int main(int argc, char **argv) {
         const uint32_t event_mask = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_PROPERTY_CHANGE |
                                     XCB_EVENT_MASK_COLOR_MAP_CHANGE;
         xcb_change_window_attributes(c, window, XCB_CW_EVENT_MASK, &event_mask);
+        const bool was_iconic = std::find(iconic.begin(), iconic.end(), window) != iconic.end();
         std::erase(iconic, window);
         if (floating) {
             if (!workspaces[desktop].add_floating(window)) return;
+            if (!existing && !was_iconic) {
+                auto output = std::find_if(outputs.outputs().begin(), outputs.outputs().end(), [&](const auto &item) {
+                    return outputs.owners()[desktop] && item.name == *outputs.owners()[desktop];
+                });
+                if (output == outputs.outputs().end())
+                    output = std::find_if(outputs.outputs().begin(), outputs.outputs().end(), [&](const auto &item) {
+                        return item.workspace == current;
+                    });
+                if (output != outputs.outputs().end()) {
+                    std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
+                        xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
+                    if (geometry) {
+                        auto area = usable(output->bounds);
+                        const int width = geometry->width + 2 * geometry->border_width;
+                        const int height = geometry->height + 2 * geometry->border_width;
+                        const uint32_t values[] = {static_cast<uint32_t>(area.x + (area.width - width) / 2),
+                                                   static_cast<uint32_t>(area.y + (area.height - height) / 2)};
+                        xcb_configure_window(c, window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, values);
+                        if (!workspace_bounds(desktop)) pending_floating_origins.emplace_back(window, output->bounds);
+                    }
+                }
+            }
         } else {
             if (!workspaces[desktop].layout.insert_after(workspaces[desktop].tiled_focus(), mortar::Layout::leaf(window))) return;
             workspaces[desktop].windows.push_back(window);

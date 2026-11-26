@@ -50,7 +50,9 @@ Digits 1–9 select workspaces 1–9; 0 selects workspace 10. If a digit require
 
 ## Using mortar
 
-Use workspace shortcuts to switch workspaces or move the focused window. Workspace names start as `1` through `10`. The scratchpad holds windows outside normal workspaces until shown.
+Use workspace shortcuts to switch workspaces or move the focused window. When switching, mortar focuses the window under the pointer when possible. Workspace names start as `1` through `10`. The scratchpad holds windows outside normal workspaces until shown.
+
+New floating windows are centered on their output's usable area. Existing windows keep their positions when mortar starts or restarts.
 
 Hold Alt and drag a floating window with the left mouse button to move it. Alt+right-drag resizes a floating or tiled window from the clicked corner. Tiled resizing requires a neighboring split boundary. The mouse modifier is configurable.
 
