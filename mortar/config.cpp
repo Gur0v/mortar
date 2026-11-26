@@ -349,6 +349,8 @@ struct ConfigRuntime {
 
     static SCM toggle_split() { return window_action("toggle-split", Config::WindowAction::toggle_split); }
     static SCM focus_mode_toggle() { return window_action("focus-mode-toggle", Config::WindowAction::focus_mode_toggle); }
+    static SCM focus_parent() { return window_action("focus-parent", Config::WindowAction::focus_parent); }
+    static SCM focus_child() { return window_action("focus-child", Config::WindowAction::focus_child); }
     static SCM focus_sibling_next() { return window_action("focus-sibling-next", Config::WindowAction::focus_sibling_next); }
     static SCM focus_sibling_previous() { return window_action("focus-sibling-previous", Config::WindowAction::focus_sibling_previous); }
     static SCM floating_toggle(SCM value) { return window_action("floating-toggle", Config::WindowAction::floating, value); }
@@ -631,6 +633,8 @@ struct ConfigRuntime {
         scm_c_define_gsubr("scratchpad-show", 0, 0, 0, reinterpret_cast<scm_t_subr>(scratchpad_show));
         scm_c_define_gsubr("toggle-split", 0, 0, 0, reinterpret_cast<scm_t_subr>(toggle_split));
         scm_c_define_gsubr("focus-mode-toggle", 0, 0, 0, reinterpret_cast<scm_t_subr>(focus_mode_toggle));
+        scm_c_define_gsubr("focus-parent", 0, 0, 0, reinterpret_cast<scm_t_subr>(focus_parent));
+        scm_c_define_gsubr("focus-child", 0, 0, 0, reinterpret_cast<scm_t_subr>(focus_child));
         scm_c_define_gsubr("focus-sibling-next", 0, 0, 0, reinterpret_cast<scm_t_subr>(focus_sibling_next));
         scm_c_define_gsubr("focus-sibling-previous", 0, 0, 0, reinterpret_cast<scm_t_subr>(focus_sibling_previous));
         scm_c_define_gsubr("fullscreen-toggle", 0, 1, 0, reinterpret_cast<scm_t_subr>(fullscreen_toggle));

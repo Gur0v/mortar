@@ -158,7 +158,7 @@ int main() {
         std::function<void(mortar::Direction)> move_direction;
         std::function<void(mortar::Direction, int)> resize;
         std::function<void(xcb_window_t)> close;
-        std::function<void()> scratch_toggle, toggle_split, focus_mode_toggle;
+        std::function<void()> scratch_toggle, toggle_split, focus_mode_toggle, focus_parent, focus_child;
         std::function<void(xcb_window_t)> scratch_send;
         std::function<void(xcb_window_t)> toggle_fullscreen, toggle_floating;
         std::function<void(const std::vector<std::string> &)> spawn;
@@ -178,6 +178,8 @@ int main() {
             switch (action) {
             case mortar::Config::WindowAction::toggle_split: actions.toggle_split(); break;
             case mortar::Config::WindowAction::focus_mode_toggle: actions.focus_mode_toggle(); break;
+            case mortar::Config::WindowAction::focus_parent: actions.focus_parent(); break;
+            case mortar::Config::WindowAction::focus_child: actions.focus_child(); break;
             case mortar::Config::WindowAction::focus_sibling_next: actions.focus_sibling(false); break;
             case mortar::Config::WindowAction::focus_sibling_previous: actions.focus_sibling(true); break;
             case mortar::Config::WindowAction::floating: actions.toggle_floating(window); break;
@@ -228,12 +230,12 @@ int main() {
         std::fprintf(stderr, "mortar: keyboard setup failed: %s\n", error.what());
         return EXIT_FAILURE;
     }
-    enum : uint32_t { split_horizontal = UINT32_MAX - 23, split_vertical, toggle_split, focus_left, focus_down,
+    enum : uint32_t { split_horizontal = UINT32_MAX - 24, split_vertical, toggle_split, focus_left, focus_down,
         focus_up, focus_right, move_left, move_down, move_up, move_right,
-        resize_left, resize_down, resize_up, resize_right, close_focused, terminal, launcher, toggle_floating, toggle_fullscreen, scratch_send, scratch_toggle, reload_config, focus_mode_toggle };
+        resize_left, resize_down, resize_up, resize_right, close_focused, terminal, launcher, toggle_floating, toggle_fullscreen, scratch_send, scratch_toggle, reload_config, focus_mode_toggle, focus_parent };
     std::vector<mortar::KeyboardBinding> defaults{
         {XKB_KEY_h, 0, split_horizontal, true}, {XKB_KEY_v, 0, split_vertical, true},
-        {XKB_KEY_e, 0, toggle_split, true},
+        {XKB_KEY_e, 0, toggle_split, true}, {XKB_KEY_a, 0, focus_parent, true},
         {XKB_KEY_j, 0, focus_left, true}, {XKB_KEY_k, 0, focus_down, true},
         {XKB_KEY_l, 0, focus_up, true}, {XKB_KEY_semicolon, 0, focus_right, true},
         {XKB_KEY_Left, 0, focus_left, true}, {XKB_KEY_Down, 0, focus_down, true},
@@ -585,7 +587,7 @@ int main() {
             auto &history = workspaces[current].focus_history;
             std::erase(history, window);
             history.push_back(window);
-            workspaces[current].layout.focus(window);
+            if (!workspaces[current].layout.focus(window)) workspaces[current].layout.clear_selection();
             if (!workspaces[current].layout.contains(window) || is_fullscreen(window) != fullscreen.end()) {
                 const uint32_t above = XCB_STACK_MODE_ABOVE;
                 xcb_configure_window(c, window, XCB_CONFIG_WINDOW_STACK_MODE, &above);
@@ -737,6 +739,7 @@ int main() {
             std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> geometry{
                 xcb_get_geometry_reply(c, xcb_get_geometry(c, window), nullptr), &std::free};
             if (!geometry) return;
+            workspaces[owner(window)].layout.clear_selection();
             fullscreen.push_back({window, {static_cast<uint32_t>(geometry->x), static_cast<uint32_t>(geometry->y),
                 geometry->width, geometry->height, geometry->border_width}});
             atoms.push_back(fullscreen_atom);
@@ -778,6 +781,7 @@ int main() {
                 outputs.focus_output(*outputs.owners()[destination]);
             if (!outputs.switch_workspace(destination)) return;
         }
+        workspaces[current].layout.clear_selection();
         workspace_state.switch_to(outputs.focused_workspace());
         for (const auto &output : old_outputs)
             if (!visible(output.workspace))
@@ -925,6 +929,15 @@ int main() {
             focus(target, actions.time);
         }
     };
+    actions.focus_parent = [&] {
+        auto &ws = workspaces[current];
+        if (is_fullscreen(ws.focused) == fullscreen.end() && ws.layout.contains(ws.focused))
+            ws.layout.select_parent(ws.focused);
+    };
+    actions.focus_child = [&] {
+        auto &ws = workspaces[current];
+        if (ws.layout.contains(ws.focused)) ws.layout.select_child();
+    };
     actions.focus_sibling = [&](bool previous) {
         auto &ws = workspaces[current];
         auto target = ws.layout.sibling(ws.focused, previous);
@@ -972,6 +985,7 @@ int main() {
     auto resize_window = [&](xcb_window_t target, mortar::Direction direction, int pixels) {
         auto &ws = workspaces[current];
         if (is_fullscreen(target) != fullscreen.end()) return;
+        if (target != ws.focused) ws.layout.clear_selection();
         if (ws.layout.contains(target)) {
             if (ws.layout.resize(target, direction, pixels, bounds())) tile();
         } else if (std::find(ws.floating.begin(), ws.floating.end(), target) != ws.floating.end()) {
@@ -1697,6 +1711,8 @@ int main() {
                     actions.toggle_fullscreen(0);
                 } else if (*id == toggle_floating) {
                     actions.toggle_floating(0);
+                } else if (*id == focus_parent) {
+                    actions.focus_parent();
                 } else if (*id == focus_mode_toggle) {
                     actions.focus_mode_toggle();
                 } else if (*id == terminal || *id == launcher) {
@@ -1759,7 +1775,8 @@ int main() {
                     if (std::none_of(old_outputs.begin(), old_outputs.end(), [&](const auto &old) { return old.workspace == output.workspace; }))
                         for (auto window : workspaces[output.workspace].windows) xcb_map_window(c, window);
                 auto previous_workspace = current;
-                workspace_state.switch_to(outputs.focused_workspace());
+                workspaces[current].layout.clear_selection();
+        workspace_state.switch_to(outputs.focused_workspace());
                 for (const auto &output : outputs.outputs()) settle_workspace(output.workspace);
                 xcb_change_property(c, XCB_PROP_MODE_REPLACE, root, net_current, XCB_ATOM_CARDINAL, 32, 1, &current);
                 tile();
@@ -1811,6 +1828,7 @@ int main() {
                     uint32_t values[] = {static_cast<uint32_t>(x), static_cast<uint32_t>(y)};
                     xcb_configure_window(c, drag->window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, values);
                 } else {
+                    workspaces[current].layout.clear_selection();
                     resize_window(drag->window, drag->left ? mortar::Direction::left : mortar::Direction::right, drag->left ? -dx : dx);
                     resize_window(drag->window, drag->top ? mortar::Direction::up : mortar::Direction::down, drag->top ? -dy : dy);
                     std::unique_ptr<xcb_get_geometry_reply_t, decltype(&std::free)> updated{
@@ -1855,7 +1873,7 @@ int main() {
             if (enter->mode == XCB_NOTIFY_MODE_NORMAL && enter->detail != XCB_NOTIFY_DETAIL_INFERIOR &&
                 entered_workspace >= 0 && visible(entered_workspace)) {
                 if (static_cast<uint32_t>(entered_workspace) != current) switch_workspace(entered_workspace);
-                if (enter->time != XCB_CURRENT_TIME &&
+                if (enter->event != workspaces[current].focused && enter->time != XCB_CURRENT_TIME &&
                     (pending_focus.empty() || static_cast<int16_t>(enter->sequence - focus_sequence) >= 0)) {
                     std::fill(pending_focus.begin(), pending_focus.end(), XCB_NONE);
                     focus(enter->event, enter->time);

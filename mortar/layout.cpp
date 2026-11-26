@@ -87,6 +87,8 @@ bool Layout::insert(Layout child) {
     for (auto window : incoming) {
         if (std::find(existing.begin(), existing.end(), window) != existing.end()) return false;
     }
+    selected_path_.reset();
+    child.selected_path_.reset();
     focus_order_.push_back(children_.size());
     children_.push_back(std::move(child));
     double total = 0;
@@ -97,6 +99,19 @@ bool Layout::insert(Layout child) {
 
 bool Layout::insert_after(std::uint32_t focused, Layout child) {
     if (leaf_) return false;
+    if (selected_path_) {
+        std::vector<std::uint32_t> incoming;
+        child.identities(incoming);
+        for (auto window : incoming) if (contains(window)) return false;
+        Layout *node = this;
+        for (auto index : *selected_path_) {
+            if (index >= node->children_.size()) return false;
+            node = &node->children_[index];
+        }
+        if (!node->insert(std::move(child))) return false;
+        selected_path_.reset();
+        return true;
+    }
     std::vector<std::uint32_t> incoming;
     child.identities(incoming);
     for (auto window : incoming)
@@ -133,6 +148,15 @@ bool Layout::insert_after(std::uint32_t focused, Layout child) {
 
 bool Layout::set_split(std::uint32_t focused, Split direction) {
     if (direction != Split::horizontal && direction != Split::vertical) return false;
+    if (selected_path_) {
+        Layout *node = this;
+        for (auto index : *selected_path_) {
+            if (index >= node->children_.size()) return false;
+            node = &node->children_[index];
+        }
+        node->direction_ = direction;
+        return true;
+    }
     if (!focused && !leaf_ && children_.empty()) {
         direction_ = direction;
         return true;
@@ -149,6 +173,14 @@ bool Layout::set_split(std::uint32_t focused, Split direction) {
 }
 
 bool Layout::toggle_split(std::uint32_t focused) {
+    if (selected_path_) {
+        const Layout *node = this;
+        for (auto index : *selected_path_) {
+            if (index >= node->children_.size()) return false;
+            node = &node->children_[index];
+        }
+        return set_split(focused, node->direction_ == Split::horizontal ? Split::vertical : Split::horizontal);
+    }
     if (!focused && !leaf_ && children_.empty()) {
         direction_ = direction_ == Split::horizontal ? Split::vertical : Split::horizontal;
         return true;
@@ -166,11 +198,33 @@ bool Layout::focus(std::uint32_t window) {
     if (leaf_) return window_ == window;
     for (std::size_t i = 0; i < children_.size(); ++i) {
         if (!children_[i].focus(window)) continue;
+        selected_path_.reset();
         auto it = std::find(focus_order_.begin(), focus_order_.end(), i);
         std::rotate(focus_order_.begin(), it, it + 1);
         return true;
     }
     return false;
+}
+
+bool Layout::select_parent(std::uint32_t window) {
+    auto path = selected_path_ ? selected_path_ : window_path(window);
+    if (!path || path->empty()) return false;
+    path->pop_back();
+    selected_path_ = std::move(path);
+    return true;
+}
+
+bool Layout::select_child() {
+    if (!selected_path_) return false;
+    const Layout *node = this;
+    for (auto index : *selected_path_) {
+        if (index >= node->children_.size()) return false;
+        node = &node->children_[index];
+    }
+    if (node->leaf_ || node->focus_order_.empty()) return false;
+    selected_path_->push_back(node->focus_order_.front());
+    if (node->children_[selected_path_->back()].leaf_) selected_path_.reset();
+    return true;
 }
 
 std::optional<std::vector<std::size_t>> Layout::window_path(std::uint32_t window) const {
@@ -222,7 +276,19 @@ std::uint32_t Layout::neighbor(std::uint32_t focused, Direction direction, bool 
         }
         return false;
     };
-    if (!find(find, *this)) return 0;
+    if (selected_path_) {
+        const Layout *node = this;
+        for (auto i : *selected_path_) {
+            if (i >= node->children_.size()) return 0;
+            if (node->direction_ == axis && node->children_.size() > 1) {
+                if ((previous && i > 0) || (!previous && i + 1 < node->children_.size()))
+                    next = &node->children_[previous ? i - 1 : i + 1];
+                else
+                    wrap = &node->children_[previous ? node->children_.size() - 1 : 0];
+            }
+            node = &node->children_[i];
+        }
+    } else if (!find(find, *this)) return 0;
     const Layout *target = next ? next : (allow_wrap ? wrap : nullptr);
     while (target && !target->leaf_) {
         if (target->children_.empty()) return 0;
@@ -232,7 +298,7 @@ std::uint32_t Layout::neighbor(std::uint32_t focused, Direction direction, bool 
 }
 
 std::uint32_t Layout::sibling(std::uint32_t focused, bool previous) const {
-    auto path = window_path(focused);
+    auto path = selected_path_ ? selected_path_ : window_path(focused);
     if (!path || path->empty()) return 0;
     const Layout *parent = this;
     for (std::size_t i = 0; i + 1 < path->size(); ++i) parent = &parent->children_[(*path)[i]];
@@ -251,6 +317,7 @@ bool Layout::remove(std::uint32_t window) {
         auto &child = children_[i];
         bool found = child.leaf_ ? child.window_ == window : child.remove(window);
         if (!found) continue;
+        selected_path_.reset();
         if (child.leaf_ || child.children_.empty()) {
             children_.erase(children_.begin() + i);
             weights_.erase(weights_.begin() + i);
@@ -268,6 +335,68 @@ bool Layout::move(std::uint32_t window, Direction direction) {
     const bool previous = direction == Direction::left || direction == Direction::up;
     const Split axis = direction == Direction::left || direction == Direction::right
                            ? Split::horizontal : Split::vertical;
+    if (selected_path_) {
+        auto &path = *selected_path_;
+        for (std::size_t depth = path.size(); depth > 0; --depth) {
+            Layout *parent = this;
+            for (std::size_t n = 0; n + 1 < depth; ++n) parent = &parent->children_[path[n]];
+            const auto i = path[depth - 1];
+            if (parent->direction_ != axis || (previous ? i == 0 : i + 1 == parent->children_.size())) continue;
+            const auto other = previous ? i - 1 : i + 1;
+            if (depth == path.size()) {
+                std::swap(parent->children_[i], parent->children_[other]);
+                std::swap(parent->weights_[i], parent->weights_[other]);
+                for (auto &entry : parent->focus_order_) {
+                    if (entry == i) entry = other;
+                    else if (entry == other) entry = i;
+                }
+                path.back() = other;
+                return true;
+            }
+            Layout *selected_parent = this;
+            for (std::size_t n = 0; n + 1 < path.size(); ++n) selected_parent = &selected_parent->children_[path[n]];
+            auto selected_index = path.back();
+            auto selected = std::move(selected_parent->children_[selected_index]);
+            selected_parent->children_.erase(selected_parent->children_.begin() + selected_index);
+            selected_parent->weights_.erase(selected_parent->weights_.begin() + selected_index);
+            std::erase(selected_parent->focus_order_, selected_index);
+            for (auto &entry : selected_parent->focus_order_) if (entry > selected_index) --entry;
+            bool branch_removed = false;
+            for (std::size_t level = path.size() - 1; level >= depth; --level) {
+                Layout *ancestor = this;
+                for (std::size_t n = 0; n + 1 < level; ++n) ancestor = &ancestor->children_[path[n]];
+                auto child_index = path[level - 1];
+                if (!ancestor->children_[child_index].children_.empty()) break;
+                if (level == depth) {
+                    branch_removed = true;
+                    break;
+                }
+                ancestor->children_.erase(ancestor->children_.begin() + child_index);
+                ancestor->weights_.erase(ancestor->weights_.begin() + child_index);
+                std::erase(ancestor->focus_order_, child_index);
+                for (auto &entry : ancestor->focus_order_) if (entry > child_index) --entry;
+            }
+            auto target = other;
+            if (branch_removed) {
+                parent->children_.erase(parent->children_.begin() + i);
+                parent->weights_.erase(parent->weights_.begin() + i);
+                std::erase(parent->focus_order_, i);
+                for (auto &entry : parent->focus_order_) if (entry > i) --entry;
+                if (i < target) --target;
+            }
+            auto index = target + (previous ? 0 : 1);
+            auto weight = parent->weights_[target] / 2;
+            parent->weights_[target] = weight;
+            parent->children_.insert(parent->children_.begin() + index, std::move(selected));
+            parent->weights_.insert(parent->weights_.begin() + index, weight);
+            for (auto &entry : parent->focus_order_) if (entry >= index) ++entry;
+            parent->focus_order_.insert(parent->focus_order_.begin(), index);
+            path.resize(depth);
+            path.back() = index;
+            return true;
+        }
+        return false;
+    }
     auto move_in = [&](auto &&self, Layout &node) -> bool {
         for (std::size_t i = 0; i < node.children_.size(); ++i) {
             auto &child = node.children_[i];
@@ -322,6 +451,7 @@ bool Layout::resize(std::uint32_t window, Direction direction, int pixels, Rect 
     const Split axis = direction == Direction::left || direction == Direction::right
                            ? Split::horizontal : Split::vertical;
     bool found = false;
+    std::vector<std::size_t> path;
     auto resize_in = [&](auto &&self, Layout &node, Rect area) -> bool {
         if (node.leaf_) return false;
         double total = 0;
@@ -341,8 +471,12 @@ bool Layout::resize(std::uint32_t window, Direction direction, int pixels, Rect 
                 child_area.y += start;
                 child_area.height = end - start;
             }
-            if (!node.children_[i].contains(window)) continue;
-            if (self(self, node.children_[i], child_area)) return true;
+            if (selected_path_) {
+                if (path.size() >= selected_path_->size() || (*selected_path_)[path.size()] != i) continue;
+            } else if (!node.children_[i].contains(window)) continue;
+            path.push_back(i);
+            if ((!selected_path_ || path.size() < selected_path_->size()) && self(self, node.children_[i], child_area)) return true;
+            path.pop_back();
             if (found || node.direction_ != axis || extent == 0 ||
                 (previous ? i == 0 : i + 1 == node.children_.size())) return false;
             found = true;

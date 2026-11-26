@@ -376,6 +376,10 @@ int main() {
     check(std::vector<WindowAction>(host.window_actions.end() - 4, host.window_actions.end()) ==
           std::vector<WindowAction>({WindowAction::focus_output_next, WindowAction::focus_output_previous,
                                      WindowAction::move_output_next, WindowAction::move_output_previous}));
+    check(config.evaluate("(focus-parent)").success);
+    check(host.window_actions.back() == WindowAction::focus_parent);
+    check(config.evaluate("(focus-child)").success);
+    check(host.window_actions.back() == WindowAction::focus_child);
     check(config.evaluate("(focus-sibling-next)").success);
     check(config.evaluate("(focus-sibling-previous)").success);
     check(host.window_actions[host.window_actions.size() - 2] == WindowAction::focus_sibling_next);

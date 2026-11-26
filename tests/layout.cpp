@@ -23,6 +23,59 @@ int main() {
     check(tree.geometry({-3, 4, 8, 7}) ==
           (std::vector<Placement>{{1, {-3, 4, 2, 7}}, {2, {-1, 4, 3, 3}},
                                   {3, {-1, 7, 3, 4}}, {4, {2, 4, 3, 7}}}));
+    check(tree.focus(2));
+    check(tree.select_parent(2));
+    check(tree.selected_path() == std::vector<std::size_t>{1});
+    check(tree.select_parent(2));
+    check(tree.selected_path() == std::vector<std::size_t>{});
+    check(!tree.select_parent(2));
+    check(tree.select_child());
+    check(tree.selected_path() == std::vector<std::size_t>{1});
+    check(tree.select_child());
+    check(!tree.selected_path());
+    check(!tree.select_child());
+    {
+        auto selected = tree;
+        check(selected.select_parent(2));
+        check(selected.neighbor(2, mortar::Direction::left) == 1);
+        check(selected.sibling(2, false) == 4);
+        check(selected.resize(2, mortar::Direction::right, 10, {0, 0, 300, 100}));
+        check(selected.move(2, mortar::Direction::right));
+        check(selected.selected_path() == std::vector<std::size_t>{2});
+        check(selected.window_path(2) == (std::vector<std::size_t>{2, 0}));
+        check(selected.remove(1));
+        check(!selected.selected_path());
+        check(selected.select_parent(2));
+        check(selected.focus(3));
+        check(!selected.selected_path());
+        check(selected.select_parent(2));
+        check(selected.set_split(2, Split::horizontal));
+        check(selected.insert_after(2, Layout::leaf(8)));
+        check(!selected.selected_path());
+        check(selected.window_path(8) == (std::vector<std::size_t>{1, 2}));
+    }
+    {
+        auto nested = Layout::split(Split::horizontal, {
+            Layout::split(Split::vertical, {Layout::split(Split::horizontal, {Layout::leaf(10), Layout::leaf(11)}), Layout::leaf(12)}),
+            Layout::leaf(13)});
+        check(nested.focus(10));
+        check(nested.select_parent(10));
+        check(nested.move(10, mortar::Direction::right));
+        check(nested.selected_path() == std::vector<std::size_t>{2});
+        check(nested.window_path(10) == (std::vector<std::size_t>{2, 0}));
+        check(nested.window_path(12) == (std::vector<std::size_t>{0, 0}));
+    }
+    {
+        auto nested = Layout::split(Split::horizontal, {
+            Layout::split(Split::vertical, {Layout::split(Split::horizontal, {Layout::leaf(20), Layout::leaf(21)})}),
+            Layout::leaf(22)});
+        check(nested.focus(20));
+        check(nested.select_parent(20));
+        check(nested.move(20, mortar::Direction::right));
+        check(nested.selected_path() == std::vector<std::size_t>{1});
+        check(nested.window_path(20) == (std::vector<std::size_t>{1, 0}));
+        check(nested.window_path(22) == std::vector<std::size_t>{0});
+    }
     check(tree.window_path(2) == (std::vector<std::size_t>{1, 0}));
     check(!tree.window_path(99));
     check(Layout::leaf(1).window_path(1) == std::vector<std::size_t>{});

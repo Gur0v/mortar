@@ -47,6 +47,10 @@ public:
     std::uint32_t neighbor(std::uint32_t focused, Direction direction, bool wrap = true) const;
     std::uint32_t sibling(std::uint32_t focused, bool previous) const;
     bool focus(std::uint32_t window);
+    bool select_parent(std::uint32_t window);
+    bool select_child();
+    const std::optional<std::vector<std::size_t>> &selected_path() const { return selected_path_; }
+    void clear_selection() { selected_path_.reset(); }
     std::optional<std::vector<std::size_t>> window_path(std::uint32_t window) const;
     std::optional<std::vector<std::size_t>> parent_path(const std::vector<std::size_t> &path) const;
     bool remove(std::uint32_t window);
@@ -67,6 +71,7 @@ private:
     std::vector<std::size_t> focus_order_;
     std::vector<double> weights_;
     bool resized_ = false;
+    std::optional<std::vector<std::size_t>> selected_path_;
 };
 
 }
