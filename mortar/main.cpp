@@ -778,8 +778,12 @@ int main(int argc, char **argv) {
     };
     std::optional<mortar::Rect> drag_gap_bounds;
     std::vector<std::pair<xcb_window_t, std::vector<uint32_t>>> drag_hints;
-    auto tile_placements = [&](uint32_t workspace, mortar::Rect gap_bounds, bool cached) {
-        for (auto placement : workspaces[workspace].layout.geometry(gap_bounds)) {
+    auto tile_placements = [&](uint32_t workspace, mortar::Rect gap_bounds, bool cached,
+                               const std::vector<mortar::Placement> *previous = nullptr) {
+        auto placements = workspaces[workspace].layout.geometry(gap_bounds);
+        for (std::size_t i = 0; i < placements.size(); ++i) {
+            auto placement = placements[i];
+            if (previous && i < previous->size() && (*previous)[i] == placement) continue;
             if (is_fullscreen(placement.window) != fullscreen.end()) continue;
             placement.bounds = mortar::inner_gap(placement.bounds, gap_bounds, config.gaps().inner);
             auto found = std::find_if(drag_hints.begin(), drag_hints.end(), [&](const auto &entry) {
@@ -2304,6 +2308,7 @@ int main(int argc, char **argv) {
                     drag_hints.clear();
                     drag_gap_bounds = mortar::outer_gap(usable(bounds()), config.gaps().outer);
                 }
+                auto previous = layout.geometry(*drag_gap_bounds);
                 bool horizontal = layout.resize(drag->window, drag->left ? mortar::Direction::left : mortar::Direction::right,
                                                 drag->left ? -dx : dx, *drag_gap_bounds, true);
                 bool vertical = layout.resize(drag->window, drag->top ? mortar::Direction::up : mortar::Direction::down,
@@ -2311,7 +2316,7 @@ int main(int argc, char **argv) {
                 drag->x = motion->root_x;
                 drag->y = motion->root_y;
                 if (horizontal || vertical) {
-                    tile_placements(drag->workspace, *drag_gap_bounds, true);
+                    tile_placements(drag->workspace, *drag_gap_bounds, true, &previous);
                     xcb_flush(c);
                 }
                 break;
